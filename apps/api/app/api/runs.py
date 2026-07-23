@@ -22,6 +22,7 @@ from app.models import (
     UserRole,
     UserRunAccess,
 )
+from app.scenario.agent_graph import AgentGraph, derive_agent_graph
 from app.schemas import EventRead, InvestigationGraph, RunCreate, RunRead
 from app.security import can_access_model, can_access_run, csrf_protection, current_user
 
@@ -64,11 +65,18 @@ def create_run(
             status_code=400,
             detail=f"Hard tool-call budget must be at least {minimum_calls} for this Scenario",
         )
+    run_config = payload.model_dump(
+        mode="json",
+        exclude={"task_id", "candidate_model_id", "judge_model_id"},
+    )
+    run_config["candidate_model_snapshot"] = model_snapshot(candidate)
+    if judge is not None:
+        run_config["judge_model_snapshot"] = model_snapshot(judge)
     run = BenchmarkRun(
         task_id=task.id,
         candidate_model_id=candidate.id,
         judge_model_id=judge.id if judge else None,
-        config=payload.model_dump(mode="json", exclude={"task_id", "candidate_model_id", "judge_model_id"}),
+        config=run_config,
     )
     session.add(run)
     session.flush()
@@ -82,6 +90,17 @@ def create_run(
     session.commit()
     session.refresh(run)
     return run
+
+
+def model_snapshot(profile: ModelProfile) -> dict[str, str]:
+    """Freeze non-secret model identity for durable run attribution."""
+
+    return {
+        "profile_id": str(profile.id),
+        "name": profile.name,
+        "provider": profile.provider.value,
+        "model_id": profile.model_id,
+    }
 
 
 @router.get("/{run_id}", response_model=RunRead)
@@ -121,6 +140,27 @@ def get_investigation_graph(
     if not can_access_run(session, user, session.get(BenchmarkRun, run_id)):
         raise HTTPException(status_code=404, detail="Run not found")
     return graph_payload(session, run_id)
+
+
+@router.get("/{run_id}/agents", response_model=AgentGraph)
+def get_agent_graph(
+    run_id: uuid.UUID,
+    session: Session = Depends(get_session),
+    user: UserAccount = Depends(current_user),
+) -> AgentGraph:
+    if not can_access_run(session, user, session.get(BenchmarkRun, run_id)):
+        raise HTTPException(status_code=404, detail="Run not found")
+    events = session.scalars(
+        select(RunEvent)
+        .where(RunEvent.run_id == run_id)
+        .order_by(RunEvent.sequence)
+    ).all()
+    return derive_agent_graph(
+        [
+            {"kind": event.kind, "sequence": event.sequence, **event.payload}
+            for event in events
+        ]
+    )
 
 
 @router.get("/{run_id}/stream")

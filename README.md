@@ -2,21 +2,22 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-> An evidence-hostile, container-isolated benchmark for long-horizon AI software agents.
+> An evidence-grounded, container-isolated benchmark for repository-scale AI
+> software incident response.
 
-The Evil Repository drops a model into a deterministic but uncertain production
-incident: two cross-referenced Git repositories, contradictory documentation,
-broken CI oracles, intermittent service symptoms, phantom bugs, prompt
-injection, scripted tool failures, a stale SQLite cache, and a production-style
-PostgreSQL snapshot full of dirty data. The model must decide what is real,
-what must not be changed, how to contain risk, and only then make the smallest
-proven patch with an auditable evidence report.
+The Evil Repository evaluates how an AI Agent investigates a deterministic but
+uncertain production incident at repository scale. The environment combines
+cross-referenced Git repositories, contradictory operational evidence, broken
+CI oracles, intermittent symptoms, phantom reports, prompt injection, scripted
+tool failures, database history, and bounded production actions. The Agent
+must establish what is real, preserve constraints, contain risk, and only then
+make the smallest verified repair with an auditable evidence report.
 
-It is closer to an AI Agent CTF, incident-response benchmark, and behavior
-analysis platform than a conventional “fix this failing test” dataset. A run
-produces not only a 1,200-point scorecard, but also a Hypothesis/Evidence/Truth
-Graph, behavior profile, discrete error statistics, and a replay of the
-investigation.
+The project sits between a repository-scale software engineering benchmark, an
+incident-response simulator, and an Agent behavior analysis platform. A run
+produces not only a deterministic 1,200-point scenario scorecard, but also a
+Hypothesis/Evidence graph, behavior profile, discrete error statistics,
+resource ledger, Agent execution graph, and an investigation replay.
 
 The product is a local-first React data console backed by FastAPI. Every
 candidate/task pair receives a fresh Rootless Docker workspace. Candidate
@@ -25,11 +26,20 @@ provider credentials.
 
 ## Status
 
-The platform is currently **v0.7.1** and remains under active construction.
+The platform is currently **v0.8.0** and remains under active construction.
 See [`CHANGELOG.md`](CHANGELOG.md). This release includes the canonical
 “terminal repository” challenge, account isolation, administrator controls,
 server monitoring, a live Agent activity console, and the complete execution,
 telemetry, scoring, and visualization path around it.
+
+This release also introduces the versioned Suite contract. The bundled
+Production Incident Engineering Suite currently contains **one public
+development scenario in one active family**. Its policy requires at least 20
+scenario references across five active families, including three held-out
+families, before it may claim leaderboard readiness. The WebUI and `/suites`
+API expose that readiness as `1/5`, `0/3`, and `1/20`; therefore the current
+release is useful for detailed engineering analysis, but it is **not yet a
+statistically valid general leaderboard**.
 
 Long investigations can be paused at a safe Provider/tool boundary and resumed
 without discarding the candidate workspace or conversation. Paused time does
@@ -73,14 +83,26 @@ for runs whose reports may contain data you are not permitted to disclose.
 
 ## Benchmark contract
 
-The benchmark is split into two layers:
+The benchmark is split into three layers:
 
-1. a versioned Scenario SDK package containing repositories, databases,
+1. a versioned Suite manifest grouping independent scenario families and
+   development, validation, and held-out splits;
+2. a versioned Scenario SDK package containing repositories, databases,
    injections, deterministic failures, offline Browser material, hidden truth,
    grading, and metadata;
-2. a scenario-agnostic Runner that performs
+3. a scenario-agnostic Runner that performs
    `load → prepare → run → grade → archive` and exposes only normalized results
    to React.
+
+Private truth is represented as a graph of causes, conditions, symptoms,
+constraints, invariants, and remediations. A scenario may declare multiple
+acceptable resolution paths—such as a verified forward fix or a safe
+rollback—plus objective hidden checks. The evaluator reports partial causal
+coverage without turning partial evidence into a false pass. Terminal
+Repository 3.0.3 retains the 3.0.2 truth and generated incident structure while
+versioning the recalibrated 30/60-minute execution envelope. The multi-path
+contract is available to subsequent scenario families instead of silently
+changing published truth under the same version.
 
 The canonical scenario deliberately prevents a one-file, one-test shortcut.
 Its relevant regression is buried beneath substantial later Git history;
@@ -91,7 +113,7 @@ with a stale SQLite cache. The offline mirror is available only through
 `browser.search`, `browser.open`, and `browser.find`, so a candidate cannot
 bypass Browser behavior by scanning a copied mirror directory.
 
-Scenario 3.0.2 makes the apparent bulk material. Five live relay chains contain
+Scenario 3.0.3 makes the apparent bulk material. Five live relay chains contain
 704 executable opaque cells; seven independent corruptions are jointly
 required, and fixing six still fails. The two repositories contain exactly
 5,000 tracked files and 2,000 commits, 40 semantic custody checkpoints, seven
@@ -108,6 +130,14 @@ go through project-mediated tools. They advance a logical replay clock and
 change SLO, error budget, data integrity, risk and rollback state without ever
 exposing Docker or the host. “No change,” “preserve,” “reject,” and “defer” can
 be correct answers.
+
+Scenario authors can additionally expose deterministic, project-mediated
+equivalents of `ps`, `systemctl`, `journalctl`, `lsof`/socket inspection,
+`strace`, and `perf`. These tools observe only the simulated incident state;
+they never attach to a host process or expose live packets. Their collectors,
+clock domains, useful signals, and decoys remain replayable. Terminal
+Repository 3.0.3 stays frozen and does not retroactively enable this new tool
+pack.
 
 A candidate must build an observable investigation, not merely guess a patch.
 Before a normal final answer is accepted, the Scenario completion gate requires
@@ -133,13 +163,30 @@ Candidate sandboxes default to 0.5 CPU, 256 MiB RAM, 256 PIDs and a 1.5 GiB
 ephemeral workspace. A one-sample quick check may lie; hidden grading reruns
 static scope, regression, mutation, runtime and fresh-database golden replay.
 
-The canonical difficulty target is to remain discriminating throughout an
-80-minute hard envelope for a strong software-engineering Agent. This is a
+The canonical difficulty target is to remain discriminating throughout a
+60-minute hard envelope for a strong software-engineering Agent. This is a
 calibration target, not a wall-clock promise: EvilBench never pads a run with
 `sleep`, random delay, or an artificial timer. Difficulty must come from
 necessary evidence work, conflicting provenance, bounded recovery from
 scripted failures, and hidden verification. Scenario releases are recalibrated
 when strong Agents discover material shortcuts.
+
+The incident's 180 ticks are deterministic logical replay steps, not 180
+wall-clock minutes. Real execution defaults are a 30-minute soft warning and a
+60-minute hard stop. EvilBench records logical model turns, raw Provider
+HTTP requests (including retries), input/output Token counts, tool calls, and
+active time. Optional Token caps are supported, but dollar cost is deliberately
+not normalized: cache reads/writes, hidden reasoning tokens, batch/service
+tiers, discounts, and compatible-API usage semantics are not reliably
+comparable across Providers.
+
+Every candidate event carries a stable Agent identity. Today the built-in
+executor is intentionally single-Agent and produces a one-node Agent Graph.
+The event and archive schemas already support spawn, delegation, role,
+parent/child, and per-Agent resource aggregation so external multi-Agent
+orchestrators can integrate without redefining historical run data. The
+platform does not pretend that a protocol-ready graph is a built-in
+multi-Agent scheduler.
 
 Use an optional held-out instance seed when comparing models. It changes the
 opaque file layout, runtime cells, histories, corpus and incident replay while
@@ -252,6 +299,7 @@ deliberately.
 ```text
 apps/web/                  React/TypeScript control plane
 apps/api/                  FastAPI API, worker, runner, scorer
+suites/                    Versioned family/split manifests and readiness policy
 scenarios/                 Versioned Scenario SDK packages, truth, and corpus
 infra/sandbox/             Networkless candidate image
 docs/                      Architecture, threat model, and authoring docs

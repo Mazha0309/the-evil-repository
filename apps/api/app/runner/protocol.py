@@ -384,6 +384,149 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
 ]
 
+OBSERVABILITY_TOOL_DEFINITIONS: list[dict[str, Any]] = [
+    {
+        "type": "function",
+        "function": {
+            "name": "process_list",
+            "description": (
+                "Project-mediated ps equivalent for one simulated service. "
+                "It never inspects candidate or host processes."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "service": {"type": "string"},
+                    "window": {
+                        "type": "string",
+                        "enum": ["baseline", "previous", "current", "replay"],
+                    },
+                },
+                "required": ["service", "window"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "service_status",
+            "description": (
+                "Project-mediated systemctl status equivalent for a simulated "
+                "service and replay window."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "service": {"type": "string"},
+                    "window": {
+                        "type": "string",
+                        "enum": ["baseline", "previous", "current", "replay"],
+                    },
+                },
+                "required": ["service", "window"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "journal_query",
+            "description": (
+                "Project-mediated journalctl equivalent. Results preserve "
+                "source and clock provenance and may contain high-volume decoys."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "service": {"type": "string"},
+                    "query": {"type": "string"},
+                    "window": {
+                        "type": "string",
+                        "enum": ["baseline", "previous", "current", "replay"],
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 50,
+                    },
+                },
+                "required": ["service", "query", "window"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "socket_snapshot",
+            "description": (
+                "Project-mediated lsof/tcpdump metadata equivalent for a "
+                "simulated service. No live packets or host sockets are exposed."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "service": {"type": "string"},
+                    "window": {
+                        "type": "string",
+                        "enum": ["baseline", "previous", "current", "replay"],
+                    },
+                },
+                "required": ["service", "window"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "trace_process",
+            "description": (
+                "Project-mediated strace equivalent for one bounded simulated "
+                "operation; it cannot attach to a real process."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "service": {"type": "string"},
+                    "operation": {"type": "string"},
+                    "window": {
+                        "type": "string",
+                        "enum": ["baseline", "previous", "current", "replay"],
+                    },
+                },
+                "required": ["service", "operation", "window"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "profile_cpu",
+            "description": (
+                "Project-mediated perf equivalent for deterministic replay "
+                "samples. Profiles retain collector and clock-domain ambiguity."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "service": {"type": "string"},
+                    "sample_seconds": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 60,
+                    },
+                    "window": {
+                        "type": "string",
+                        "enum": ["baseline", "previous", "current", "replay"],
+                    },
+                },
+                "required": ["service", "sample_seconds", "window"],
+            },
+        },
+    },
+]
+
+TOOL_DEFINITIONS.extend(OBSERVABILITY_TOOL_DEFINITIONS)
+
 
 def tool_definitions_for(enabled: list[str]) -> list[dict[str, Any]]:
     """Return only tools explicitly enabled by the Scenario manifest."""

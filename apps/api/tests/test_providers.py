@@ -163,6 +163,7 @@ def test_text_only_review_omits_empty_tool_configuration() -> None:
 def test_transient_provider_responses_retry_with_bounded_backoff() -> None:
     attempts = 0
     retries: list[dict] = []
+    requests: list[dict] = []
     delays: list[float] = []
 
     def handler(_request: httpx.Request) -> httpx.Response:
@@ -185,6 +186,7 @@ def test_transient_provider_responses_retry_with_bounded_backoff() -> None:
         "secret",
         max_retries=3,
         on_retry=retries.append,
+        on_request=requests.append,
     )
     client.client = httpx.Client(transport=httpx.MockTransport(handler))
     client._sleep = delays.append
@@ -193,6 +195,9 @@ def test_transient_provider_responses_retry_with_bounded_backoff() -> None:
 
     assert turn.content == "recovered"
     assert attempts == 3
+    assert client.request_attempts == 3
+    assert [request["request_number"] for request in requests] == [1, 2, 3]
+    assert [request["attempt"] for request in requests] == [1, 2, 3]
     assert delays == [0.5, 4.0]
     assert [retry["status_code"] for retry in retries] == [429, 503]
     assert retries[-1]["next_attempt"] == 3

@@ -81,6 +81,10 @@ import {
   serviceTierOptions,
   type ModelParameterDraft,
 } from "./lib/modelParameters";
+import {
+  resolveRunModel,
+  type RunModelIdentity,
+} from "./lib/runModels";
 import type {
   AuthConfig,
   AuthResponse,
@@ -312,6 +316,7 @@ function DashboardPage() {
     queryFn: api.runs,
     refetchInterval: 5_000,
   });
+  const models = useQuery({ queryKey: ["models"], queryFn: api.models });
   const tasks = useQuery({ queryKey: ["tasks"], queryFn: api.tasks });
   const data = summary.data;
   return (
@@ -320,8 +325,8 @@ function DashboardPage() {
         eyebrow={text("控制中心", "CONTROL ROOM")}
         title={text("高压之下，证据为王。", "Evidence under pressure.")}
         description={text(
-          "观察模型如何调查恶意仓库、脏数据与被污染的权威信息，同时始终待在沙箱边界内。",
-          "Watch models investigate hostile repositories, dirty data, and poisoned authority without crossing the sandbox boundary.",
+          "观察模型如何调查仓库级事故、脏数据与互相冲突的权威信息，同时始终待在沙箱边界内。",
+          "Watch models investigate repository-scale incidents, dirty data, and conflicting authority without crossing the sandbox boundary.",
         )}
         action={
           <Link className="button" to="/runs/new">
@@ -373,7 +378,11 @@ function DashboardPage() {
             )}
             action={<Link to="/runs">{text("查看全部", "View all")}</Link>}
           />
-          <RunTable runs={runs.data ?? []} compact />
+          <RunTable
+            runs={runs.data ?? []}
+            models={models.data ?? []}
+            compact
+          />
         </section>
         <section className="panel">
           <PanelHeading
@@ -434,7 +443,7 @@ function DashboardPage() {
             <Pressure value="5K" label={text("文件", "files")} />
             <Pressure value="2K" label={text("提交", "commits")} />
             <Pressure value="100MB" label={text("离线文档", "offline docs")} />
-            <Pressure value="240m" label={text("硬限制", "hard limit")} />
+            <Pressure value="60m" label={text("硬限制", "hard limit")} />
           </div>
           <Link className="button button--ghost" to="/scenarios">
             {text("查看场景", "Inspect scenario")} <ArrowRight size={15} />
@@ -446,18 +455,67 @@ function DashboardPage() {
 }
 
 function ScenariosPage() {
-  const { text } = useLocale();
+  const { isChinese, text } = useLocale();
   const tasks = useQuery({ queryKey: ["tasks"], queryFn: api.tasks });
+  const suites = useQuery({ queryKey: ["suites"], queryFn: api.suites });
+  const suite = suites.data?.[0];
+  const suiteCopy =
+    isChinese && suite?.localizations?.["zh-CN"]
+      ? {
+          name: suite.localizations["zh-CN"].name ?? suite.name,
+          description:
+            suite.localizations["zh-CN"].description ?? suite.description,
+        }
+      : suite;
   return (
     <>
       <PageHeader
         eyebrow="SCENARIO SDK"
-        title={text("版本化的敌意世界。", "Hostile worlds, versioned.")}
+        title={text("版本化的生产事故世界。", "Production incidents, versioned.")}
         description={text(
-          "每个场景独立封装仓库、数据库、注入内容、故障脚本、隐藏裁判、回放契约与离线互联网。",
-          "Each scenario owns its repositories, databases, injections, failure scripts, hidden judge, replay contract, and offline internet.",
+          "每个场景独立封装仓库、数据库、冲突证据、故障脚本、隐藏裁判、回放契约与离线互联网。",
+          "Each scenario owns its repositories, databases, conflicting evidence, failure scripts, hidden judge, replay contract, and offline internet.",
         )}
       />
+      {suite && (
+        <section className="panel suite-status">
+          <div>
+            <span className="eyebrow">
+              SUITE / {suite.version} ·{" "}
+              {suite.readiness.leaderboard_eligible
+                ? text("可进入排行榜", "LEADERBOARD READY")
+                : text("开发中", "IN DEVELOPMENT")}
+            </span>
+            <h2>{suiteCopy?.name}</h2>
+            <p>{suiteCopy?.description}</p>
+          </div>
+          <div className="scenario-metrics">
+            <Metric
+              label={text("活跃题族", "Active families")}
+              value={`${suite.readiness.active_families}/${suite.readiness.required_active_families}`}
+            />
+            <Metric
+              label={text("隐藏题族", "Held-out families")}
+              value={`${suite.readiness.held_out_families}/${suite.readiness.required_held_out_families}`}
+            />
+            <Metric
+              label={text("场景引用", "Scenario refs")}
+              value={`${suite.readiness.scenario_references}/${suite.readiness.required_scenarios}`}
+            />
+          </div>
+          {!suite.readiness.leaderboard_eligible && (
+            <div className="callout callout--warning">
+              <AlertTriangle size={16} />
+              <span>
+                {text(
+                  "当前只有一个公开开发题族，适合工程分析，不应当冒充统计有效的总榜。",
+                  "Only one public development family exists today. It is useful for engineering analysis, not a statistically valid global leaderboard.",
+                )}
+              </span>
+            </div>
+          )}
+        </section>
+      )}
       <div className="card-stack">
         {(tasks.data ?? []).map((task) => (
           <ScenarioCard key={task.id} task={task} />
@@ -1054,6 +1112,7 @@ function RunsPage() {
     queryFn: api.runs,
     refetchInterval: 4_000,
   });
+  const models = useQuery({ queryKey: ["models"], queryFn: api.models });
   return (
     <>
       <PageHeader
@@ -1082,7 +1141,7 @@ function RunsPage() {
             )}
           </span>
         </div>
-        <RunTable runs={runs.data ?? []} />
+        <RunTable runs={runs.data ?? []} models={models.data ?? []} />
       </section>
     </>
   );
@@ -1104,6 +1163,10 @@ function NewRunPage() {
     event.preventDefault();
     const data = new FormData(event.currentTarget);
     const seed = String(data.get("instance_seed") ?? "").trim();
+    const optionalNumber = (name: string) => {
+      const value = String(data.get(name) ?? "").trim();
+      return value ? Number(value) : null;
+    };
     create.mutate({
       task_id: data.get("task_id"),
       candidate_model_id: data.get("candidate_model_id"),
@@ -1115,13 +1178,20 @@ function NewRunPage() {
       hard_seconds: Number(data.get("hard_seconds")),
       soft_tool_calls: Number(data.get("soft_tool_calls")),
       hard_tool_calls: Number(data.get("hard_tool_calls")),
+      soft_provider_requests: Number(data.get("soft_provider_requests")),
+      hard_provider_requests: Number(data.get("hard_provider_requests")),
+      soft_total_tokens: optionalNumber("soft_total_tokens"),
+      hard_total_tokens: optionalNumber("hard_total_tokens"),
     });
   };
   return (
     <>
       <PageHeader
         eyebrow={text("新调查", "NEW INVESTIGATION")}
-        title={text("把一个模型扔进地狱。", "Drop a model into hell.")}
+        title={text(
+          "发起一次生产事故工程评估。",
+          "Start a production incident engineering evaluation.",
+        )}
         description={text(
           "系统会按所选场景生成全新的 Rootless Docker 工作区，并在评分完成后销毁。",
           "A fresh Rootless Docker workspace will be generated from the selected Scenario and destroyed after grading.",
@@ -1211,30 +1281,30 @@ function NewRunPage() {
             icon={<Gauge size={16} />}
             title={text("预算", "Budgets")}
             detail={text(
-              "40 分钟 / 250 次软告警，80 分钟 / 650 次硬停止",
-              "40 min / 250-call soft warning; 80 min / 650-call hard stop",
+              "时间、工具、Provider 请求及可选 Token 限制",
+              "Time, tool, Provider-request, and optional token limits",
             )}
           />
           <div className="budget-grid">
             <Field
               label={text("软时间限制（秒）", "Soft time (seconds)")}
-              hint={text("默认 40 分钟", "40-minute default")}
+              hint={text("默认 30 分钟", "30-minute default")}
             >
               <input
                 name="soft_seconds"
                 type="number"
-                defaultValue={2400}
+                defaultValue={1800}
                 min={60}
               />
             </Field>
             <Field
               label={text("硬时间限制（秒）", "Hard time (seconds)")}
-              hint={text("默认 80 分钟", "80-minute default")}
+              hint={text("默认 60 分钟", "60-minute default")}
             >
               <input
                 name="hard_seconds"
                 type="number"
-                defaultValue={4800}
+                defaultValue={3600}
                 min={300}
               />
             </Field>
@@ -1252,6 +1322,64 @@ function NewRunPage() {
                 type="number"
                 defaultValue={650}
                 min={20}
+              />
+            </Field>
+            <Field
+              label={text(
+                "软 Provider 请求限制",
+                "Soft Provider requests",
+              )}
+              hint={text(
+                "包含 429 / 5xx 重试",
+                "Includes 429 / 5xx retries",
+              )}
+            >
+              <input
+                name="soft_provider_requests"
+                type="number"
+                defaultValue={180}
+                min={1}
+              />
+            </Field>
+            <Field
+              label={text(
+                "硬 Provider 请求限制",
+                "Hard Provider requests",
+              )}
+              hint={text(
+                "真实 HTTP 请求上限",
+                "Raw HTTP request cap",
+              )}
+            >
+              <input
+                name="hard_provider_requests"
+                type="number"
+                defaultValue={360}
+                min={2}
+              />
+            </Field>
+            <Field
+              label={text("软 Token 限制（可选）", "Soft tokens (optional)")}
+              hint={text(
+                "输入与输出合计；需与硬限制成对填写",
+                "Input + output; configure together with hard tokens",
+              )}
+            >
+              <input
+                name="soft_total_tokens"
+                type="number"
+                min={1000}
+                placeholder={text("不限制", "unlimited")}
+              />
+            </Field>
+            <Field
+              label={text("硬 Token 限制（可选）", "Hard tokens (optional)")}
+            >
+              <input
+                name="hard_total_tokens"
+                type="number"
+                min={2000}
+                placeholder={text("不限制", "unlimited")}
               />
             </Field>
             <Field
@@ -1340,6 +1468,11 @@ function RunDetailPage() {
     queryFn: api.tasks,
     staleTime: 60_000,
   });
+  const models = useQuery({
+    queryKey: ["models"],
+    queryFn: api.models,
+    staleTime: 60_000,
+  });
   const pauseRun = useMutation({
     mutationFn: () => api.pauseRun(runId),
     onSuccess: (updated) => {
@@ -1385,6 +1518,11 @@ function RunDetailPage() {
   const taskManifest = tasks.data?.find(
     (task) => task.id === data.task_id,
   )?.manifest;
+  const candidateModel = resolveRunModel(
+    data,
+    "candidate",
+    models.data ?? [],
+  );
   const completion = taskManifest?.completion;
   const pauseRequested = data.config.pause_requested === true;
   const maximumScore = Math.max(1, data.scorecard.maximum ?? 1_200);
@@ -1411,6 +1549,13 @@ function RunDetailPage() {
                   "The Runner is streaming observable investigation state from the isolated candidate.",
                 )}
           </p>
+          <div className="run-model-strip">
+            <RunModelBadge
+              identity={candidateModel}
+              label={text("候选模型", "Candidate")}
+              unknown={text("未知模型", "Unknown model")}
+            />
+          </div>
         </div>
         <div className="run-score">
           <span>{text("得分", "Score")}</span>
@@ -2179,9 +2324,11 @@ function SettingsPage() {
 
 function RunTable({
   runs,
+  models,
   compact = false,
 }: {
   runs: Run[];
+  models: ModelProfile[];
   compact?: boolean;
 }) {
   const { locale, text } = useLocale();
@@ -2202,6 +2349,7 @@ function RunTable({
         <thead>
           <tr>
             <th>{text("运行", "Run")}</th>
+            <th>{text("模型", "Model")}</th>
             <th>{text("状态", "Status")}</th>
             <th>{text("阶段", "Stage")}</th>
             <th>{text("工具", "Tools")}</th>
@@ -2211,37 +2359,65 @@ function RunTable({
           </tr>
         </thead>
         <tbody>
-          {runs.slice(0, compact ? 8 : 200).map((run) => (
-            <tr key={run.id}>
-              <td>
-                <code>{shortId(run.id)}</code>
-              </td>
-              <td>
-                <StatusPill status={run.status} />
-              </td>
-              <td>
-                <span className="table-primary">
-                  {stageLabel(run.stage, locale)}
-                </span>
-              </td>
-              <td>{run.tool_calls}</td>
-              <td>
-                <strong className={run.score != null ? "score-value" : ""}>
-                  {run.score == null ? "—" : Math.round(run.score)}
-                </strong>
-              </td>
-              {!compact && (
-                <td>{new Date(run.created_at).toLocaleString(locale)}</td>
-              )}
-              <td>
-                <Link className="row-link" to={`/runs/${run.id}`}>
-                  <ArrowRight size={14} />
-                </Link>
-              </td>
-            </tr>
-          ))}
+          {runs.slice(0, compact ? 8 : 200).map((run) => {
+            const model = resolveRunModel(run, "candidate", models);
+            return (
+              <tr key={run.id}>
+                <td>
+                  <code>{shortId(run.id)}</code>
+                </td>
+                <td>
+                  <span className="table-model">
+                    <strong>{model.name ?? text("未知模型", "Unknown model")}</strong>
+                  </span>
+                </td>
+                <td>
+                  <StatusPill status={run.status} />
+                </td>
+                <td>
+                  <span className="table-primary">
+                    {stageLabel(run.stage, locale)}
+                  </span>
+                </td>
+                <td>{run.tool_calls}</td>
+                <td>
+                  <strong className={run.score != null ? "score-value" : ""}>
+                    {run.score == null ? "—" : Math.round(run.score)}
+                  </strong>
+                </td>
+                {!compact && (
+                  <td>{new Date(run.created_at).toLocaleString(locale)}</td>
+                )}
+                <td>
+                  <Link className="row-link" to={`/runs/${run.id}`}>
+                    <ArrowRight size={14} />
+                  </Link>
+                </td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+function RunModelBadge({
+  identity,
+  label,
+  unknown,
+}: {
+  identity: RunModelIdentity;
+  label: string;
+  unknown: string;
+}) {
+  return (
+    <div className="run-model-badge">
+      <Bot size={15} />
+      <span>
+        <small>{label}</small>
+        <strong>{identity.name ?? unknown}</strong>
+      </span>
     </div>
   );
 }

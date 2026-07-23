@@ -21,6 +21,10 @@ from app.scenario.incident import IncidentDirector
 from app.scenario.sdk import PreparedScenario, ScenarioRunResult
 
 
+class HardResourceBudgetExceeded(RuntimeError):
+    """Raised before a Provider retry would exceed the configured hard cap."""
+
+
 class AgentEngine:
     def __init__(
         self,
@@ -43,12 +47,15 @@ class AgentEngine:
         self.started = time.monotonic()
         self.input_tokens = 0
         self.output_tokens = 0
+        self.provider_requests = 0
         self.tool_calls = 0
         self.events: list[dict[str, Any]] = []
         self.final_rejections = 0
         self.completion_gaps: list[str] = []
         self.paused_seconds = 0.0
         self.soft_budget_warnings: set[str] = set()
+        self.hard_budget_reasons: list[str] = []
+        self.client.on_request = self._on_provider_request
 
     def run(self, prepared: PreparedScenario) -> ScenarioRunResult:
         if prepared is not self.prepared:
@@ -100,7 +107,16 @@ class AgentEngine:
                 },
             )
             provider_started = time.monotonic()
-            turn = self.client.complete(messages, tool_definitions)
+            try:
+                turn = self.client.complete(messages, tool_definitions)
+            except HardResourceBudgetExceeded:
+                self.hard_budget_reasons = ["provider_requests"]
+                self._emit_hard_budget_event(self.hard_budget_reasons)
+                final_response = (
+                    "Hard Provider-request budget reached before the current "
+                    "model turn could complete."
+                )
+                break
             provider_duration_ms = round((time.monotonic() - provider_started) * 1_000)
             self.input_tokens += turn.input_tokens
             self.output_tokens += turn.output_tokens
@@ -112,9 +128,19 @@ class AgentEngine:
                     "tool_calls": [call.model_dump(mode="json") for call in turn.tool_calls],
                     "input_tokens": turn.input_tokens,
                     "output_tokens": turn.output_tokens,
+                    "provider_requests_total": self.provider_requests,
                     "duration_ms": provider_duration_ms,
                 },
             )
+            hard_resources = self._hard_resource_reasons()
+            if hard_resources:
+                self.hard_budget_reasons = hard_resources
+                self._emit_hard_budget_event(hard_resources)
+                final_response = (
+                    "Hard resource budget reached before the model response "
+                    "could be accepted."
+                )
+                break
             messages.append(self._assistant_message(turn, native))
             if not self._wait_for_resume():
                 final_response = "Run cancelled."
@@ -199,18 +225,12 @@ class AgentEngine:
                 reached.append("tool_calls")
             if active_seconds >= hard_seconds:
                 reached.append("active_time")
-            self._event(
-                "run.hard_budget_exceeded",
-                {
-                    "reached": reached,
-                    "tool_calls": self.tool_calls,
-                    "active_seconds": round(active_seconds, 3),
-                    "hard_tool_calls": hard_calls,
-                    "hard_seconds": hard_seconds,
-                },
-            )
+            self.hard_budget_reasons = reached
+            self._emit_hard_budget_event(reached)
             final_response = "Hard scenario budget reached before a final response."
 
+        if not self.hard_budget_reasons:
+            self._soft_budget_warning()
         if not self.completion_gaps:
             self.completion_gaps = self._completion_gaps()
         completion_actions = sorted(completion_actions_from_events(self.events))
@@ -222,6 +242,8 @@ class AgentEngine:
             private_state={
                 "input_tokens": self.input_tokens,
                 "output_tokens": self.output_tokens,
+                "provider_requests": self.provider_requests,
+                "resource_ledger": self._resource_ledger(),
                 "repeated_reads": {path: count for path, count in self.read_counts.items() if count > 1},
                 "completion_requirements_met": not self.completion_gaps,
                 "completion_gaps": self.completion_gaps,
@@ -230,6 +252,7 @@ class AgentEngine:
                 "final_rejections": self.final_rejections,
                 "paused_seconds": self.paused_seconds,
                 "soft_budget_warnings": sorted(self.soft_budget_warnings),
+                "hard_budget_reasons": self.hard_budget_reasons,
                 "incident_audit": self.incident.audit() if self.incident else {},
             },
         )
@@ -427,6 +450,12 @@ class AgentEngine:
             elif call.name.startswith("incident_") or call.name in {
                 "observe_service",
                 "submit_incident_decision",
+                "process_list",
+                "service_status",
+                "journal_query",
+                "socket_snapshot",
+                "trace_process",
+                "profile_cpu",
             }:
                 if self.incident is None:
                     result = ToolResult(
@@ -613,6 +642,11 @@ class AgentEngine:
         return ok(call, "Next action updated.")
 
     def _event(self, kind: str, payload: dict[str, Any]) -> None:
+        payload = {
+            "agent_id": "candidate/root",
+            "agent_role": "primary",
+            **payload,
+        }
         event = {"kind": kind, **payload}
         self.events.append(event)
         with SessionLocal() as session:
@@ -691,6 +725,18 @@ class AgentEngine:
             and "active_time" not in self.soft_budget_warnings
         ):
             crossed.append("active_time")
+        if (
+            self.provider_requests >= budget.soft_provider_requests
+            and "provider_requests" not in self.soft_budget_warnings
+        ):
+            crossed.append("provider_requests")
+        total_tokens = self.input_tokens + self.output_tokens
+        if (
+            budget.soft_total_tokens is not None
+            and total_tokens >= budget.soft_total_tokens
+            and "total_tokens" not in self.soft_budget_warnings
+        ):
+            crossed.append("total_tokens")
         if not crossed:
             return None
 
@@ -705,6 +751,12 @@ class AgentEngine:
                 "soft_seconds": budget.soft_seconds,
                 "hard_tool_calls": budget.hard_tool_calls,
                 "hard_seconds": budget.hard_seconds,
+                "provider_requests": self.provider_requests,
+                "soft_provider_requests": budget.soft_provider_requests,
+                "hard_provider_requests": budget.hard_provider_requests,
+                "total_tokens": total_tokens,
+                "soft_total_tokens": budget.soft_total_tokens,
+                "hard_total_tokens": budget.hard_total_tokens,
             },
         )
         labels = []
@@ -716,6 +768,16 @@ class AgentEngine:
             labels.append(
                 f"{round(active_seconds)} active seconds (soft limit {budget.soft_seconds})"
             )
+        if "provider_requests" in crossed:
+            labels.append(
+                f"{self.provider_requests} Provider requests "
+                f"(soft limit {budget.soft_provider_requests})"
+            )
+        if "total_tokens" in crossed:
+            labels.append(
+                f"{total_tokens} total tokens "
+                f"(soft limit {budget.soft_total_tokens})"
+            )
         return (
             "Soft budget warning: "
             + " and ".join(labels)
@@ -723,6 +785,63 @@ class AgentEngine:
             "requirements, stop repeating low-value work, and converge on evidence-backed "
             "verification."
         )
+
+    def _on_provider_request(self, request: dict[str, Any]) -> None:
+        next_request = int(request["request_number"])
+        if next_request > self.prepared.metadata.budget.hard_provider_requests:
+            raise HardResourceBudgetExceeded
+        self.provider_requests = next_request
+        self._event(
+            "provider.request",
+            {
+                **request,
+                "provider_requests": self.provider_requests,
+            },
+        )
+
+    def _hard_resource_reasons(self) -> list[str]:
+        budget = self.prepared.metadata.budget
+        reasons: list[str] = []
+        total_tokens = self.input_tokens + self.output_tokens
+        if (
+            budget.hard_total_tokens is not None
+            and total_tokens >= budget.hard_total_tokens
+        ):
+            reasons.append("total_tokens")
+        return reasons
+
+    def _emit_hard_budget_event(self, reached: list[str]) -> None:
+        budget = self.prepared.metadata.budget
+        self._event(
+            "run.hard_budget_exceeded",
+            {
+                "reached": reached,
+                "tool_calls": self.tool_calls,
+                "active_seconds": round(self._active_elapsed(), 3),
+                "provider_requests": self.provider_requests,
+                "total_tokens": self.input_tokens + self.output_tokens,
+                "hard_tool_calls": budget.hard_tool_calls,
+                "hard_seconds": budget.hard_seconds,
+                "hard_provider_requests": budget.hard_provider_requests,
+                "hard_total_tokens": budget.hard_total_tokens,
+            },
+        )
+
+    def _resource_ledger(self) -> dict[str, Any]:
+        budget = self.prepared.metadata.budget
+        return {
+            "logical_model_turns": sum(
+                1 for event in self.events if event.get("kind") == "model.request"
+            ),
+            "provider_requests": self.provider_requests,
+            "tool_calls": self.tool_calls,
+            "input_tokens": self.input_tokens,
+            "output_tokens": self.output_tokens,
+            "total_tokens": self.input_tokens + self.output_tokens,
+            "budgets": budget.model_dump(mode="json"),
+            "soft_limits_crossed": sorted(self.soft_budget_warnings),
+            "hard_limits_crossed": self.hard_budget_reasons,
+        }
 
     @staticmethod
     def _assistant_message(turn: AssistantTurn, native: bool) -> dict[str, Any]:

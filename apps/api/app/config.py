@@ -14,6 +14,15 @@ def default_scenarios_root() -> Path:
     return Path("/scenarios")
 
 
+def default_suites_root() -> Path:
+    module_path = Path(__file__).resolve()
+    for parent in module_path.parents:
+        candidate = parent / "suites"
+        if candidate.is_dir():
+            return candidate
+    return Path("/suites")
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
@@ -38,13 +47,14 @@ class Settings(BaseSettings):
     sandbox_nano_cpus: int = 500_000_000
     sandbox_pids_limit: int = 256
     sandbox_tool_timeout: int = 30
-    sandbox_hard_timeout: int = 4_800
+    sandbox_hard_timeout: int = 3_600
     sandbox_max_output: int = 65_536
     artifact_root: str = "/var/lib/evil-repository/artifacts"
     scenarios_root: Path = Field(default_factory=default_scenarios_root)
+    suites_root: Path = Field(default_factory=default_suites_root)
 
-    default_soft_seconds: int = 2_400
-    default_hard_seconds: int = 4_800
+    default_soft_seconds: int = 1_800
+    default_hard_seconds: int = 3_600
     default_soft_tool_calls: int = 250
     default_hard_tool_calls: int = 650
     api_prefix: str = "/api/v1"

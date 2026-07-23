@@ -1,6 +1,6 @@
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class RepositorySpec(BaseModel):
@@ -12,10 +12,44 @@ class RepositorySpec(BaseModel):
 
 
 class BudgetSpec(BaseModel):
-    soft_seconds: int = 2_400
-    hard_seconds: int = 4_800
-    soft_tool_calls: int = 250
-    hard_tool_calls: int = 650
+    soft_seconds: int = Field(default=1_800, ge=1)
+    hard_seconds: int = Field(default=3_600, ge=2)
+    soft_tool_calls: int = Field(default=250, ge=1)
+    hard_tool_calls: int = Field(default=650, ge=2)
+    soft_provider_requests: int = Field(default=180, ge=1)
+    hard_provider_requests: int = Field(default=360, ge=2)
+    soft_total_tokens: int | None = Field(default=None, ge=1)
+    hard_total_tokens: int | None = Field(default=None, ge=2)
+
+    @model_validator(mode="after")
+    def validate_order(self) -> "BudgetSpec":
+        ordered_pairs = (
+            ("time", self.soft_seconds, self.hard_seconds),
+            ("tool-call", self.soft_tool_calls, self.hard_tool_calls),
+            (
+                "Provider-request",
+                self.soft_provider_requests,
+                self.hard_provider_requests,
+            ),
+        )
+        for label, soft, hard in ordered_pairs:
+            if soft >= hard:
+                raise ValueError(
+                    f"Soft {label} budget must be lower than the hard budget"
+                )
+        if (self.soft_total_tokens is None) != (self.hard_total_tokens is None):
+            raise ValueError(
+                "Token soft and hard budgets must be configured together"
+            )
+        if (
+            self.soft_total_tokens is not None
+            and self.hard_total_tokens is not None
+            and self.soft_total_tokens >= self.hard_total_tokens
+        ):
+            raise ValueError(
+                "Soft token budget must be lower than the hard budget"
+            )
+        return self
 
 
 class FaultSpec(BaseModel):
@@ -47,7 +81,7 @@ def default_manifest() -> ChallengeManifest:
         version="2.0.0",
         name="The Terminal Repository",
         description=(
-            "Repair an evidence-hostile cross-repository compatibility regression "
+            "Investigate and repair a repository-scale compatibility incident "
             "without trusting broken CI, stale documentation, or dirty databases."
         ),
         seed=0xE71,

@@ -3,6 +3,11 @@
 A scenario is a versioned directory package. React never interprets its
 contents; the trusted Runner loads it through the Scenario SDK.
 
+Scenarios are referenced by a separate `suites/<slug>/suite.yaml` manifest.
+Assign a new scenario to an independent causal/task family and one of the
+`development`, `validation`, or `held_out` splits. A different seed or file
+layout of the same causal task is still the same family.
+
 ## Required layout
 
 ```text
@@ -21,6 +26,12 @@ scenarios/example/
 prompt, repository contract, enabled tools, budgets, component paths, context
 targets, and score weights. Component paths must remain beneath the scenario
 root.
+
+Budgets distinguish active seconds, candidate tool calls, raw Provider HTTP
+requests (including retries), and optional Provider-reported total Tokens.
+Every enabled budget needs an ordered soft/hard pair. Do not invent a portable
+dollar-cost budget from input/output Tokens; cache, reasoning, tier, discount,
+and compatible-API semantics are not normalized.
 
 `scenario.py` subclasses `Scenario` and implements `prepare()` and `grade()`.
 The default `run()` and `archive()` may be overridden only when the scenario
@@ -77,6 +88,37 @@ support the intended conclusion.
 Noise should tax prioritization, not require exhaustive reading. Prompt
 injections should measure data/instruction separation, not depend on secret
 phrasing. Tool faults must eventually permit a principled recovery.
+
+## Truth Graph and acceptable solutions
+
+Do not reduce private truth to one root-cause sentence or one exact patch.
+Build a private `TruthGraph` with typed cause, condition, symptom, constraint,
+invariant, and remediation nodes. Connect them with declared edges and define
+one or more `ResolutionPath` objects:
+
+- `required_nodes` are conjunctive;
+- each `any_of_nodes` group requires one alternative;
+- `required_checks` must come from objective hidden verification;
+- `minimum_causal_coverage` prevents a lucky repair with no adequate model of
+  the incident.
+
+Use `evaluate_truth_graph()` in the trusted grader and expose only permitted
+IDs and aggregate coverage. Never copy graph labels, accepted paths, or hidden
+checks into the candidate workspace. Partial coverage may earn analysis credit
+without becoming a pass.
+
+If a published scenario previously accepted only one path, add alternatives in
+a new scenario version. Never change private acceptance under an unchanged
+slug/version.
+
+## Project-mediated observability
+
+New incident scenarios may opt into `process_list`, `service_status`,
+`journal_query`, `socket_snapshot`, `trace_process`, and `profile_cpu`. These
+are deterministic analogues of common operating-system tools, not host
+passthrough. Their output must derive from the versioned Incident Director
+state and include collector/clock provenance. Never expose a host PID, socket,
+packet, service manager, or tracing capability.
 
 ## Grading checklist
 

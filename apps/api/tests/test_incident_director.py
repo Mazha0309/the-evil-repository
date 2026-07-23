@@ -303,3 +303,39 @@ def test_verification_requires_order_and_logical_soak_intervals() -> None:
 
     assert json.loads(soak.output)["passed"] is True
     assert director.completion_gaps(requirements) == []
+
+
+def test_project_mediated_observability_is_deterministic_and_host_safe() -> None:
+    first = IncidentDirector(terminal_incident_plan(3_697))
+    second = IncidentDirector(terminal_incident_plan(3_697))
+    probe = call(
+        "trace_process",
+        service="relay-attestation",
+        operation="next-request",
+        window="current",
+    )
+
+    first_result = first.execute(probe)
+    second_result = second.execute(probe)
+    payload = json.loads(first_result.output)
+
+    assert first_result.output == second_result.output
+    assert payload["probe"] == "trace_process"
+    assert payload["provenance"]["host_access"] is False
+    assert payload["result"]["trace_scope"] == "simulated service namespace"
+    assert first.audit()["unique_observations"] == 1
+
+
+def test_observability_tool_rejects_unknown_service() -> None:
+    director = IncidentDirector(terminal_incident_plan(3_697))
+    result = director.execute(
+        call(
+            "journal_query",
+            service="host-docker",
+            query="password",
+            window="current",
+        )
+    )
+
+    assert result.status == "error"
+    assert "Unknown service" in result.output

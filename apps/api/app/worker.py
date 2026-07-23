@@ -41,6 +41,7 @@ from app.runner.protocol import ToolResult
 from app.runner.providers import ModelClient
 from app.runner.sandbox import DockerSandbox
 from app.scenario import ScenarioRunResult, load_scenario
+from app.scenario.agent_graph import derive_agent_graph
 from app.seed import seed_canonical_task
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -302,6 +303,24 @@ class Worker:
                                 "hard_seconds": int(run_config["hard_seconds"]),
                                 "soft_tool_calls": int(run_config["soft_tool_calls"]),
                                 "hard_tool_calls": int(run_config["hard_tool_calls"]),
+                                "soft_provider_requests": int(
+                                    run_config.get(
+                                        "soft_provider_requests",
+                                        prepared.metadata.budget.soft_provider_requests,
+                                    )
+                                ),
+                                "hard_provider_requests": int(
+                                    run_config.get(
+                                        "hard_provider_requests",
+                                        prepared.metadata.budget.hard_provider_requests,
+                                    )
+                                ),
+                                "soft_total_tokens": run_config.get(
+                                    "soft_total_tokens"
+                                ),
+                                "hard_total_tokens": run_config.get(
+                                    "hard_total_tokens"
+                                ),
                             }
                         )
                     }
@@ -468,6 +487,18 @@ class Worker:
                     kind="judge.scorecard.started",
                 )
                 scorecard = scenario.grade(prepared, result)
+                scorecard["resources"] = dict(
+                    result.private_state.get("resource_ledger", {})
+                )
+                agent_graph = derive_agent_graph(result.events).model_dump(
+                    mode="json"
+                )
+                scorecard["agent_graph"] = {
+                    "schema_version": agent_graph["schema_version"],
+                    "execution_mode": agent_graph["execution_mode"],
+                    "agent_count": len(agent_graph["nodes"]),
+                    "edge_count": len(agent_graph["edges"]),
+                }
                 if self.is_cancelled(run_id):
                     return
                 semantic_review, semantic_artifacts = self.semantic_judge_review(
@@ -492,6 +523,18 @@ class Worker:
                         ),
                         "incident-audit.json": json.dumps(
                             result.private_state.get("incident_audit", {}),
+                            ensure_ascii=False,
+                            indent=2,
+                            sort_keys=True,
+                        ),
+                        "resource-ledger.json": json.dumps(
+                            result.private_state.get("resource_ledger", {}),
+                            ensure_ascii=False,
+                            indent=2,
+                            sort_keys=True,
+                        ),
+                        "agent-graph.json": json.dumps(
+                            agent_graph,
                             ensure_ascii=False,
                             indent=2,
                             sort_keys=True,
@@ -711,7 +754,18 @@ class Worker:
                 session,
                 run_id,
                 "provider.retry",
-                {"phase": phase, **payload},
+                {
+                    **(
+                        {
+                            "agent_id": "candidate/root",
+                            "agent_role": "primary",
+                        }
+                        if phase == "candidate"
+                        else {}
+                    ),
+                    "phase": phase,
+                    **payload,
+                },
             )
             session.commit()
 

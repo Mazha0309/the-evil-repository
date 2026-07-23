@@ -8,8 +8,9 @@
 
 ## 1. Product position
 
-The Evil Repository is an open-source AI Agent CTF and incident-response
-benchmark. It is intentionally broader than a patch-only benchmark:
+The Evil Repository is an open-source benchmark for repository-scale software
+incident response by AI Agents. It is intentionally broader than a patch-only
+benchmark:
 
 - software archaeology across multiple repositories;
 - evidence quality and source-conflict resolution;
@@ -19,12 +20,20 @@ benchmark. It is intentionally broader than a patch-only benchmark:
 - long-horizon context and investigation management;
 - minimal, maintainable software changes.
 
-The first canonical scenario is a hostile CI regression involving two Git
+The first canonical scenario is a production-style CI regression involving two Git
 repositories, a stale SQLite cache, a dirty PostgreSQL database, a synthetic
 offline internet, and a deliberately broken test oracle.
 
 The benchmark must remain difficult without becoming arbitrary. Every
 contradiction and failure belongs to a versioned, replayable truth model.
+“Evil” is the project name, not the scientific claim: releases are described
+in terms of realism, production constraints, incident response, evidence
+quality, and repository scale rather than how unpleasant they appear.
+
+The current platform has one public development scenario in one active family.
+It is an engineering test bed, not yet a statistically valid universal
+leaderboard. Suite readiness is an explicit machine-readable state rather than
+a marketing judgment.
 
 ## 2. Goals and non-goals
 
@@ -37,14 +46,16 @@ contradiction and failure belongs to a versioned, replayable truth model.
   the same tool contract.
 - Treat scenarios as independently versioned packages rather than hard-coded
   API behavior.
+- Build a multi-family Suite with explicit development, validation, and
+  held-out splits before claiming broad leaderboard validity.
 - Separate scenario authoring from execution so neither React nor provider
   adapters need scenario-specific branches.
 - Produce useful visual explanations of hypothesis evolution and evidence use.
 - Distinguish leaderboard scoring from non-judgmental behavioral analysis.
 - Make an Agent's investigation strategy, recurring errors, and recovery
   patterns comparable without collecting private reasoning.
-- Calibrate the canonical scenario to remain discriminating throughout an
-  80-minute hard envelope for a strong software-engineering Agent, without
+- Calibrate the canonical scenario to remain discriminating throughout a
+  60-minute hard envelope for a strong software-engineering Agent, without
   artificial waiting.
 - Remain local-first and safe to operate on a developer workstation.
 
@@ -57,6 +68,11 @@ contradiction and failure belongs to a versioned, replayable truth model.
 - Making hidden failure injection random between candidates.
 - Reproducing or redistributing copyrighted websites.
 - Claiming that a shared-kernel container is an absolute security boundary.
+- Treating one public scenario or many seeded copies of one causal structure as
+  broad model capability coverage.
+- Publishing a normalized dollar-cost comparison when Provider cache,
+  reasoning-token, batch/tier, discount, and usage semantics are not
+  comparable.
 
 ## 3. System architecture
 
@@ -210,6 +226,30 @@ canonical tool/message protocol, while React depends only on normalized API
 entities. A scenario can therefore evolve or be replaced without teaching the
 Web UI its directory layout.
 
+### Suite registry
+
+Scenario packages are grouped by a separate versioned Suite manifest:
+
+```text
+suites/<suite-slug>/suite.yaml
+  ├── families[]               independent causal/task families
+  ├── scenarios[]              immutable slug/version references
+  ├── split                    development | validation | held_out
+  └── leaderboard policy      minimum families, held-out families, scenarios
+```
+
+A Suite loader validates every family reference and verifies that each
+scenario slug/version exists. Seeded instances of one scenario remain one
+family; they improve contamination resistance but do not create task
+diversity. Planned families are not counted as active, and a missing private
+held-out set cannot be represented as complete.
+
+The bundled Production Incident Engineering Suite starts at version 0.1.0
+with one `development` reference to Terminal Repository 3.0.3. Its readiness
+policy requires five active families, three held-out families, and 20 scenario
+references. Consequently it reports `leaderboard_eligible: false`. The API and
+React render these counts directly.
+
 Scenarios are directory packages with a host-side trusted entrypoint:
 
 ```text
@@ -300,6 +340,37 @@ load() → prepare() → run() → grade() → archive()
 - never archives provider keys or control-plane secrets.
 
 React consumes normalized API data and does not inspect scenario internals.
+
+### Private Truth Graph and alternative resolutions
+
+Private truth is a graph, not a single root-cause string:
+
+```text
+TruthNode: cause | condition | symptom | constraint | invariant | remediation
+TruthEdge: causes | enables | explains | constrains | contradicts |
+           mitigates | verifies
+ResolutionPath:
+  required_nodes[] + any_of_nodes[][] + required_hidden_checks[]
+```
+
+A scenario may publish several acceptable engineering paths. For example, a
+minimal forward fix and a bounded rollback can both pass if their own causal
+nodes and hidden safety/replay checks are satisfied. The evaluator returns
+whether any complete path passed, weighted causal coverage, best-path
+coverage, partial credit, and the IDs of missing nodes, alternative groups,
+and checks.
+
+Partial coverage is useful analysis, not an automatic pass. Graph labels,
+accepted paths, and hidden checks remain inside trusted scenario/grader state;
+public scorecards expose only permitted IDs and aggregates. Every node and edge
+must reference a declared ID, path IDs must be unique, and an empty alternative
+group is invalid.
+
+Terminal Repository 3.0.3 retains the 3.0.2 truth and generated incident
+structure while versioning a recalibrated execution envelope. The generalized
+multi-path evaluator is a platform contract for new scenario versions and
+families; it is not used to alter the canonical answer behind an unchanged
+version number.
 
 ### Completion gate
 
@@ -424,6 +495,43 @@ cross-repository corroboration. Ten weak copies of one false claim still count
 as one source family; source diversity is computed from audited provenance,
 not from the number of evidence records.
 
+### 5.1 Agent execution graph
+
+Every candidate-originated event carries a stable `agent_id` and role. A
+derived Agent Graph aggregates model turns, tool calls, input/output Tokens,
+first/last event sequence, status, and parent/child relationships without
+collecting private reasoning.
+
+The built-in executor is currently single-Agent and therefore produces one
+`candidate/root` node. The schema also accepts `agent.spawned`,
+`agent.delegated`, `agent.completed`, `agent.failed`, and `agent.cancelled`
+events. External orchestrators may use arbitrary role names; the platform does
+not hard-code Leader/Researcher/Reviewer as a required topology. Spawn and
+delegation are different edges so ownership and work assignment remain
+auditable.
+
+Protocol support is not presented as a built-in multi-Agent scheduler.
+Candidate execution, semantic judging, and hidden grading are separate planes;
+the optional judge is not a child candidate Agent.
+
+### 5.2 Resource ledger and budgets
+
+The resource ledger separates logical model turns, raw Provider HTTP requests
+including retries, Provider-reported input/output Tokens, candidate tool calls,
+and active execution time excluding cooperative pauses.
+
+Time, tool calls, and Provider requests always have ordered soft/hard limits.
+Token soft/hard limits are optional because some local and compatible
+Providers do not report usage reliably. Crossing a soft limit emits one
+audited warning and allows the run to continue; crossing a hard limit stops
+before further candidate work and grades the partial result.
+
+EvilBench does not derive a normalized dollar cost. Cache reads/writes, hidden
+reasoning Tokens, batch/service tiers, negotiated discounts, and compatible
+API semantics can materially change billing without appearing in the common
+usage fields. Raw usage remains exportable for an operator who has an
+authoritative invoice, but it is not mixed into the 1,200-point score.
+
 ## 6. Offline internet
 
 The Browser is a local, versioned internet mirror, not a keyword search over a
@@ -476,6 +584,30 @@ reasonable retry or an alternative tool, not waiting for a random event.
 Faults are never truly random. A scenario seed may select a variant at
 preparation time, but that selected script is stored in the run archive and
 replayed exactly.
+
+### Project-mediated observability protocol
+
+New scenarios may enable deterministic equivalents of common incident tools:
+
+| EvilBench tool | Familiar analogue | Boundary |
+|---|---|---|
+| `process_list` | `ps` | simulated service namespace only |
+| `service_status` | `systemctl status` | replay manifest only |
+| `journal_query` | `journalctl` | versioned logs with provenance |
+| `socket_snapshot` | `lsof` / packet metadata | no live host sockets or packets |
+| `trace_process` | `strace` | simulated bounded operation |
+| `profile_cpu` | `perf` | deterministic replay samples |
+
+All outputs derive from the Incident Director seed, logical tick, service
+state, collector, and clock domain. They may contain noisy high-volume errors,
+restored monitors, or apparently healthy parent services while a child fails,
+but every conflict is reproducible. An observation records its probe and
+provenance like any other evidence.
+
+These are project tools, not passthrough commands. A candidate can never attach
+to a real process, inspect the host, or capture live traffic. Terminal
+Repository 3.0.3 does not enable this post-release tool pack; a new scenario
+version must opt in through metadata.
 
 ## 8. Database forensics
 
@@ -549,7 +681,7 @@ cannot replace the completion gate or any hidden stage.
 
 ## 11. Canonical challenge
 
-Scenario 3.0.2, **The Terminal Repository / 终焉仓库**, is not primarily a
+Scenario 3.0.3, **The Terminal Repository / 终焉仓库**, is not primarily a
 large code puzzle. It is a controlled-uncertainty incident simulator whose
 repository maze is one evidence substrate.
 
@@ -581,6 +713,10 @@ The trusted Runner owns an `IncidentDirector`. Every candidate tool attempt
 advances one logical replay tick; `sleep` and wall-clock waiting do not. Given
 the same scenario seed and action sequence, observations, intermittent pulses,
 SLO, error-budget burn and outcomes are identical.
+
+The 180-tick replay horizon is a logical state-machine horizon, not a
+180-minute wall-clock requirement. The completion gate requires progress to
+tick 140 while the independent real execution budget is 30/60 minutes.
 
 The public incident queue contains eight claims:
 
@@ -648,10 +784,10 @@ become an uncontrolled evaluation variable.
 
 The full canonical package targets approximately 5,000 files, 2,000 commits,
 and 100 MiB of locally generated material. Its default soft/hard budgets are
-40/80 minutes and 250/650 tool calls. Either soft threshold emits one
-deterministic warning and overrun telemetry; either hard threshold ends
-candidate execution.
-Wall time is not a score input. Each candidate
+30/60 minutes, 250/650 tool calls, and 180/360 raw Provider requests. Optional
+Token limits may be configured as a matched soft/hard pair. Any soft threshold
+emits one deterministic warning and overrun telemetry; any hard threshold ends
+candidate execution. Wall time is not a score input. Each candidate
 defaults to 0.5 CPU, 256 MiB RAM, 256 PIDs and a 1.5 GiB ephemeral workspace,
 so unbounded installs, indexing and brute-force parallelism are not viable
 strategies. Scaled smoke fixtures exist for development only and must never be
@@ -660,7 +796,7 @@ reported as leaderboard runs.
 Before a scenario release, maintainers run a versioned reference procedure
 with a minimal golden patch and at least one strong software-engineering Agent.
 The canonical target is a strong-Agent reference solve that uses a substantial
-portion of, but completes inside, the 80-minute hard envelope. Calibration
+portion of, but completes inside, the 60-minute hard envelope. Calibration
 reports record elapsed/active time, tool calls, token usage, evidence coverage,
 shortcut attempts, and the exact platform, scenario, provider, and model
 versions.
@@ -681,7 +817,7 @@ complexity:
 
 | Source | Mechanism adopted here |
 |---|---|
-| [METR Time Horizon 1.1](https://metr.org/time-horizons/) | Human-expert task duration and Agent wall time are separate measurements. The 80-minute strong-Agent envelope remains provisional until repeated human and Agent calibration; wall time is never rewarded. |
+| [METR Time Horizon 1.1](https://metr.org/time-horizons/) | Human-expert task duration and Agent wall time are separate measurements. The 60-minute strong-Agent envelope remains provisional until repeated human and Agent calibration; wall time is never rewarded. |
 | [Terminal-Bench 2.1](https://www.tbench.ai/news/terminal-bench-2-1) | Continuous task validation checks the broken baseline, near-miss failure, oracle repair, resource envelope, database initialization and offline isolation. Scenario smoke runs in CI because difficult-but-broken is not a valid benchmark. |
 | [OSWorld 2.0](https://arxiv.org/abs/2606.29537) | Dynamic information, implicit-state recovery, cross-source reasoning and separate safety telemetry become four logical incident phases, streaming alerts and an auditable risk/data ledger. |
 | [ITBench](https://research.ibm.com/publications/itbench-evaluating-ai-agents-across-diverse-real-world-it-automation-tasks) | Incident success is judged as correct, safe and fast: SLO, error budget, data integrity, action risk and diagnosis are independent signals. |
@@ -770,7 +906,10 @@ incident; it is not treated as an ordinary candidate score.
 ### Scorecard boundary
 
 The Scorecard answers: **how well did the Agent complete the task?** It remains
-the stable, scenario-versioned basis for leaderboards and pass/fail comparison.
+the stable, scenario-versioned basis for pass/fail comparison and, once a
+Suite meets its declared readiness policy, leaderboard aggregation. A score on
+one public development scenario must be labeled as that scenario's result,
+not as a general model rank.
 
 The Scorecard must not absorb every interesting behavioral observation. Doing
 so would hide materially different investigation strategies behind similar
@@ -943,7 +1082,7 @@ label them as inferred.
 {
   "schema_version": 1,
   "analyzer_version": "behavior-v1",
-  "scenario": "terminal-repository@3.0.2",
+  "scenario": "terminal-repository@3.0.3",
   "traits": [],
   "errors": [],
   "episodes": [],
@@ -1058,10 +1197,12 @@ Primary views:
 
 - login, registration, first-run administrator setup, and account sessions;
 - administrator user, role, registration-policy, and server-monitoring views;
+- Suite readiness with active/held-out family and scenario-reference counts;
 - scenario catalogue and version details;
 - editable model/provider profiles with server-side encrypted credentials,
   structured protocol-aware inference controls, and bounded advanced JSON;
-- run builder and soft/hard budget controls;
+- run builder with time, tool, raw Provider-request, and optional Token
+  soft/hard budget controls;
 - live run matrix and container/resource state;
 - a default live Agent monitor that reports whether the Runner is waiting on
   the Provider, executing a tool, analyzing a result, preparing a Scenario, or
@@ -1083,6 +1224,8 @@ Primary views:
   conversation and temporary workspace cleanup is not resumable;
 - Hypothesis Graph and hypothesis evolution;
 - Evidence Graph and derived Truth Tree;
+- Agent execution graph with explicit single/multi-Agent mode, role,
+  delegation, and per-Agent resource aggregates;
 - Behavior Profile bars/radar with raw signals, applicability, confidence, and
   cohort percentile;
 - Error Atlas counts, rates, severity, and linked event groups;
@@ -1091,7 +1234,7 @@ Primary views:
 - tool, Browser, database, security, and fault audit;
 - patch and artifact diff;
 - normalized score radar, explicit 0/300/600/900/1200 total scale, deduction
-  ledger, model/task heatmap, cost/latency/score scatter, and run trends;
+  ledger, model/task heatmap, resource/latency/score comparisons, and run trends;
 - JSON/CSV/archive export.
 
 The console ships with Simplified Chinese and English interfaces. Language
@@ -1129,6 +1272,10 @@ Code, design documents, and original scenario content are licensed
 AGPL-3.0-only. New scenarios must include:
 
 - a deterministic truth model;
+- a private Truth Graph with documented acceptable resolution paths and
+  objective checks;
+- an independent Suite family assignment and split; a seed variant alone may
+  not create a new family;
 - an intended non-brute-force solve path;
 - a completion contract whose requirements map to observable evidence,
   actions, and artifacts;
@@ -1154,6 +1301,8 @@ Platform and scenario versions are deliberately independent:
 
 - a platform release changes the control plane, Runner, UI, security model, or
   shared SDK;
+- a Suite release changes family membership, split assignment, weighting, or
+  readiness policy without rewriting referenced scenario packages;
 - a scenario release changes its world, truth model, faults, grading, expected
   solve path, completion contract, or calibrated difficulty;
 - an analyzer version changes behavior extraction or normalization.
