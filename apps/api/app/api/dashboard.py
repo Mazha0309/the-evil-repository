@@ -65,7 +65,14 @@ def dashboard_summary(
         heartbeat_at = heartbeat_at.replace(tzinfo=UTC)
     runner_alive = bool(heartbeat_at and heartbeat_at >= datetime.now(UTC) - timedelta(seconds=15))
     return DashboardSummary(
-        tasks=session.scalar(select(func.count(TaskDefinition.id))) or 0,
+        tasks=(
+            session.scalar(
+                select(func.count(TaskDefinition.id)).where(
+                    TaskDefinition.enabled.is_(True)
+                )
+            )
+            or 0
+        ),
         models=session.scalar(select(func.count(ModelProfile.id)).where(*model_scope)) or 0,
         total_runs=total_runs,
         active_runs=active_runs,

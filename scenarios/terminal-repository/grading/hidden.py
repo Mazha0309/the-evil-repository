@@ -16,12 +16,20 @@ def grade(prepared: PreparedScenario, result: ScenarioRunResult) -> dict[str, An
         events=result.events,
         elapsed_seconds=result.elapsed_seconds,
         tool_calls=result.tool_calls,
+        completion_requirements_met=bool(
+            result.private_state.get("completion_requirements_met", False)
+        ),
+        final_response=result.final_response,
+        truth=dict(prepared.private_state.get("truth", {})),
+        repeated_reads=dict(result.private_state.get("repeated_reads", {})),
+        substantive_tool_calls=int(result.private_state.get("substantive_tool_calls", 0)),
     )
     scorecard = score(evidence)
     scorecard["pipeline"] = {
         "static_check": result.private_state.get("static_check", {}),
         "regression": result.private_state.get("regression", {}),
         "mutation": result.private_state.get("mutation", {}),
+        "runtime_contract": result.private_state.get("runtime_contract", {}),
         "golden_replay": result.private_state.get("golden_replay", {}),
         "resource_check": result.private_state.get("resource_check", {}),
         "security_check": result.private_state.get("security_check", {}),

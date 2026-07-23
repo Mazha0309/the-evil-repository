@@ -1,3 +1,5 @@
+import json
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +28,9 @@ class TerminalRepositoryScenario(Scenario):
                 int(self.metadata.context_pressure.target_mirror_bytes * scale),
             ),
         )
+        truth_path = workspace / ".challenge-truth.json"
+        truth = json.loads(truth_path.read_text(encoding="utf-8"))
+        truth_path.unlink()
 
         for injection in sorted((self.root / "injections").rglob("*")):
             if not injection.is_file():
@@ -52,7 +57,12 @@ class TerminalRepositoryScenario(Scenario):
         seed_path.write_text(public_sql, encoding="utf-8")
 
         browser_index = private / "browser-index.sqlite"
-        OfflineBrowser.build(workspace / "mirror", browser_index)
+        browser = OfflineBrowser.build(workspace / "mirror", browser_index)
+        truth["browser_refs"] = [
+            browser.ref_for_url(f"https://offline.invalid/{path}")
+            for path in truth["browser_paths"]
+        ]
+        shutil.rmtree(workspace / "mirror")
         return PreparedScenario(
             scenario_root=self.root,
             workspace=workspace,
@@ -63,6 +73,7 @@ class TerminalRepositoryScenario(Scenario):
                 "fault_scripts": [
                     str(self.component_path(path)) for path in self.metadata.components.failures
                 ],
+                "truth": truth,
             },
         )
 

@@ -88,6 +88,15 @@ class OfflineBrowser:
         connection.close()
         return BrowserDocument(**dict(row)) if row else None
 
+    def ref_for_url(self, url: str) -> str | None:
+        connection = sqlite3.connect(self.index)
+        row = connection.execute(
+            "SELECT ref_id FROM documents WHERE url = ?",
+            (url,),
+        ).fetchone()
+        connection.close()
+        return str(row[0]) if row else None
+
     def find(self, ref_id: str, pattern: str) -> list[dict[str, str | int]]:
         document = self.open(ref_id)
         if not document:

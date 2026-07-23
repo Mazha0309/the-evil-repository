@@ -152,6 +152,13 @@ export interface Run {
     maximum?: number;
     dimensions?: Record<string, ScoreMetric>;
     caps?: Array<{ reason: string; max: number }>;
+    behavior_profile?: Record<string, number>;
+    error_profile?: Record<string, number>;
+    completion?: {
+      met: boolean;
+      tool_calls: number;
+      substantive_tool_calls?: number;
+    };
   };
   config: Record<string, unknown>;
   tool_calls: number;

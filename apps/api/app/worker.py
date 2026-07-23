@@ -135,6 +135,7 @@ class Worker:
                     raise RuntimeError("Run references missing task/model")
                 scenario_root = settings.scenarios_root / task.slug
                 encrypted_key = profile.encrypted_api_key
+                run_config = dict(run.config)
                 append_event(
                     session,
                     run_id,
@@ -144,8 +145,25 @@ class Worker:
                 session.commit()
 
             scenario = load_scenario(scenario_root)
+            if scenario.metadata.version != task.version:
+                raise RuntimeError(
+                    f"Scenario package version {scenario.metadata.version} does not match "
+                    f"queued task version {task.version}"
+                )
             with tempfile.TemporaryDirectory(prefix=f"evil-{run_id}-") as temporary:
                 prepared = scenario.prepare(Path(temporary), scale=1.0)
+                prepared.metadata = prepared.metadata.model_copy(
+                    update={
+                        "budget": prepared.metadata.budget.model_copy(
+                            update={
+                                "soft_seconds": int(run_config["soft_seconds"]),
+                                "hard_seconds": int(run_config["hard_seconds"]),
+                                "soft_tool_calls": int(run_config["soft_tool_calls"]),
+                                "hard_tool_calls": int(run_config["hard_tool_calls"]),
+                            }
+                        )
+                    }
+                )
                 with SessionLocal() as session:
                     run = session.get(BenchmarkRun, run_id)
                     assert run is not None
@@ -178,11 +196,18 @@ class Worker:
                     faults=faults,
                 )
                 result = scenario.run(prepared, engine.run)
+                truth = dict(prepared.private_state.get("truth", {}))
+                dead_letter_baseline = str(truth["dead_letter_baseline"])
+                palimpsest_baseline = str(truth["palimpsest_baseline"])
                 result.artifacts.update(
                     {
-                        "dead-letter.diff": sandbox.git_diff("dead-letter"),
+                        "dead-letter.diff": sandbox.git_diff(
+                            "dead-letter", dead_letter_baseline
+                        ),
                         "dead-letter.status": sandbox.git_status("dead-letter"),
-                        "palimpsest.diff": sandbox.git_diff("palimpsest"),
+                        "palimpsest.diff": sandbox.git_diff(
+                            "palimpsest", palimpsest_baseline
+                        ),
                         "palimpsest.status": sandbox.git_status("palimpsest"),
                         "INVESTIGATION.md": (
                             sandbox.collect_text("INVESTIGATION.md")
@@ -190,9 +215,13 @@ class Worker:
                         ),
                     }
                 )
-                static = sandbox.static_check()
+                static = sandbox.static_check(
+                    dead_letter_baseline,
+                    palimpsest_baseline,
+                )
                 regression = sandbox.hidden_regression()
                 mutation = sandbox.hidden_mutation()
+                runtime_contract = sandbox.hidden_runtime_contract()
                 golden = sandbox.hidden_golden_replay(Path(prepared.private_state["hidden_database_sql"]))
                 stats = sandbox.stats()
                 result.private_state.update(
@@ -201,11 +230,13 @@ class Worker:
                             static.status == "ok"
                             and regression.status == "ok"
                             and mutation.status == "ok"
+                            and runtime_contract.status == "ok"
                             and golden.status == "ok"
                         ),
                         "static_check": static.model_dump(mode="json"),
                         "regression": regression.model_dump(mode="json"),
                         "mutation": mutation.model_dump(mode="json"),
+                        "runtime_contract": runtime_contract.model_dump(mode="json"),
                         "golden_replay": golden.model_dump(mode="json"),
                         "resource_check": stats,
                         "security_check": security_summary(result.events),

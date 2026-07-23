@@ -6,12 +6,12 @@ import uuid
 from collections import Counter
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.database import SessionLocal
 from app.events import append_event
 from app.investigation import link_evidence, record_evidence, record_hypothesis
-from app.models import BenchmarkRun, Hypothesis
+from app.models import BenchmarkRun, Evidence, Hypothesis, HypothesisRevision, HypothesisStatus
 from app.runner.faults import FaultController
 from app.runner.protocol import TOOL_DEFINITIONS, AssistantTurn, ToolCall, ToolResult
 from app.runner.providers import ModelClient, tool_message
@@ -42,6 +42,8 @@ class AgentEngine:
         self.output_tokens = 0
         self.tool_calls = 0
         self.events: list[dict[str, Any]] = []
+        self.final_rejections = 0
+        self.completion_gaps: list[str] = []
 
     def run(self, prepared: PreparedScenario) -> ScenarioRunResult:
         if prepared is not self.prepared:
@@ -61,7 +63,10 @@ class AgentEngine:
                     "Use the available tools, make only evidence-backed changes, and maintain "
                     "concise hypotheses and evidence with the investigation tools. Do not "
                     "invent tool results. Finish with a short final status after writing the "
-                    "required repository artifacts."
+                    "required repository artifacts. A final answer is accepted only after "
+                    "the Scenario completion contract below is satisfied; tool-call count "
+                    "alone never proves completion.\n\n"
+                    f"Scenario completion contract:\n{self._completion_contract()}"
                     f"{fallback}"
                 ),
             },
@@ -89,7 +94,34 @@ class AgentEngine:
             )
             messages.append(self._assistant_message(turn, native))
             if not turn.tool_calls:
+                self.completion_gaps = self._completion_gaps()
+                if self.completion_gaps and self.final_rejections < 8:
+                    self.final_rejections += 1
+                    self._event(
+                        "run.final_rejected",
+                        {
+                            "attempt": self.final_rejections,
+                            "gaps": self.completion_gaps,
+                        },
+                    )
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                "Final answer rejected by the deterministic Scenario completion "
+                                "gate. Continue investigating; do not merely repeat the final "
+                                "answer or create busywork. Outstanding requirements:\n- "
+                                + "\n- ".join(self.completion_gaps)
+                            ),
+                        }
+                    )
+                    continue
                 final_response = turn.content
+                if self.completion_gaps:
+                    final_response = (
+                        "Scenario completion contract was not satisfied after repeated early "
+                        f"final attempts. Outstanding: {'; '.join(self.completion_gaps)}"
+                    )
                 break
             for call in turn.tool_calls:
                 if self.tool_calls >= hard_calls:
@@ -116,6 +148,9 @@ class AgentEngine:
         else:
             final_response = "Hard scenario budget reached before a final response."
 
+        if not self.completion_gaps:
+            self.completion_gaps = self._completion_gaps()
+        completion_actions = sorted(completion_actions_from_events(self.events))
         return ScenarioRunResult(
             final_response=final_response,
             elapsed_seconds=time.monotonic() - self.started,
@@ -125,8 +160,90 @@ class AgentEngine:
                 "input_tokens": self.input_tokens,
                 "output_tokens": self.output_tokens,
                 "repeated_reads": {path: count for path, count in self.read_counts.items() if count > 1},
+                "completion_requirements_met": not self.completion_gaps,
+                "completion_gaps": self.completion_gaps,
+                "completion_actions": completion_actions,
+                "substantive_tool_calls": substantive_tool_call_count(self.events),
+                "final_rejections": self.final_rejections,
             },
         )
+
+    def _completion_contract(self) -> str:
+        requirements = self.prepared.metadata.completion
+        lines = [
+            f"- at least {requirements.min_hypotheses} explicit hypotheses",
+            f"- at least {requirements.min_rejected_hypotheses} rejected hypothesis",
+            f"- at least {requirements.min_evidence} recorded evidence items",
+        ]
+        if requirements.min_tool_calls:
+            lines.append(
+                f"- at least {requirements.min_tool_calls} substantive tool calls "
+                "(repetition and padding are penalized)"
+            )
+        if requirements.required_evidence_sources:
+            lines.append(
+                "- evidence source classes: " + ", ".join(requirements.required_evidence_sources)
+            )
+        if requirements.required_actions:
+            lines.append("- investigation actions: " + ", ".join(requirements.required_actions))
+        for artifact, minimum in requirements.required_artifacts.items():
+            lines.append(f"- artifact {artifact} with at least {minimum} characters")
+        return "\n".join(lines)
+
+    def _completion_gaps(self) -> list[str]:
+        requirements = self.prepared.metadata.completion
+        gaps: list[str] = []
+        substantive_calls = substantive_tool_call_count(self.events)
+        if substantive_calls < requirements.min_tool_calls:
+            gaps.append(
+                f"substantive tool calls {substantive_calls}/{requirements.min_tool_calls}"
+            )
+        with SessionLocal() as session:
+            hypothesis_count = int(
+                session.scalar(
+                    select(func.count(Hypothesis.id)).where(Hypothesis.run_id == self.run_id)
+                )
+                or 0
+            )
+            rejected_count = int(
+                session.scalar(
+                    select(func.count(func.distinct(HypothesisRevision.hypothesis_id)))
+                    .join(Hypothesis, Hypothesis.id == HypothesisRevision.hypothesis_id)
+                    .where(
+                        Hypothesis.run_id == self.run_id,
+                        HypothesisRevision.status == HypothesisStatus.rejected,
+                    )
+                )
+                or 0
+            )
+            evidence_rows = list(
+                session.scalars(select(Evidence).where(Evidence.run_id == self.run_id)).all()
+            )
+        if hypothesis_count < requirements.min_hypotheses:
+            gaps.append(f"hypotheses {hypothesis_count}/{requirements.min_hypotheses}")
+        if rejected_count < requirements.min_rejected_hypotheses:
+            gaps.append(
+                f"rejected hypotheses {rejected_count}/{requirements.min_rejected_hypotheses}"
+            )
+        if len(evidence_rows) < requirements.min_evidence:
+            gaps.append(f"evidence items {len(evidence_rows)}/{requirements.min_evidence}")
+        source_types = {item.source_type.casefold() for item in evidence_rows}
+        for source_type in requirements.required_evidence_sources:
+            if source_type.casefold() not in source_types:
+                gaps.append(f"recorded {source_type} evidence")
+        actions = completion_actions_from_events(self.events)
+        for action in requirements.required_actions:
+            if action not in actions:
+                gaps.append(f"investigation action {action}")
+        for artifact, minimum in requirements.required_artifacts.items():
+            content = self.sandbox.collect_text(artifact)
+            if not content:
+                patch_repo = str(self.prepared.metadata.metadata.get("patch_repository", ""))
+                if patch_repo:
+                    content = self.sandbox.collect_text(f"{patch_repo}/{artifact}")
+            if len(content) < minimum:
+                gaps.append(f"artifact {artifact} length {len(content)}/{minimum}")
+        return gaps
 
     def _execute(self, call: ToolCall) -> ToolResult:
         scripted = self.faults.before(call)
@@ -322,6 +439,60 @@ class AgentEngine:
 
 def ok(call: ToolCall, output: str) -> ToolResult:
     return ToolResult(call_id=call.call_id, name=call.name, status="ok", output=output)
+
+
+def completion_actions_from_events(events: list[dict[str, Any]]) -> set[str]:
+    actions: set[str] = set()
+    for event in events:
+        if event.get("kind") != "tool.call":
+            continue
+        name = str(event.get("name", ""))
+        if name.startswith("browser_"):
+            actions.add("browser")
+        if name != "exec_command":
+            continue
+        command = str((event.get("arguments") or {}).get("command", "")).casefold()
+        cwd = str((event.get("arguments") or {}).get("cwd", "")).casefold()
+        if "palimpsest" in command or "palimpsest" in cwd:
+            actions.add("cross_repository")
+        if re.search(
+            r"\bgit\b[^\n;&|]*(?:log|show|blame|bisect|rev-list|reflog)\b",
+            command,
+        ):
+            actions.add("git_history")
+        if re.search(r"(?:^|[;&|()\s])psql(?:\s|$)", command):
+            actions.add("postgresql")
+        if re.search(r"(?:^|[;&|()\s])sqlite3(?:\s|$)", command) or "import sqlite3" in command:
+            actions.add("sqlite")
+        if any(
+            marker in command
+            for marker in (
+                "contract-check",
+                "contract_probe",
+                "emit-handshake",
+                "test:contract",
+            )
+        ):
+            actions.add("runtime_verification")
+    return actions
+
+
+def substantive_tool_call_count(events: list[dict[str, Any]]) -> int:
+    signatures: Counter[str] = Counter()
+    for event in events:
+        if event.get("kind") != "tool.call":
+            continue
+        name = str(event.get("name", ""))
+        arguments = dict(event.get("arguments") or {})
+        if name == "exec_command":
+            arguments["command"] = " ".join(str(arguments.get("command", "")).split())
+        signature = json.dumps(
+            {"name": name, "arguments": arguments},
+            sort_keys=True,
+            ensure_ascii=False,
+        )
+        signatures[signature] += 1
+    return sum(min(count, 2) for count in signatures.values())
 
 
 def boundary_violation(command: str) -> bool:

@@ -12,10 +12,10 @@ class RepositorySpec(BaseModel):
 
 
 class BudgetSpec(BaseModel):
-    soft_seconds: int = 5_400
-    hard_seconds: int = 10_800
-    soft_tool_calls: int = 500
-    hard_tool_calls: int = 1_000
+    soft_seconds: int = 7_200
+    hard_seconds: int = 14_400
+    soft_tool_calls: int = 1_200
+    hard_tool_calls: int = 2_200
 
 
 class FaultSpec(BaseModel):
@@ -44,7 +44,7 @@ class ChallengeManifest(BaseModel):
 def default_manifest() -> ChallengeManifest:
     return ChallengeManifest(
         slug="terminal-repository",
-        version="1.0.0",
+        version="2.0.0",
         name="The Terminal Repository",
         description=(
             "Repair an evidence-hostile cross-repository compatibility regression "

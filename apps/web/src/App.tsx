@@ -75,6 +75,7 @@ import type {
   RunStatus,
   Task,
 } from "./lib/types";
+import { normalizeScoreDimensions, scorePercentage } from "./lib/score";
 
 const InvestigationGraphView = lazy(
   () => import("./components/InvestigationGraph"),
@@ -416,7 +417,7 @@ function DashboardPage() {
             <Pressure value="5K" label={text("文件", "files")} />
             <Pressure value="2K" label={text("提交", "commits")} />
             <Pressure value="100MB" label={text("离线文档", "offline docs")} />
-            <Pressure value="180m" label={text("硬限制", "hard limit")} />
+            <Pressure value="240m" label={text("硬限制", "hard limit")} />
           </div>
           <Link className="button button--ghost" to="/scenarios">
             {text("查看场景", "Inspect scenario")} <ArrowRight size={15} />
@@ -904,7 +905,7 @@ function NewRunPage() {
               <input
                 name="soft_seconds"
                 type="number"
-                defaultValue={5400}
+                defaultValue={7200}
                 min={60}
               />
             </Field>
@@ -912,7 +913,7 @@ function NewRunPage() {
               <input
                 name="hard_seconds"
                 type="number"
-                defaultValue={10800}
+                defaultValue={14400}
                 min={300}
               />
             </Field>
@@ -920,7 +921,7 @@ function NewRunPage() {
               <input
                 name="soft_tool_calls"
                 type="number"
-                defaultValue={500}
+                defaultValue={1200}
                 min={10}
               />
             </Field>
@@ -928,7 +929,7 @@ function NewRunPage() {
               <input
                 name="hard_tool_calls"
                 type="number"
-                defaultValue={1000}
+                defaultValue={2200}
                 min={20}
               />
             </Field>
@@ -996,7 +997,7 @@ function RunDetailPage() {
       />
     );
   }
-  const dimensions = data.scorecard.dimensions ?? {};
+  const dimensions = normalizeScoreDimensions(data.scorecard.dimensions);
   return (
     <>
       <div className="run-hero">
@@ -1168,7 +1169,7 @@ function RunDetailPage() {
                   <div className="score-bar">
                     <i
                       style={{
-                        width: `${(metric.score / metric.maximum) * 100}%`,
+                        width: `${scorePercentage(metric)}%`,
                       }}
                     />
                   </div>
@@ -1181,6 +1182,70 @@ function RunDetailPage() {
                 <strong>{text(`上限 ${cap.max}`, `cap ${cap.max}`)}</strong>
               </div>
             ))}
+          </section>
+          <section className="panel score-list">
+            <PanelHeading
+              icon={<Activity size={16} />}
+              title={text("行为画像", "Behavior profile")}
+              detail={text(
+                "弱计分的调查风格分析",
+                "Weakly scored investigation style",
+              )}
+            />
+            {Object.entries(data.scorecard.behavior_profile ?? {}).map(
+              ([key, value]) => (
+                <div className="score-row" key={key}>
+                  <div>
+                    <strong>{label(key, locale)}</strong>
+                    <span>{Math.round(value)} / 100</span>
+                  </div>
+                  <div className="score-bar score-bar--behavior">
+                    <i
+                      style={{ width: `${Math.max(0, Math.min(100, value))}%` }}
+                    />
+                  </div>
+                </div>
+              ),
+            )}
+            {data.scorecard.completion && (
+              <div
+                className={`callout ${
+                  data.scorecard.completion.met
+                    ? "callout--success"
+                    : "callout--warning"
+                }`}
+              >
+                <CheckCircle2 size={16} />
+                <span>
+                  {text("完成契约", "Completion contract")} ·{" "}
+                  {data.scorecard.completion.substantive_tool_calls ??
+                    data.scorecard.completion.tool_calls}{" "}
+                  {text("次实质调用", "substantive calls")}
+                </span>
+                <strong>
+                  {data.scorecard.completion.met
+                    ? text("满足", "met")
+                    : text("未满足", "not met")}
+                </strong>
+              </div>
+            )}
+          </section>
+          <section className="panel score-list">
+            <PanelHeading
+              icon={<OctagonAlert size={16} />}
+              title={text("错误画像", "Error atlas")}
+              detail={text("可审计的行为计数", "Auditable behavior counts")}
+            />
+            {Object.entries(data.scorecard.error_profile ?? {}).map(
+              ([key, value]) => (
+                <div className="score-row score-row--count" key={key}>
+                  <div>
+                    <strong>{label(key, locale)}</strong>
+                    <span>× {value}</span>
+                  </div>
+                </div>
+              ),
+            )}
           </section>
         </div>
       )}
@@ -1817,6 +1882,21 @@ function label(value: string, locale: "zh-CN" | "en" = "en") {
     scope_control: "范围控制",
     investigation_report: "调查报告",
     efficiency: "效率",
+    evidence_cross_validation: "证据交叉验证",
+    hypothesis_revision: "假设修正能力",
+    tool_robustness: "工具鲁棒性",
+    security_awareness: "安全意识",
+    proactive_verification: "主动验证意识",
+    untrusted_evidence_accepted: "误信低权威证据",
+    irrelevant_hypotheses_rejected: "走过并排除的错误假设",
+    prompt_injection_hits: "Prompt Injection 中招",
+    boundary_attempts: "越权尝试",
+    repeated_file_reads: "重复读取文件",
+    repeated_test_runs: "重复运行测试",
+    invalid_tool_searches: "无效工具搜索",
+    database_mutation_attempts: "数据库修改尝试",
+    premature_final_attempts: "过早提交 Final",
+    total_tool_calls: "工具调用总数",
   };
   if (locale === "zh-CN" && chinese[value]) return chinese[value];
   return value

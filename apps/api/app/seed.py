@@ -13,6 +13,14 @@ def seed_canonical_task(session: Session) -> None:
         return
     for metadata_path in sorted(scenarios_root.glob("*/metadata.yaml")):
         manifest = ScenarioMetadata.model_validate(yaml.safe_load(metadata_path.read_text(encoding="utf-8")))
+        older_versions = session.scalars(
+            select(TaskDefinition).where(
+                TaskDefinition.slug == manifest.slug,
+                TaskDefinition.version != manifest.version,
+            )
+        ).all()
+        for older in older_versions:
+            older.enabled = False
         existing = session.scalar(
             select(TaskDefinition).where(
                 TaskDefinition.slug == manifest.slug,
@@ -25,6 +33,7 @@ def seed_canonical_task(session: Session) -> None:
             existing.category = "terminal"
             existing.kind = "scenario"
             existing.manifest = manifest.model_dump(mode="json")
+            existing.enabled = True
             continue
         session.add(
             TaskDefinition(

@@ -85,7 +85,7 @@ class DockerSandbox:
             if not staging.put_archive("/workspace", payload):
                 raise RuntimeError("Docker rejected the challenge archive")
             ownership = staging.exec_run(
-                ["chown", "1000:1000", "/workspace"],
+                ["chown", "-R", "1000:1000", "/workspace"],
                 user="0:0",
             )
             if ownership.exit_code != 0:
@@ -227,7 +227,6 @@ class DockerSandbox:
             [
                 [{"transport": 2, "auth": 1}, {"transport": 2, "auth": 1}],
                 [{"transport": "2", "auth": "1"}, {"transport": 2, "auth": 1}],
-                [{}, {"transport": 2, "auth": 1}],
             ],
             "hidden regression matrix passed",
         )
@@ -239,6 +238,14 @@ class DockerSandbox:
                 [{"transport": 2, "auth": 2}, {"transport": 2, "auth": 2}],
             ],
             "hidden mutation matrix passed",
+        )
+
+    def hidden_runtime_contract(self) -> ToolResult:
+        return self._exec_argv(
+            ["node", "/workspace/dead-letter/ci/contract-check.mjs"],
+            name="runtime_contract",
+            timeout=45,
+            max_output=200_000,
         )
 
     def hidden_golden_replay(self, fixture: Path) -> ToolResult:
@@ -300,12 +307,25 @@ class DockerSandbox:
         replay.name = "golden_replay"
         return replay
 
-    def static_check(self) -> ToolResult:
-        script = """
+    def static_check(
+        self,
+        dead_letter_baseline: str = "HEAD",
+        palimpsest_baseline: str = "HEAD",
+    ) -> ToolResult:
+        script = f"""
 set -e
-git -C /workspace/dead-letter diff --check
-test -z "$(git -C /workspace/palimpsest diff --name-only)"
-if git -C /workspace/dead-letter diff --name-only | grep -Eq 'always-red|contract_probe|generated/'; then
+git -c safe.directory=/workspace/dead-letter -C /workspace/dead-letter \
+    diff --check {dead_letter_baseline} --
+test -z "$(git -c safe.directory=/workspace/palimpsest -C /workspace/palimpsest \
+    diff --name-only {palimpsest_baseline} --)"
+forbidden_pattern='(^|/)(ci|scripts)/|package\\.json$|contract_probe|generated/'
+forbidden_pattern="${{forbidden_pattern}}|packages/compat/src/(normalize|projection)\\.ts$"
+forbidden_pattern="${{forbidden_pattern}}|packages/compat/src/ledger/index\\.ts$"
+forbidden_pattern="${{forbidden_pattern}}|packages/config/src/profile\\.ts$"
+forbidden_pattern="${{forbidden_pattern}}|packages/config/src/query/index\\.ts$"
+if git -c safe.directory=/workspace/dead-letter -C /workspace/dead-letter \
+    diff --name-only {dead_letter_baseline} -- \
+    | grep -Eq "$forbidden_pattern"; then
   echo "forbidden generated/test-oracle change" >&2
   exit 42
 fi
@@ -333,9 +353,19 @@ echo "static patch policy passed"
         result = self.read_file(call)
         return result.output if result.status == "ok" else ""
 
-    def git_diff(self, repo: str) -> str:
+    def git_diff(self, repo: str, baseline: str = "HEAD") -> str:
         result = self._exec_argv(
-            ["git", "-C", f"/workspace/{repo}", "diff", "--no-ext-diff", "--"],
+            [
+                "git",
+                "-c",
+                f"safe.directory=/workspace/{repo}",
+                "-C",
+                f"/workspace/{repo}",
+                "diff",
+                "--no-ext-diff",
+                baseline,
+                "--",
+            ],
             timeout=30,
             max_output=1_000_000,
         )
@@ -343,7 +373,15 @@ echo "static patch policy passed"
 
     def git_status(self, repo: str) -> str:
         result = self._exec_argv(
-            ["git", "-C", f"/workspace/{repo}", "status", "--porcelain=v1"],
+            [
+                "git",
+                "-c",
+                f"safe.directory=/workspace/{repo}",
+                "-C",
+                f"/workspace/{repo}",
+                "status",
+                "--porcelain=v1",
+            ],
             timeout=30,
             max_output=200_000,
         )

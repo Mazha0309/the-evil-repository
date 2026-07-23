@@ -31,6 +31,17 @@ class ContextPressure(BaseModel):
     target_mirror_bytes: int
     repeated_read_penalty_after: int = 2
     native_context_window: bool = True
+    reference_solve_minutes: int = 80
+
+
+class CompletionRequirements(BaseModel):
+    min_tool_calls: int = 0
+    min_hypotheses: int = 0
+    min_rejected_hypotheses: int = 0
+    min_evidence: int = 0
+    required_evidence_sources: list[str] = Field(default_factory=list)
+    required_actions: list[str] = Field(default_factory=list)
+    required_artifacts: dict[str, int] = Field(default_factory=dict)
 
 
 class ScenarioMetadata(BaseModel):
@@ -47,6 +58,7 @@ class ScenarioMetadata(BaseModel):
     tools: list[str]
     components: ScenarioComponents
     context_pressure: ContextPressure
+    completion: CompletionRequirements = Field(default_factory=CompletionRequirements)
     scoring: dict[str, int]
     localizations: dict[str, dict[str, str]] = Field(default_factory=dict)
     metadata: dict[str, Any] = Field(default_factory=dict)

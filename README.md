@@ -11,6 +11,12 @@ and a production-style PostgreSQL snapshot full of dirty data. The model must
 find the real regression, make the smallest correct patch, and support it with
 an auditable evidence report.
 
+It is closer to an AI Agent CTF, incident-response benchmark, and behavior
+analysis platform than a conventional “fix this failing test” dataset. A run
+produces not only a 1,200-point scorecard, but also a Hypothesis/Evidence/Truth
+Graph, behavior profile, discrete error statistics, and a replay of the
+investigation.
+
 The product is a local-first React data console backed by FastAPI. Every
 candidate/task pair receives a fresh Rootless Docker workspace. Candidate
 containers have no network, no Docker socket, no host bind mounts, and no model
@@ -18,11 +24,64 @@ provider credentials.
 
 ## Status
 
-The platform is currently **v0.2.2** and remains under active construction.
+The platform is currently **v0.3.0** and remains under active construction.
 See [`CHANGELOG.md`](CHANGELOG.md). This release includes the canonical
 “terminal repository” challenge, account isolation, administrator controls,
 server monitoring, and the complete execution, telemetry, scoring, and
 visualization path around it.
+
+The control plane supports four explicit model protocols: OpenAI Responses,
+Anthropic Messages, OpenAI-compatible Chat Completions, and Ollama Chat.
+OpenAI-compatible and OpenAI Responses remain separate because their message,
+tool-call, and usage contracts are not interchangeable.
+
+## Benchmark contract
+
+The benchmark is split into two layers:
+
+1. a versioned Scenario SDK package containing repositories, databases,
+   injections, deterministic failures, offline Browser material, hidden truth,
+   grading, and metadata;
+2. a scenario-agnostic Runner that performs
+   `load → prepare → run → grade → archive` and exposes only normalized results
+   to React.
+
+The canonical scenario deliberately prevents a one-file, one-test shortcut.
+Its relevant regression is buried beneath substantial later Git history;
+README, issues, comments, TODOs, logs, CI output, database descriptions, and
+Browser results conflict with one another; the second repository and commit
+history carry independent provenance; and the live PostgreSQL state disagrees
+with a stale SQLite cache. The offline mirror is available only through
+`browser.search`, `browser.open`, and `browser.find`, so a candidate cannot
+bypass Browser behavior by scanning a copied mirror directory.
+
+Scenario 2.0.0 makes the apparent bulk material: 192 compatibility-ledger
+shards and 48 query fragments execute on the live path, roughly 192 relevant
+history changes conflict with one another, and 224 cross-linked incident
+bundles contribute 1,344 CI/log/Issue/migration/runtime records across both
+repositories.
+
+A candidate must build an observable investigation, not merely guess a patch.
+Before a normal final answer is accepted, the Scenario completion gate requires
+explicit hypotheses, a rejected hypothesis, linked evidence, Git archaeology,
+PostgreSQL and SQLite forensics, offline Browser research, runtime
+verification, and a substantive `INVESTIGATION.md`. The hidden judge then
+validates the patch against fresh state, mutations, replay, security rules, and
+the scenario's private Truth Graph. Satisfying the gate proves coverage, not
+correctness.
+
+The canonical completion floor is 240 substantive tool calls, six hypotheses
+including three rejected hypotheses, 24 evidence records across Git, database,
+Browser, and runtime, all required investigation actions, and a 2,500-character
+report. Padding and repeated reads are audited and penalized.
+
+The canonical difficulty target is a reference solve of at least 80 minutes
+for a strong software-engineering Agent. This is a calibration target, not a
+wall-clock promise: EvilBench never pads a run with `sleep`, random delay, or
+an 80-minute timer. Difficulty must come from necessary evidence work,
+conflicting provenance, bounded recovery from scripted failures, and hidden
+verification. Scenario releases are recalibrated when strong Agents discover
+material shortcuts.
 
 ## Quick start
 
@@ -106,7 +165,7 @@ the existing accounts, settings, and benchmark data.
 ```text
 apps/web/                  React/TypeScript control plane
 apps/api/                  FastAPI API, worker, runner, scorer
-scenarios/                 Versioned Scenario SDK packages and synthetic corpus
+scenarios/                 Versioned Scenario SDK packages, truth, and corpus
 infra/sandbox/             Networkless candidate image
 docs/                      Architecture, threat model, and authoring docs
 ```

@@ -5,13 +5,14 @@ import {
   type RadarComponentOption,
   type TooltipComponentOption,
 } from "echarts/components";
-import { type ComposeOption, use as registerCharts } from "echarts/core";
+import * as echarts from "echarts/core";
+import type { ComposeOption } from "echarts/core";
 import { CanvasRenderer } from "echarts/renderers";
 import ReactEChartsCore from "echarts-for-react/lib/core";
 import { useLocale } from "../lib/i18n";
 import type { ScoreMetric } from "../lib/types";
 
-registerCharts([RadarChart, RadarComponent, TooltipComponent, CanvasRenderer]);
+echarts.use([RadarChart, RadarComponent, TooltipComponent, CanvasRenderer]);
 
 type RadarOption = ComposeOption<
   RadarSeriesOption | RadarComponentOption | TooltipComponentOption
@@ -27,7 +28,9 @@ export default function ScoreRadar({
   if (!entries.length) return null;
   return (
     <ReactEChartsCore
+      echarts={echarts}
       style={{ height: 360, width: "100%" }}
+      opts={{ renderer: "canvas" }}
       option={
         {
           backgroundColor: "transparent",

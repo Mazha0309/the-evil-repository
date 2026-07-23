@@ -25,6 +25,9 @@ if [[ -f "$seed_file" ]]; then
     -w start >/dev/null
   createdb evil_challenge 2>/dev/null || true
   psql -v ON_ERROR_STOP=1 -f "$seed_file" evil_challenge >/dev/null
+  # The seed is trusted staging material, not candidate evidence. Leaving it in
+  # the workspace would turn database forensics into a plain-text grep exercise.
+  rm -f "$seed_file"
 fi
 
 cat > "$runtime_dir/README.txt" <<'EOF'

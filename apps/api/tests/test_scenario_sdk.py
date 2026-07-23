@@ -22,4 +22,7 @@ def test_small_scenario_is_deterministic_and_complete(tmp_path: Path) -> None:
     assert (first.workspace / "palimpsest" / ".git").is_dir()
     assert (first.workspace / "dead-letter" / "data" / "latest-runtime.sqlite").is_file()
     assert first.browser_index and first.browser_index.is_file()
+    assert not (first.workspace / "mirror").exists()
+    assert not (first.workspace / ".challenge-truth.json").exists()
+    assert all(first.private_state["truth"]["browser_refs"])
     assert (first.workspace / ".challenge.json").read_text() == (second.workspace / ".challenge.json").read_text()

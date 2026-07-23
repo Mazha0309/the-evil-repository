@@ -1287,6 +1287,12 @@ pre {
   background: rgba(243, 182, 64, 0.045);
 }
 
+.callout--success {
+  border-color: rgba(173, 255, 47, 0.26);
+  color: var(--lime);
+  background: rgba(173, 255, 47, 0.055);
+}
+
 .callout--danger {
   border-color: #5d3030;
   color: #ff9e9e;
@@ -1818,6 +1824,15 @@ pre {
   box-shadow: 0 0 8px rgba(173, 255, 47, 0.45);
 }
 
+.score-bar--behavior i {
+  background: #73d8ff;
+  box-shadow: 0 0 8px rgba(115, 216, 255, 0.4);
+}
+
+.score-row--count span {
+  color: #f0b36a;
+}
+
 .run-footer-actions {
   display: flex;
   justify-content: flex-end;
@@ -1953,7 +1968,7 @@ pre {
   z-index: 1;
   width: min(470px, 100%);
   border: 1px solid var(--line-bright);
-  border-radius: 13px;
+  border-radius: 8px;
   padding: 30px;
   background: rgba(12, 15, 12, 0.97);
   box-shadow: 0 30px 90px rgba(0, 0, 0, 0.45);
@@ -1973,7 +1988,7 @@ pre {
   height: 44px;
   place-items: center;
   border: 1px solid #415134;
-  border-radius: 10px;
+  border-radius: 6px;
   color: var(--lime);
   background: #151b12;
 }
@@ -2023,12 +2038,70 @@ pre {
 
 .auth-form label > span {
   color: var(--soft);
-  font-size: 11px;
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 
 .auth-form label > small {
   color: var(--muted);
   font-size: 9px;
+}
+
+.auth-form input {
+  width: 100%;
+  height: 45px;
+  appearance: none;
+  outline: none;
+  border: 1px solid var(--line-bright);
+  border-radius: 5px;
+  padding: 0 13px;
+  color: #e6ede2;
+  caret-color: var(--lime);
+  background:
+    linear-gradient(90deg, rgba(173, 255, 47, 0.025), transparent 28%), #090b09;
+  font-family: var(--mono);
+  font-size: 11px;
+  transition:
+    border-color 140ms ease,
+    background-color 140ms ease,
+    box-shadow 140ms ease;
+}
+
+.auth-form input:hover {
+  border-color: #465340;
+}
+
+.auth-form input:focus,
+.auth-form input:focus-visible {
+  border-color: var(--lime-dim);
+  background-color: #0c0f0b;
+  box-shadow:
+    0 0 0 3px rgba(173, 255, 47, 0.065),
+    inset 3px 0 0 rgba(173, 255, 47, 0.32);
+}
+
+.auth-form input[type="password"] {
+  letter-spacing: 0.08em;
+}
+
+.auth-form input:-webkit-autofill,
+.auth-form input:-webkit-autofill:hover,
+.auth-form input:-webkit-autofill:focus {
+  border-color: var(--line-bright);
+  -webkit-text-fill-color: #e6ede2;
+  caret-color: var(--lime);
+  box-shadow: 0 0 0 1000px #090b09 inset;
+  transition: background-color 9999s ease-out;
+}
+
+.auth-form .button {
+  width: 100%;
+  border-radius: 5px;
+  font-family: var(--mono);
+  letter-spacing: 0.04em;
 }
 
 .auth-mode {

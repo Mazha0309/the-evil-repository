@@ -50,12 +50,19 @@ def create_run(
     task = session.get(TaskDefinition, payload.task_id)
     candidate = session.get(ModelProfile, payload.candidate_model_id)
     judge = session.get(ModelProfile, payload.judge_model_id) if payload.judge_model_id else None
-    if not task or not can_access_model(session, user, candidate):
+    if not task or not task.enabled or not can_access_model(session, user, candidate):
         raise HTTPException(status_code=400, detail="Unknown task or candidate model")
     if payload.judge_model_id == payload.candidate_model_id:
         raise HTTPException(status_code=400, detail="Candidate model cannot judge itself")
     if payload.judge_model_id and not can_access_model(session, user, judge):
         raise HTTPException(status_code=400, detail="Unknown judge model")
+    completion = task.manifest.get("completion", {})
+    minimum_calls = int(completion.get("min_tool_calls", 0))
+    if payload.hard_tool_calls < minimum_calls:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Hard tool-call budget must be at least {minimum_calls} for this Scenario",
+        )
     run = BenchmarkRun(
         task_id=task.id,
         candidate_model_id=candidate.id,

@@ -18,7 +18,13 @@ def list_tasks(
     session: Session = Depends(get_session),
     _: UserAccount = Depends(current_user),
 ) -> list[TaskDefinition]:
-    return list(session.scalars(select(TaskDefinition).order_by(TaskDefinition.created_at.desc())).all())
+    return list(
+        session.scalars(
+            select(TaskDefinition)
+            .where(TaskDefinition.enabled.is_(True))
+            .order_by(TaskDefinition.created_at.desc())
+        ).all()
+    )
 
 
 @router.post("", response_model=TaskRead, status_code=status.HTTP_201_CREATED)

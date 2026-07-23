@@ -3,6 +3,36 @@
 All notable platform changes are recorded here. The project follows Semantic
 Versioning while individual benchmark scenarios retain independent versions.
 
+## [0.3.0] - 2026-07-23
+
+### Added
+
+- Terminal Repository Scenario 2.0.0 with 192 executable projection shards,
+  48 executable query fragments, 224 six-part conflict bundles, and deeply
+  conflicting target-path history.
+- Deterministic completion contracts, early-Final rejection, multi-source
+  provenance gates, and a dirty-runtime contract phase in the hidden judge.
+- Behavior profiles, an error atlas, and completion status in the run UI.
+- Seven prompt-injection classes with explicit canary auditing.
+
+### Changed
+
+- Reworked the 1,200-point judge so an incorrect patch is capped at 300 and
+  unproven short-circuit answers no longer receive default security/efficiency
+  credit.
+- Raised canonical soft/hard budgets for the evidence-heavy Scenario and made
+  run overrides effective in the Runner.
+- Canonical Scenario seeding now disables superseded versions while preserving
+  historical runs.
+
+### Fixed
+
+- Fixed the blank 1,200-point radar by passing the registered ECharts core
+  instance and sanitizing malformed score axes.
+- Fixed Git ownership checks inside candidate workspaces and hidden grading.
+- Updated the GitHub API job to the published `setup-uv@v9.0.0` action after
+  the removed `v8` reference prevented the job from starting.
+
 ## [0.2.2] - 2026-07-23
 
 ### Fixed
