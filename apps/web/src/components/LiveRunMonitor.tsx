@@ -57,6 +57,9 @@ export default function LiveRunMonitor({
   const analysis = analyzeRunEvents(events, run.status, now, pauseRequested);
   const progress = completionProgress(events, graph, completion);
   const incidentTelemetry = analyzeIncidentTelemetry(events);
+  const softBudgetWarning = [...events]
+    .reverse()
+    .find((event) => event.kind === "run.soft_budget_warning");
   const wallElapsedMs = run.started_at
     ? Math.max(
         0,
@@ -188,6 +191,12 @@ export default function LiveRunMonitor({
                 "The event stream has not advanced for 45 seconds; the Provider, a tool timeout, or the Runner may be blocking.",
               )}
             </span>
+          </div>
+        )}
+        {softBudgetWarning && (
+          <div className="live-warning">
+            <Gauge size={14} />
+            <span>{softBudgetDetail(softBudgetWarning, locale)}</span>
           </div>
         )}
       </section>
@@ -857,6 +866,15 @@ function phaseDetail(
 ) {
   const elapsed = formatDuration(ageMs, locale);
   if (phase === "model") {
+    if (event?.kind === "provider.retry") {
+      const status = String(event.payload.status_code ?? "—");
+      const next = String(event.payload.next_attempt ?? "—");
+      const maximum = String(event.payload.maximum_attempts ?? "—");
+      const delay = Number(event.payload.delay_seconds ?? 0);
+      return locale === "zh-CN"
+        ? `Provider 返回 HTTP ${status}，将在 ${formatDuration(delay * 1_000, locale)} 后进行第 ${next}/${maximum} 次尝试。`
+        : `Provider returned HTTP ${status}; attempt ${next}/${maximum} follows after ${formatDuration(delay * 1_000, locale)}.`;
+    }
     const turn = event?.kind === "model.request" ? event.payload.turn : null;
     return locale === "zh-CN"
       ? `Provider 正在生成第 ${turn ?? "—"} 轮响应，已等待 ${elapsed}。`
@@ -965,6 +983,32 @@ function percentage(value: number, maximum: number) {
 function numericConfig(value: unknown) {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+}
+
+function softBudgetDetail(event: RunEvent, locale: "zh-CN" | "en") {
+  const crossed = Array.isArray(event.payload.crossed)
+    ? event.payload.crossed.map(String)
+    : [];
+  const details: string[] = [];
+  if (crossed.includes("tool_calls")) {
+    details.push(
+      locale === "zh-CN"
+        ? `工具 ${String(event.payload.tool_calls ?? "—")} / ${String(event.payload.soft_tool_calls ?? "—")}`
+        : `tools ${String(event.payload.tool_calls ?? "—")} / ${String(event.payload.soft_tool_calls ?? "—")}`,
+    );
+  }
+  if (crossed.includes("active_time")) {
+    const active = Number(event.payload.active_seconds ?? 0);
+    const soft = Number(event.payload.soft_seconds ?? 0);
+    details.push(
+      locale === "zh-CN"
+        ? `时间 ${formatDuration(active * 1_000, locale)} / ${formatDuration(soft * 1_000, locale)}`
+        : `time ${formatDuration(active * 1_000, locale)} / ${formatDuration(soft * 1_000, locale)}`,
+    );
+  }
+  return locale === "zh-CN"
+    ? `已触发软预算（${details.join("，") || "阈值已越过"}）；运行继续，但应停止低价值重复并收敛验证。`
+    : `Soft budget reached (${details.join(", ") || "threshold crossed"}); the run continues, but should stop low-value repetition and converge on verification.`;
 }
 
 function compact(value: number) {

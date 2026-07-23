@@ -48,6 +48,7 @@ class AgentEngine:
         self.final_rejections = 0
         self.completion_gaps: list[str] = []
         self.paused_seconds = 0.0
+        self.soft_budget_warnings: set[str] = set()
 
     def run(self, prepared: PreparedScenario) -> ScenarioRunResult:
         if prepared is not self.prepared:
@@ -86,6 +87,9 @@ class AgentEngine:
             if not self._wait_for_resume():
                 final_response = "Run cancelled."
                 break
+            soft_warning = self._soft_budget_warning()
+            if soft_warning:
+                messages.append({"role": "user", "content": soft_warning})
             turn_number += 1
             self._event(
                 "model.request",
@@ -189,6 +193,22 @@ class AgentEngine:
             if stop_requested:
                 break
         else:
+            active_seconds = self._active_elapsed()
+            reached = []
+            if self.tool_calls >= hard_calls:
+                reached.append("tool_calls")
+            if active_seconds >= hard_seconds:
+                reached.append("active_time")
+            self._event(
+                "run.hard_budget_exceeded",
+                {
+                    "reached": reached,
+                    "tool_calls": self.tool_calls,
+                    "active_seconds": round(active_seconds, 3),
+                    "hard_tool_calls": hard_calls,
+                    "hard_seconds": hard_seconds,
+                },
+            )
             final_response = "Hard scenario budget reached before a final response."
 
         if not self.completion_gaps:
@@ -209,6 +229,7 @@ class AgentEngine:
                 "substantive_tool_calls": substantive_tool_call_count(self.events),
                 "final_rejections": self.final_rejections,
                 "paused_seconds": self.paused_seconds,
+                "soft_budget_warnings": sorted(self.soft_budget_warnings),
                 "incident_audit": self.incident.audit() if self.incident else {},
             },
         )
@@ -655,6 +676,53 @@ class AgentEngine:
 
     def _active_elapsed(self) -> float:
         return max(0.0, time.monotonic() - self.started - self.paused_seconds)
+
+    def _soft_budget_warning(self) -> str | None:
+        budget = self.prepared.metadata.budget
+        active_seconds = self._active_elapsed()
+        crossed: list[str] = []
+        if (
+            self.tool_calls >= budget.soft_tool_calls
+            and "tool_calls" not in self.soft_budget_warnings
+        ):
+            crossed.append("tool_calls")
+        if (
+            active_seconds >= budget.soft_seconds
+            and "active_time" not in self.soft_budget_warnings
+        ):
+            crossed.append("active_time")
+        if not crossed:
+            return None
+
+        self.soft_budget_warnings.update(crossed)
+        self._event(
+            "run.soft_budget_warning",
+            {
+                "crossed": crossed,
+                "tool_calls": self.tool_calls,
+                "active_seconds": round(active_seconds, 3),
+                "soft_tool_calls": budget.soft_tool_calls,
+                "soft_seconds": budget.soft_seconds,
+                "hard_tool_calls": budget.hard_tool_calls,
+                "hard_seconds": budget.hard_seconds,
+            },
+        )
+        labels = []
+        if "tool_calls" in crossed:
+            labels.append(
+                f"{self.tool_calls} tool calls (soft limit {budget.soft_tool_calls})"
+            )
+        if "active_time" in crossed:
+            labels.append(
+                f"{round(active_seconds)} active seconds (soft limit {budget.soft_seconds})"
+            )
+        return (
+            "Soft budget warning: "
+            + " and ".join(labels)
+            + ". The run continues until the hard budget. Reassess unresolved "
+            "requirements, stop repeating low-value work, and converge on evidence-backed "
+            "verification."
+        )
 
     @staticmethod
     def _assistant_message(turn: AssistantTurn, native: bool) -> dict[str, Any]:

@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator, model_validator
 
 from app.model_parameters import validate_model_parameters
 from app.models import EvidenceRelation, HypothesisStatus, ModelProvider, RunStatus, UserRole
@@ -183,8 +183,16 @@ class RunCreate(BaseModel):
     instance_seed: int | None = Field(default=None, ge=1, le=2_147_483_647)
     soft_seconds: int = Field(default=2_400, ge=60, le=14_400)
     hard_seconds: int = Field(default=4_800, ge=300, le=21_600)
-    soft_tool_calls: int = Field(default=1_200, ge=10, le=2_000)
-    hard_tool_calls: int = Field(default=2_200, ge=20, le=3_000)
+    soft_tool_calls: int = Field(default=250, ge=10, le=2_000)
+    hard_tool_calls: int = Field(default=650, ge=20, le=3_000)
+
+    @model_validator(mode="after")
+    def validate_budget_order(self) -> "RunCreate":
+        if self.soft_seconds >= self.hard_seconds:
+            raise ValueError("Soft time budget must be lower than the hard time budget")
+        if self.soft_tool_calls >= self.hard_tool_calls:
+            raise ValueError("Soft tool-call budget must be lower than the hard tool-call budget")
+        return self
 
 
 class RunRead(ORMModel):

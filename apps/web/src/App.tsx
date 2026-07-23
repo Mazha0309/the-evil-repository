@@ -1211,8 +1211,8 @@ function NewRunPage() {
             icon={<Gauge size={16} />}
             title={text("预算", "Budgets")}
             detail={text(
-              "40 分钟软告警与 80 分钟硬停止",
-              "40-minute soft warning and 80-minute hard stop",
+              "40 分钟 / 250 次软告警，80 分钟 / 650 次硬停止",
+              "40 min / 250-call soft warning; 80 min / 650-call hard stop",
             )}
           />
           <div className="budget-grid">
@@ -1242,7 +1242,7 @@ function NewRunPage() {
               <input
                 name="soft_tool_calls"
                 type="number"
-                defaultValue={1200}
+                defaultValue={250}
                 min={10}
               />
             </Field>
@@ -1250,7 +1250,7 @@ function NewRunPage() {
               <input
                 name="hard_tool_calls"
                 type="number"
-                defaultValue={2200}
+                defaultValue={650}
                 min={20}
               />
             </Field>
@@ -2164,11 +2164,11 @@ function SettingsPage() {
           </p>
           <a
             className="button button--ghost"
-            href="https://github.com/"
+            href="https://github.com/Mazha0309/the-evil-repository"
             target="_blank"
             rel="noreferrer"
           >
-            {text("仓库尚未发布", "Repository not published yet")}{" "}
+            {text("查看公开仓库", "View public repository")}{" "}
             <ExternalLink size={14} />
           </a>
         </section>

@@ -492,7 +492,7 @@ flowchart LR
 
 ## 11. 标准挑战
 
-Scenario 3.0.1 **终焉仓库（The Terminal Repository）** 的主体不再是一道
+Scenario 3.0.2 **终焉仓库（The Terminal Repository）** 的主体不再是一道
 「代码很多的密码题」，而是一台受控不确定性事故模拟器；仓库迷宫只是它的一层
 证据载体。
 
@@ -577,8 +577,9 @@ Checkpoint 重建、七叶最小补丁，以及修改后的 Canary / Replay / So
 ### 难度校准
 
 完整标准场景目标约为 5,000 个文件、2,000 次提交和 100 MiB 本机生成材料。默认
-软/硬预算为 40/80 分钟与 1,200/2,200 次工具调用。软时间阈值用于超限遥测和告警，
-硬阈值结束候选执行；墙上时间不参与评分。每个候选默认只有 0.5 CPU、256 MiB RAM、
+软/硬预算为 40/80 分钟与 250/650 次工具调用。任一软阈值都会发出一次确定性告警
+并记录超限遥测，任一硬阈值都会结束候选执行；墙上时间不参与评分。每个候选默认只有
+0.5 CPU、256 MiB RAM、
 256 个 PID 和
 1.5 GiB 临时工作区，因此无界安装、全量索引和暴力并行都不是可行策略。缩放后的
 Smoke Fixture 只用于开发，绝不能作为排行榜运行上报。
@@ -820,7 +821,7 @@ Episode 记录开始/结束序号、假设 Key、证据 Key、涉及工具、被
 {
   "schema_version": 1,
   "analyzer_version": "behavior-v1",
-  "scenario": "terminal-repository@3.0.1",
+  "scenario": "terminal-repository@3.0.2",
   "traits": [],
   "errors": [],
   "episodes": [],

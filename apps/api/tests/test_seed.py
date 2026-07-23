@@ -46,8 +46,10 @@ def test_canonical_seed_enables_v3_patch_and_retires_v1(monkeypatch) -> None:
 
     assert [(task.version, task.enabled) for task in tasks] == [
         ("1.0.0", False),
-        ("3.0.1", True),
+        ("3.0.2", True),
     ]
     assert tasks[1].manifest["completion"]["min_tool_calls"] == 0
+    assert tasks[1].manifest["budget"]["soft_tool_calls"] == 250
+    assert tasks[1].manifest["budget"]["hard_tool_calls"] == 650
     assert tasks[1].manifest["incident"]["enabled"] is True
     assert len(tasks[1].manifest["incident"]["required_decisions"]) == 8

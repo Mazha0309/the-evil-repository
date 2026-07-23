@@ -1,5 +1,9 @@
 import json
+import logging
+import time
 import uuid
+from collections.abc import Callable
+from email.utils import parsedate_to_datetime
 from typing import Any
 
 import httpx
@@ -7,6 +11,13 @@ import httpx
 from app.model_parameters import safe_model_parameters
 from app.models import ModelProfile, ModelProvider
 from app.runner.protocol import AssistantTurn, ToolCall
+
+logger = logging.getLogger("evil-runner.providers")
+RETRYABLE_PROVIDER_STATUS = {408, 425, 429, 500, 502, 503, 504}
+
+
+class ProviderTransientError(RuntimeError):
+    """A Provider stayed unavailable after the bounded retry policy."""
 
 
 class ModelClient:
@@ -16,9 +27,14 @@ class ModelClient:
         api_key: str | None,
         *,
         timeout_seconds: float = 180,
+        max_retries: int = 5,
+        on_retry: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
         self.profile = profile
         self.api_key = api_key
+        self.max_retries = max(0, max_retries)
+        self.on_retry = on_retry
+        self._sleep = time.sleep
         self.client = httpx.Client(
             timeout=httpx.Timeout(
                 timeout_seconds,
@@ -54,7 +70,7 @@ class ModelClient:
         if self.profile.native_tools and tools:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
-        response = self.client.post(
+        response = self._post(
             f"{self.profile.base_url.rstrip('/')}/chat/completions",
             headers=headers,
             json=payload,
@@ -107,7 +123,7 @@ class ModelClient:
                 for item in tools
             ]
             payload["tool_choice"] = "auto"
-        response = self.client.post(
+        response = self._post(
             f"{self.profile.base_url.rstrip('/')}/responses",
             headers=headers,
             json=payload,
@@ -172,7 +188,7 @@ class ModelClient:
                 for item in tools
             ]
             payload["tool_choice"] = {"type": "auto"}
-        response = self.client.post(
+        response = self._post(
             f"{self.profile.base_url.rstrip('/')}/messages",
             headers=headers,
             json=payload,
@@ -222,7 +238,7 @@ class ModelClient:
         }
         if self.profile.native_tools and tools:
             payload["tools"] = tools
-        response = self.client.post(
+        response = self._post(
             f"{self.profile.base_url.rstrip('/')}/api/chat",
             json=payload,
         )
@@ -248,6 +264,68 @@ class ModelClient:
             input_tokens=int(body.get("prompt_eval_count", 0)),
             output_tokens=int(body.get("eval_count", 0)),
         )
+
+    def _post(self, url: str, **kwargs: Any) -> httpx.Response:
+        maximum_attempts = self.max_retries + 1
+        for attempt in range(maximum_attempts):
+            response = self.client.post(url, **kwargs)
+            if response.status_code not in RETRYABLE_PROVIDER_STATUS:
+                return response
+            if attempt >= self.max_retries:
+                try:
+                    response.raise_for_status()
+                except httpx.HTTPStatusError as exc:
+                    label = (
+                        "rate limit"
+                        if response.status_code == 429
+                        else "transient failure"
+                    )
+                    raise ProviderTransientError(
+                        f"Provider {label} (HTTP {response.status_code}) persisted after "
+                        f"{maximum_attempts} attempts for model {self.profile.model_id}"
+                    ) from exc
+
+            delay = provider_retry_delay(response, attempt)
+            retry = {
+                "provider": self.profile.provider.value,
+                "model_id": self.profile.model_id,
+                "status_code": response.status_code,
+                "failed_attempt": attempt + 1,
+                "next_attempt": attempt + 2,
+                "maximum_attempts": maximum_attempts,
+                "delay_seconds": delay,
+            }
+            logger.warning(
+                "Provider HTTP %d for %s; retrying attempt %d/%d in %.2fs",
+                response.status_code,
+                self.profile.model_id,
+                attempt + 2,
+                maximum_attempts,
+                delay,
+            )
+            if self.on_retry:
+                try:
+                    self.on_retry(retry)
+                except Exception:
+                    logger.exception("Failed to archive Provider retry telemetry")
+            self._sleep(delay)
+        raise AssertionError("Provider retry loop exited unexpectedly")
+
+
+def provider_retry_delay(response: httpx.Response, attempt: int) -> float:
+    fallback = min(30.0, float(2 ** (attempt + 1)))
+    retry_after = response.headers.get("retry-after", "").strip()
+    if not retry_after:
+        return fallback
+    try:
+        seconds = float(retry_after)
+    except ValueError:
+        try:
+            retry_at = parsedate_to_datetime(retry_after)
+            seconds = retry_at.timestamp() - time.time()
+        except (TypeError, ValueError, OverflowError):
+            return fallback
+    return round(max(0.25, min(30.0, seconds)), 3)
 
 
 def parse_json_fallback(content: str) -> list[ToolCall]:

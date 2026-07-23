@@ -25,7 +25,7 @@ provider credentials.
 
 ## Status
 
-The platform is currently **v0.7.0** and remains under active construction.
+The platform is currently **v0.7.1** and remains under active construction.
 See [`CHANGELOG.md`](CHANGELOG.md). This release includes the canonical
 “terminal repository” challenge, account isolation, administrator controls,
 server monitoring, a live Agent activity console, and the complete execution,
@@ -91,7 +91,7 @@ with a stale SQLite cache. The offline mirror is available only through
 `browser.search`, `browser.open`, and `browser.find`, so a candidate cannot
 bypass Browser behavior by scanning a copied mirror directory.
 
-Scenario 3.0.1 makes the apparent bulk material. Five live relay chains contain
+Scenario 3.0.2 makes the apparent bulk material. Five live relay chains contain
 704 executable opaque cells; seven independent corruptions are jointly
 required, and fixing six still fails. The two repositories contain exactly
 5,000 tracked files and 2,000 commits, 40 semantic custody checkpoints, seven
@@ -174,7 +174,9 @@ Then open `http://127.0.0.1:5173`.
 administrator console can change it later without a restart. Each active slot
 can consume the configured per-sandbox CPU, memory and workspace limits and
 can issue independent Provider requests, so reduce it on a small machine or
-under a low API rate limit.
+under a low API rate limit. HTTP 408/425/429 and common 5xx responses use
+bounded `Retry-After`-aware backoff; a Provider that remains unavailable after
+the retry budget still fails the run explicitly.
 
 Deployment and shutdown fail closed while any run is queued, preparing,
 running, or scoring. Wait for those runs to finish or cancel them in the WebUI.

@@ -16,6 +16,8 @@ def grade(prepared: PreparedScenario, result: ScenarioRunResult) -> dict[str, An
         events=result.events,
         elapsed_seconds=result.elapsed_seconds,
         tool_calls=result.tool_calls,
+        soft_tool_calls=prepared.metadata.budget.soft_tool_calls,
+        hard_tool_calls=prepared.metadata.budget.hard_tool_calls,
         completion_requirements_met=bool(
             result.private_state.get("completion_requirements_met", False)
         ),

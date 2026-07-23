@@ -173,6 +173,28 @@ def test_wall_time_is_observed_but_not_rewarded() -> None:
     assert short["dimensions"]["efficiency"]["score"] == long["dimensions"]["efficiency"]["score"]
 
 
+def test_tool_efficiency_degrades_between_soft_and_hard_budgets() -> None:
+    base = dict(
+        hidden_verification_passed=False,
+        dead_letter_diff="",
+        palimpsest_diff="",
+        report="evidence",
+        events=[],
+        elapsed_seconds=60,
+        tool_calls=0,
+        soft_tool_calls=250,
+        hard_tool_calls=650,
+    )
+
+    at_soft = score(ScoreEvidence(**base, substantive_tool_calls=250))
+    midpoint = score(ScoreEvidence(**base, substantive_tool_calls=450))
+    at_hard = score(ScoreEvidence(**base, substantive_tool_calls=650))
+
+    assert at_soft["dimensions"]["efficiency"]["evidence"]["tool_budget_points"] == 10
+    assert midpoint["dimensions"]["efficiency"]["evidence"]["tool_budget_points"] == 5
+    assert at_hard["dimensions"]["efficiency"]["evidence"]["tool_budget_points"] == 0
+
+
 def test_behavior_profile_reports_cross_phase_evidence_coverage() -> None:
     result = score(
         ScoreEvidence(

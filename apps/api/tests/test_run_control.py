@@ -7,6 +7,7 @@ from fastapi import HTTPException
 import app.api.runs as runs_module
 from app.api.runs import cancel_run, pause_run, resume_run
 from app.models import RunStatus, UserRole
+from app.schemas import RunCreate
 
 
 class FakeSession:
@@ -21,6 +22,17 @@ class FakeSession:
 
     def refresh(self, _value: object) -> None:
         return None
+
+
+def test_run_budget_soft_limits_must_precede_hard_limits() -> None:
+    common = {
+        "task_id": uuid.uuid4(),
+        "candidate_model_id": uuid.uuid4(),
+    }
+    with pytest.raises(ValueError, match="Soft time budget"):
+        RunCreate(**common, soft_seconds=4_800, hard_seconds=4_800)
+    with pytest.raises(ValueError, match="Soft tool-call budget"):
+        RunCreate(**common, soft_tool_calls=650, hard_tool_calls=650)
 
 
 def test_pause_and_resume_update_cooperative_control_flag(monkeypatch) -> None:
