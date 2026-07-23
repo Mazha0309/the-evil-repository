@@ -265,11 +265,13 @@ class Worker:
                 profile = session.get(ModelProfile, run.candidate_model_id)
                 if not task or not profile:
                     raise RuntimeError("Run references missing task/model")
-                if not profile.enabled:
-                    raise RuntimeError("Candidate model profile is disabled")
+                if not profile.enabled or profile.archived_at is not None:
+                    raise RuntimeError("Candidate model profile is unavailable")
                 judge_model_id = run.judge_model_id
                 judge_profile = session.get(ModelProfile, judge_model_id) if judge_model_id else None
-                if judge_profile is not None and not judge_profile.enabled:
+                if judge_profile is not None and (
+                    not judge_profile.enabled or judge_profile.archived_at is not None
+                ):
                     judge_profile = None
                 scenario_root = settings.scenarios_root / task.slug
                 encrypted_key = profile.encrypted_api_key

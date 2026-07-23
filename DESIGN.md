@@ -126,6 +126,14 @@ updates protocol, endpoint, model ID, tool mode, enabled state, and inference
 parameters. Omitting `api_key` preserves the existing encrypted credential;
 supplying a value replaces it and explicit `null` clears it.
 
+`DELETE` is implemented as an irreversible archive operation. It takes a row
+lock, refuses profiles referenced by queued or active runs, backfills missing
+non-secret identity snapshots in terminal runs, clears the credential,
+endpoint and inference parameters, disables the profile, and hides it from
+registries and counts. The stable row and historical foreign keys remain so a
+profile deletion cannot destroy or misattribute benchmark evidence. Run
+creation locks the selected profiles to serialize against deletion.
+
 The WebUI provides protocol-aware structured controls:
 
 | Control | Responses API | Anthropic Messages | Compatible Chat | Ollama Chat |
@@ -946,9 +954,9 @@ The control plane validates exact rubric keys, criterion maxima, types,
 reference membership and injection-canary echoes. A malformed response receives
 one clean retry without replaying the candidate's previous output as an
 instruction. The normalized review reports citation reliability as high,
-medium or low. A Provider timeout, deleted model profile, invalid response or
-low-reliability review is visible and auditable but cannot fail an otherwise
-valid run.
+medium or low. A Provider timeout, archived or unavailable model profile,
+invalid response or low-reliability review is visible and auditable but cannot
+fail an otherwise valid run.
 
 The archive stores:
 

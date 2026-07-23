@@ -47,7 +47,7 @@ def admin_summary(
         users=count(session, UserAccount.id),
         enabled_users=count(session, UserAccount.id, UserAccount.enabled.is_(True)),
         admins=count(session, UserAccount.id, UserAccount.role == UserRole.admin),
-        models=count(session, ModelProfile.id),
+        models=count(session, ModelProfile.id, ModelProfile.archived_at.is_(None)),
         total_runs=count(session, BenchmarkRun.id),
         active_runs=count(
             session,

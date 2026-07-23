@@ -3,6 +3,26 @@
 All notable platform changes are recorded here. The project follows Semantic
 Versioning while individual benchmark scenarios retain independent versions.
 
+## [0.8.1] - 2026-07-24
+
+### Changed
+
+- Model-profile deletion now performs a credential-destroying archive:
+  encrypted API keys, endpoints, tool mode and inference parameters are
+  cleared, while stable rows and historical run foreign keys remain.
+- Missing non-secret candidate or judge identity snapshots are backfilled
+  before archival so old run results remain attributable and replayable.
+- Active runs serialize against profile changes and prevent deletion until
+  they finish or are cancelled; archived profiles are excluded from model
+  registries, run creation and dashboard counts.
+
+### Fixed
+
+- Replaced the foreign-key failure that made referenced model profiles
+  impossible to delete.
+- Added a bilingual destructive confirmation and visible active-run/error
+  feedback to model deletion instead of failing behind a closed edit dialog.
+
 ## [0.8.0] - 2026-07-23
 
 ### Added

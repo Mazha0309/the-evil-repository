@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from app.database import SessionLocal, get_session
 from app.events import append_event
 from app.investigation import graph_payload
+from app.model_identity import model_snapshot
 from app.models import (
     BenchmarkRun,
     ModelProfile,
@@ -50,13 +51,33 @@ def create_run(
     user: UserAccount = Depends(csrf_protection),
 ) -> BenchmarkRun:
     task = session.get(TaskDefinition, payload.task_id)
-    candidate = session.get(ModelProfile, payload.candidate_model_id)
-    judge = session.get(ModelProfile, payload.judge_model_id) if payload.judge_model_id else None
-    if not task or not task.enabled or not can_access_model(session, user, candidate) or not candidate.enabled:
+    model_ids = {payload.candidate_model_id}
+    if payload.judge_model_id is not None:
+        model_ids.add(payload.judge_model_id)
+    locked_profiles = session.scalars(
+        select(ModelProfile)
+        .where(ModelProfile.id.in_(model_ids))
+        .order_by(ModelProfile.id)
+        .with_for_update()
+    ).all()
+    profiles = {profile.id: profile for profile in locked_profiles}
+    candidate = profiles.get(payload.candidate_model_id)
+    judge = profiles.get(payload.judge_model_id) if payload.judge_model_id else None
+    if (
+        not task
+        or not task.enabled
+        or not can_access_model(session, user, candidate)
+        or not candidate.enabled
+        or candidate.archived_at is not None
+    ):
         raise HTTPException(status_code=400, detail="Unknown task or candidate model")
     if payload.judge_model_id == payload.candidate_model_id:
         raise HTTPException(status_code=400, detail="Candidate model cannot judge itself")
-    if payload.judge_model_id and (not can_access_model(session, user, judge) or not judge.enabled):
+    if payload.judge_model_id and (
+        not can_access_model(session, user, judge)
+        or not judge.enabled
+        or judge.archived_at is not None
+    ):
         raise HTTPException(status_code=400, detail="Unknown judge model")
     completion = task.manifest.get("completion", {})
     minimum_calls = int(completion.get("min_tool_calls", 0))
@@ -90,17 +111,6 @@ def create_run(
     session.commit()
     session.refresh(run)
     return run
-
-
-def model_snapshot(profile: ModelProfile) -> dict[str, str]:
-    """Freeze non-secret model identity for durable run attribution."""
-
-    return {
-        "profile_id": str(profile.id),
-        "name": profile.name,
-        "provider": profile.provider.value,
-        "model_id": profile.model_id,
-    }
 
 
 @router.get("/{run_id}", response_model=RunRead)

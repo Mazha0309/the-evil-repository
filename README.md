@@ -26,7 +26,7 @@ provider credentials.
 
 ## Status
 
-The platform is currently **v0.8.0** and remains under active construction.
+The platform is currently **v0.8.1** and remains under active construction.
 See [`CHANGELOG.md`](CHANGELOG.md). This release includes the canonical
 “terminal repository” challenge, account isolation, administrator controls,
 server monitoring, a live Agent activity console, and the complete execution,
@@ -58,6 +58,12 @@ field names. Additional Provider fields can be supplied as bounded JSON.
 Credentials, headers, prompts, model IDs, tool declarations, and transport
 fields are rejected from that JSON, and the Runner enforces the same boundary
 again when constructing every request.
+
+Deleting a model profile is a credential-destroying archive operation rather
+than a cascading database delete. Its API key, endpoint, and inference
+parameters are erased, while historical runs retain frozen non-secret model
+identity and remain replayable. A profile referenced by an active run cannot
+be deleted until that run finishes or is cancelled.
 
 The Runner executes multiple independent runs concurrently. Two slots are
 enabled by default; administrators can change the 1–16 slot limit live without

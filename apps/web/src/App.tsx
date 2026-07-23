@@ -69,7 +69,7 @@ import AccountPage from "./components/AccountPage";
 import AdminPage from "./components/AdminPage";
 import AuthScreen from "./components/AuthScreen";
 import LiveRunMonitor from "./components/LiveRunMonitor";
-import { api } from "./lib/api";
+import { api, ApiError } from "./lib/api";
 import { useLocale } from "./lib/i18n";
 import {
   buildModelParameters,
@@ -610,7 +610,9 @@ function ModelsPage() {
   const models = useQuery({ queryKey: ["models"], queryFn: api.models });
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<ModelProfile | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<ModelProfile | null>(null);
   const [error, setError] = useState("");
+  const [deleteError, setDeleteError] = useState("");
   const [provider, setProvider] = useState<ModelProvider>("openai_responses");
   const [baseUrl, setBaseUrl] = useState("");
   const [parameterDraft, setParameterDraft] = useState<ModelParameterDraft>(
@@ -633,10 +635,25 @@ function ModelsPage() {
   });
   const remove = useMutation({
     mutationFn: api.deleteModel,
-    onSuccess: () =>
-      void queryClient.invalidateQueries({ queryKey: ["models"] }),
-    onError: (cause) =>
-      setError(cause instanceof Error ? cause.message : String(cause)),
+    onSuccess: () => {
+      setConfirmDelete(null);
+      setDeleteError("");
+      void queryClient.invalidateQueries({ queryKey: ["models"] });
+      void queryClient.invalidateQueries({ queryKey: ["summary"] });
+      void queryClient.invalidateQueries({ queryKey: ["admin-summary"] });
+    },
+    onError: (cause) => {
+      setDeleteError(
+        cause instanceof ApiError && cause.status === 409
+          ? text(
+              "仍有进行中的测试使用此模型。请先完成或取消这些测试，再删除模型配置。",
+              "Active runs still use this model. Finish or cancel them before deleting the profile.",
+            )
+          : cause instanceof Error
+            ? cause.message
+            : String(cause),
+      );
+    },
   });
   const openCreate = () => {
     setEditing(null);
@@ -660,6 +677,15 @@ function ModelsPage() {
     setOpen(false);
     setEditing(null);
     setError("");
+  };
+  const openDelete = (model: ModelProfile) => {
+    setDeleteError("");
+    setConfirmDelete(model);
+  };
+  const closeDelete = () => {
+    if (remove.isPending) return;
+    setConfirmDelete(null);
+    setDeleteError("");
   };
   const updateParameter = (key: keyof ModelParameterDraft, value: string) => {
     setParameterDraft((current) => ({ ...current, [key]: value }));
@@ -732,7 +758,8 @@ function ModelsPage() {
                 </button>
                 <button
                   className="icon-button icon-button--danger"
-                  onClick={() => remove.mutate(model.id)}
+                  disabled={remove.isPending}
+                  onClick={() => openDelete(model)}
                   title={text("删除模型配置", "Delete model profile")}
                 >
                   <Trash2 size={15} />
@@ -801,6 +828,64 @@ function ModelsPage() {
           </button>
         )}
       </div>
+      {confirmDelete && (
+        <Modal
+          title={text("删除这个模型配置？", "Delete this model profile?")}
+          onClose={closeDelete}
+        >
+          <div className="destructive-confirmation">
+            <div className="destructive-confirmation__warning">
+              <OctagonAlert size={22} />
+              <div>
+                <strong>
+                  {text(
+                    "配置将从模型注册表中移除。",
+                    "The profile will be removed from the model registry.",
+                  )}
+                </strong>
+                <p>
+                  {text(
+                    "API 密钥、BaseURL 与推理参数会被清除；历史运行及其冻结的模型身份会保留。若仍有进行中的测试使用该配置，删除会被阻止。",
+                    "The API key, Base URL, and inference parameters will be erased. Historical runs and their frozen model identity remain. Deletion is blocked while an active run uses this profile.",
+                  )}
+                </p>
+              </div>
+            </div>
+            <dl>
+              <div>
+                <dt>{text("配置名称", "Profile")}</dt>
+                <dd>{confirmDelete.name}</dd>
+              </div>
+              <div>
+                <dt>{text("模型", "Model")}</dt>
+                <dd>{confirmDelete.model_id}</dd>
+              </div>
+            </dl>
+            {deleteError && <div className="inline-error">{deleteError}</div>}
+            <div className="modal__actions">
+              <button
+                className="button button--ghost"
+                type="button"
+                disabled={remove.isPending}
+                onClick={closeDelete}
+              >
+                {text("返回", "Go back")}
+              </button>
+              <button
+                className="button button--danger"
+                type="button"
+                disabled={remove.isPending}
+                onClick={() => remove.mutate(confirmDelete.id)}
+              >
+                <Trash2 size={14} />
+                {remove.isPending
+                  ? text("正在删除…", "Deleting…")
+                  : text("确认删除配置", "Delete profile")}
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
       {open && (
         <Modal
           title={
