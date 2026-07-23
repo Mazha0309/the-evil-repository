@@ -121,6 +121,20 @@ because it must not be confused with the Responses API. Provider credentials
 remain encrypted in the control plane and are never copied into a candidate
 container or run archive.
 
+Native tool arguments cross a strict protocol boundary. An adapter accepts only
+a complete JSON object; malformed, truncated, scalar, or array arguments become
+an `InvalidToolCall` and are never coerced to `{}`. The engine quarantines the
+entire response batch, records `provider.tool_call_invalid` with a bounded
+preview and digest, and asks for a fresh call without replaying the malformed
+payload as an instruction. Repeated invalid batches terminate cleanly after a
+fixed limit instead of crashing or looping forever.
+
+HTTP 408/425/429 and common 5xx responses, plus `httpx` transport failures such
+as read/connect timeouts and remote protocol errors, use one bounded retry
+policy. Every physical attempt passes through `provider.request`, consumes the
+raw request budget, and emits retry telemetry. Exhaustion raises an explicit
+terminal transport error rather than leaking a library exception.
+
 Profiles are mutable control-plane configuration with stable IDs. `PATCH`
 updates protocol, endpoint, model ID, tool mode, enabled state, and inference
 parameters. Omitting `api_key` preserves the existing encrypted credential;
@@ -346,6 +360,14 @@ load() → prepare() → run() → grade() → archive()
   atlas, replay, resource data, database audit, and reproducibility metadata;
 - hashes each artifact;
 - never archives provider keys or control-plane secrets.
+
+An unexpected exception after Scenario preparation triggers a best-effort
+failure checkpoint before sandbox cleanup. It stores the authoritative event
+stream, both repository diffs/status, bounded investigation artifacts,
+resource and incident ledgers, collection failures, and a structured exception
+summary. Registered artifacts are available through authenticated list/download
+endpoints and the run detail UI. The checkpoint is forensic and replayable but
+does not claim to serialize or resume the Provider conversation.
 
 React consumes normalized API data and does not inspect scenario internals.
 
@@ -1260,6 +1282,10 @@ active until its matching `tool.result` arrives. Event sequence numbers are
 authoritative, while wall-clock freshness and completion bars are clearly
 labelled derived views. The client requests only events after its last observed
 sequence so long runs do not repeatedly transfer the complete audit stream.
+
+`provider.tool_call_invalid` is a control-plane protocol event, not a candidate
+tool execution. It never increments `tool_calls`, never advances the incident
+clock, and never receives a fabricated `tool.result`.
 
 Pause is deliberately cooperative. The control plane first records
 `run.pause_requested`; the Runner records `run.paused` only after the current

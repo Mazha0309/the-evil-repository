@@ -3,12 +3,14 @@ import time
 import uuid
 from collections.abc import Generator
 from datetime import UTC, datetime
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.config import get_settings
 from app.database import SessionLocal, get_session
 from app.events import append_event
 from app.investigation import graph_payload
@@ -16,6 +18,7 @@ from app.model_identity import model_snapshot
 from app.models import (
     BenchmarkRun,
     ModelProfile,
+    RunArtifact,
     RunEvent,
     RunStatus,
     TaskDefinition,
@@ -24,10 +27,17 @@ from app.models import (
     UserRunAccess,
 )
 from app.scenario.agent_graph import AgentGraph, derive_agent_graph
-from app.schemas import EventRead, InvestigationGraph, RunCreate, RunRead
+from app.schemas import (
+    EventRead,
+    InvestigationGraph,
+    RunArtifactRead,
+    RunCreate,
+    RunRead,
+)
 from app.security import can_access_model, can_access_run, csrf_protection, current_user
 
 router = APIRouter(prefix="/runs", tags=["runs"])
+settings = get_settings()
 
 
 @router.get("", response_model=list[RunRead])
@@ -154,6 +164,56 @@ def get_run(
     if not can_access_run(session, user, run):
         raise HTTPException(status_code=404, detail="Run not found")
     return run
+
+
+@router.get("/{run_id}/artifacts", response_model=list[RunArtifactRead])
+def list_run_artifacts(
+    run_id: uuid.UUID,
+    session: Session = Depends(get_session),
+    user: UserAccount = Depends(current_user),
+) -> list[RunArtifact]:
+    if not can_access_run(session, user, session.get(BenchmarkRun, run_id)):
+        raise HTTPException(status_code=404, detail="Run not found")
+    return list(
+        session.scalars(
+            select(RunArtifact)
+            .where(RunArtifact.run_id == run_id)
+            .order_by(RunArtifact.created_at)
+        ).all()
+    )
+
+
+@router.get("/{run_id}/artifacts/{artifact_id}")
+def download_run_artifact(
+    run_id: uuid.UUID,
+    artifact_id: uuid.UUID,
+    session: Session = Depends(get_session),
+    user: UserAccount = Depends(current_user),
+) -> FileResponse:
+    if not can_access_run(session, user, session.get(BenchmarkRun, run_id)):
+        raise HTTPException(status_code=404, detail="Run not found")
+    artifact = session.scalar(
+        select(RunArtifact).where(
+            RunArtifact.id == artifact_id,
+            RunArtifact.run_id == run_id,
+        )
+    )
+    if artifact is None:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+    artifact_root = Path(settings.artifact_root).resolve()
+    artifact_path = Path(artifact.path).resolve()
+    if (
+        artifact_path != artifact_root
+        and artifact_root not in artifact_path.parents
+    ):
+        raise HTTPException(status_code=404, detail="Artifact not found")
+    if not artifact_path.is_file():
+        raise HTTPException(status_code=410, detail="Artifact file is unavailable")
+    return FileResponse(
+        artifact_path,
+        media_type=artifact.media_type,
+        filename=artifact.name,
+    )
 
 
 @router.get("/{run_id}/events", response_model=list[EventRead])

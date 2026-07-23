@@ -60,6 +60,9 @@ export default function LiveRunMonitor({
   const softBudgetWarning = [...events]
     .reverse()
     .find((event) => event.kind === "run.soft_budget_warning");
+  const latestProtocolRepair = [...events]
+    .reverse()
+    .find((event) => event.kind === "provider.tool_call_invalid");
   const wallElapsedMs = run.started_at
     ? Math.max(
         0,
@@ -218,6 +221,17 @@ export default function LiveRunMonitor({
           <div className="live-warning">
             <Gauge size={14} />
             <span>{softBudgetDetail(softBudgetWarning, locale)}</span>
+          </div>
+        )}
+        {latestProtocolRepair && (
+          <div className="live-warning">
+            <ShieldAlert size={14} />
+            <span>
+              {text(
+                `Provider 曾返回不完整的工具参数；Runner 已隔离且未执行，并发起修复轮次（累计 ${analysis.protocolRepairs} 次）。`,
+                `The Provider returned incomplete tool arguments; the Runner quarantined them without execution and requested a repair turn (${analysis.protocolRepairs} total).`,
+              )}
+            </span>
           </div>
         )}
       </section>

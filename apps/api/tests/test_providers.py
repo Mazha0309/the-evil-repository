@@ -95,6 +95,76 @@ def test_openai_responses_adapter_normalizes_tools_and_usage() -> None:
     assert (turn.input_tokens, turn.output_tokens) == (91, 12)
 
 
+def test_truncated_native_tool_arguments_are_quarantined_not_executed() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": None,
+                            "tool_calls": [
+                                {
+                                    "id": "call_truncated",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "read_file",
+                                        "arguments": '{"path":"packages/runtime/src/normalize.ts"',
+                                    },
+                                }
+                            ],
+                        }
+                    }
+                ],
+                "usage": {"prompt_tokens": 101, "completion_tokens": 9},
+            },
+        )
+
+    client = ModelClient(profile(ModelProvider.openai_compatible), "secret")
+    client.client = httpx.Client(transport=httpx.MockTransport(handler))
+
+    turn = client.complete(MESSAGES, TOOLS)
+
+    assert turn.tool_calls == []
+    assert len(turn.invalid_tool_calls) == 1
+    invalid = turn.invalid_tool_calls[0]
+    assert invalid.call_id == "call_truncated"
+    assert invalid.name == "read_file"
+    assert "invalid JSON" in invalid.error
+    assert invalid.arguments_preview.endswith('"')
+    assert len(invalid.arguments_sha256) == 64
+    assert (turn.input_tokens, turn.output_tokens) == (101, 9)
+
+
+def test_non_object_native_tool_arguments_are_quarantined() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "output": [
+                    {
+                        "type": "function_call",
+                        "call_id": "call_array",
+                        "name": "read_file",
+                        "arguments": '["README.md"]',
+                    }
+                ],
+                "usage": {},
+            },
+        )
+
+    client = ModelClient(profile(ModelProvider.openai_responses), "secret")
+    client.client = httpx.Client(transport=httpx.MockTransport(handler))
+
+    turn = client.complete(MESSAGES, TOOLS)
+
+    assert turn.tool_calls == []
+    assert turn.invalid_tool_calls[0].error == (
+        "tool arguments must decode to a JSON object"
+    )
+
+
 def test_anthropic_adapter_normalizes_tool_blocks_and_usage() -> None:
     captured: dict = {}
 
@@ -223,6 +293,79 @@ def test_persistent_provider_rate_limit_has_explicit_terminal_error() -> None:
     with pytest.raises(
         ProviderTransientError,
         match="HTTP 429.*after 3 attempts",
+    ):
+        client.complete(MESSAGES, [])
+    assert attempts == 3
+
+
+def test_provider_transport_error_retries_and_recovers() -> None:
+    attempts = 0
+    retries: list[dict] = []
+    requests: list[dict] = []
+    delays: list[float] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise httpx.ReadTimeout("upstream stalled", request=request)
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": "recovered"}}],
+                "usage": {},
+            },
+        )
+
+    client = ModelClient(
+        profile(ModelProvider.openai_compatible),
+        "secret",
+        max_retries=2,
+        on_retry=retries.append,
+        on_request=requests.append,
+    )
+    client.client = httpx.Client(transport=httpx.MockTransport(handler))
+    client._sleep = delays.append
+
+    turn = client.complete(MESSAGES, [])
+
+    assert turn.content == "recovered"
+    assert attempts == 2
+    assert [request["request_number"] for request in requests] == [1, 2]
+    assert delays == [2.0]
+    assert retries == [
+        {
+            "provider": "openai_compatible",
+            "model_id": "test-model",
+            "status_code": None,
+            "error_type": "ReadTimeout",
+            "failed_attempt": 1,
+            "next_attempt": 2,
+            "maximum_attempts": 3,
+            "delay_seconds": 2.0,
+        }
+    ]
+
+
+def test_persistent_provider_transport_error_has_explicit_terminal_error() -> None:
+    attempts = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        raise httpx.ConnectError("unreachable", request=request)
+
+    client = ModelClient(
+        profile(ModelProvider.openai_compatible),
+        "secret",
+        max_retries=2,
+    )
+    client.client = httpx.Client(transport=httpx.MockTransport(handler))
+    client._sleep = lambda _seconds: None
+
+    with pytest.raises(
+        ProviderTransientError,
+        match=r"transport failure \(ConnectError\).*after 3 attempts",
     ):
         client.complete(MESSAGES, [])
     assert attempts == 3

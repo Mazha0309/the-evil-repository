@@ -9,6 +9,21 @@ class ToolCall(BaseModel):
     arguments: dict[str, Any] = Field(default_factory=dict)
 
 
+class InvalidToolCall(BaseModel):
+    """A Provider tool call that could not be decoded safely.
+
+    Invalid calls are evidence, not executable actions. The Runner records the
+    bounded preview and asks the model for a fresh call instead of guessing at
+    truncated arguments.
+    """
+
+    call_id: str
+    name: str
+    error: str
+    arguments_preview: str = ""
+    arguments_sha256: str = ""
+
+
 class ToolResult(BaseModel):
     call_id: str
     name: str
@@ -22,6 +37,7 @@ class ToolResult(BaseModel):
 class AssistantTurn(BaseModel):
     content: str = ""
     tool_calls: list[ToolCall] = Field(default_factory=list)
+    invalid_tool_calls: list[InvalidToolCall] = Field(default_factory=list)
     input_tokens: int = 0
     output_tokens: int = 0
 

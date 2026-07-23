@@ -302,6 +302,21 @@ export interface Run {
   completed_at: string | null;
 }
 
+export interface RunArtifact {
+  id: string;
+  run_id: string;
+  name: string;
+  media_type: string;
+  sha256: string;
+  size: number;
+  metadata_json: {
+    kind?: "scenario-run-archive" | "failure-checkpoint" | string;
+    resumable?: boolean;
+    replayable?: boolean;
+  };
+  created_at: string;
+}
+
 export interface RunEvent {
   id: number;
   run_id: string;

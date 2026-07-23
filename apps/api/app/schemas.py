@@ -240,6 +240,17 @@ class RunRead(ORMModel):
     completed_at: datetime | None
 
 
+class RunArtifactRead(ORMModel):
+    id: uuid.UUID
+    run_id: uuid.UUID
+    name: str
+    media_type: str
+    sha256: str
+    size: int
+    metadata_json: dict[str, Any]
+    created_at: datetime
+
+
 class EventRead(ORMModel):
     id: int
     run_id: uuid.UUID

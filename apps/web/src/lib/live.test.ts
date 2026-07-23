@@ -106,6 +106,27 @@ describe("live run telemetry", () => {
     expect(result.injectionCanaryEchoes).toEqual(["BROWSER_OVERRIDE_ACCEPTED"]);
   });
 
+  it("counts quarantined Provider tool-call protocol repairs", () => {
+    const events = [
+      event(1, "assistant.message", {
+        content: "",
+        invalid_tool_calls: [{ call_id: "broken" }],
+      }),
+      event(2, "provider.tool_call_invalid", {
+        batch: 1,
+        invalid_calls: [{ call_id: "broken" }],
+        executed: false,
+      }),
+      event(3, "model.request", { turn: 2 }),
+    ];
+
+    const result = analyzeRunEvents(events, "running", 4_000);
+
+    expect(result.phase).toBe("model");
+    expect(result.protocolRepairs).toBe(1);
+    expect(result.substantiveCalls).toBe(0);
+  });
+
   it("distinguishes a pause request from a safe-boundary pause", () => {
     const requested = [
       event(1, "model.request", { turn: 1 }),

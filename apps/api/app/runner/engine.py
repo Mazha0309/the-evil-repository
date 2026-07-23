@@ -25,6 +25,9 @@ class HardResourceBudgetExceeded(RuntimeError):
     """Raised before a Provider retry would exceed the configured hard cap."""
 
 
+MAX_INVALID_TOOL_CALL_BATCHES = 8
+
+
 class AgentEngine:
     def __init__(
         self,
@@ -51,6 +54,8 @@ class AgentEngine:
         self.tool_calls = 0
         self.events: list[dict[str, Any]] = []
         self.final_rejections = 0
+        self.invalid_tool_call_batches = 0
+        self.invalid_tool_calls = 0
         self.completion_gaps: list[str] = []
         self.paused_seconds = 0.0
         self.soft_budget_warnings: set[str] = set()
@@ -126,6 +131,10 @@ class AgentEngine:
                     "turn": turn_number,
                     "content": turn.content,
                     "tool_calls": [call.model_dump(mode="json") for call in turn.tool_calls],
+                    "invalid_tool_calls": [
+                        call.model_dump(mode="json")
+                        for call in turn.invalid_tool_calls
+                    ],
                     "input_tokens": turn.input_tokens,
                     "output_tokens": turn.output_tokens,
                     "provider_requests_total": self.provider_requests,
@@ -141,6 +150,52 @@ class AgentEngine:
                     "could be accepted."
                 )
                 break
+            if turn.invalid_tool_calls:
+                self.invalid_tool_call_batches += 1
+                self.invalid_tool_calls += len(turn.invalid_tool_calls)
+                self._event(
+                    "provider.tool_call_invalid",
+                    {
+                        "turn": turn_number,
+                        "batch": self.invalid_tool_call_batches,
+                        "invalid_calls": [
+                            call.model_dump(mode="json")
+                            for call in turn.invalid_tool_calls
+                        ],
+                        "discarded_valid_calls": len(turn.tool_calls),
+                        "executed": False,
+                    },
+                )
+                messages.append(
+                    {
+                        "role": "assistant",
+                        "content": (
+                            turn.content
+                            or "A native tool-call response was rejected by the "
+                            "Runner protocol validator."
+                        ),
+                    }
+                )
+                if self.invalid_tool_call_batches >= MAX_INVALID_TOOL_CALL_BATCHES:
+                    final_response = (
+                        "The model repeatedly returned malformed native tool "
+                        "arguments. No malformed call was executed."
+                    )
+                    break
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "Runner protocol repair: the previous response contained "
+                            "one or more native tool calls whose arguments were not a "
+                            "complete JSON object. No tool from that response was "
+                            "executed. Submit a fresh tool call with one complete JSON "
+                            "object matching the tool schema. Do not continue from a "
+                            "truncated argument string."
+                        ),
+                    }
+                )
+                continue
             messages.append(self._assistant_message(turn, native))
             if not self._wait_for_resume():
                 final_response = "Run cancelled."
@@ -250,10 +305,47 @@ class AgentEngine:
                 "completion_actions": completion_actions,
                 "substantive_tool_calls": substantive_tool_call_count(self.events),
                 "final_rejections": self.final_rejections,
+                "invalid_tool_call_batches": self.invalid_tool_call_batches,
+                "invalid_tool_calls": self.invalid_tool_calls,
                 "paused_seconds": self.paused_seconds,
                 "soft_budget_warnings": sorted(self.soft_budget_warnings),
                 "hard_budget_reasons": self.hard_budget_reasons,
                 "incident_audit": self.incident.audit() if self.incident else {},
+            },
+        )
+
+    def checkpoint_result(self, error: Exception) -> ScenarioRunResult:
+        """Capture the bounded in-memory ledger after an unexpected interruption."""
+
+        return ScenarioRunResult(
+            final_response=(
+                f"Run interrupted by {type(error).__name__}; candidate state was "
+                "preserved in a failure checkpoint."
+            ),
+            elapsed_seconds=self._active_elapsed(),
+            tool_calls=self.tool_calls,
+            events=list(self.events),
+            private_state={
+                "input_tokens": self.input_tokens,
+                "output_tokens": self.output_tokens,
+                "provider_requests": self.provider_requests,
+                "resource_ledger": self._resource_ledger(),
+                "repeated_reads": {
+                    path: count
+                    for path, count in self.read_counts.items()
+                    if count > 1
+                },
+                "final_rejections": self.final_rejections,
+                "invalid_tool_call_batches": self.invalid_tool_call_batches,
+                "invalid_tool_calls": self.invalid_tool_calls,
+                "paused_seconds": self.paused_seconds,
+                "soft_budget_warnings": sorted(self.soft_budget_warnings),
+                "hard_budget_reasons": self.hard_budget_reasons,
+                "incident_audit": self.incident.audit() if self.incident else {},
+                "failure": {
+                    "type": type(error).__name__,
+                    "message": str(error)[:4_000],
+                },
             },
         )
 
@@ -838,6 +930,8 @@ class AgentEngine:
             "input_tokens": self.input_tokens,
             "output_tokens": self.output_tokens,
             "total_tokens": self.input_tokens + self.output_tokens,
+            "invalid_tool_call_batches": self.invalid_tool_call_batches,
+            "invalid_tool_calls": self.invalid_tool_calls,
             "budgets": budget.model_dump(mode="json"),
             "soft_limits_crossed": sorted(self.soft_budget_warnings),
             "hard_limits_crossed": self.hard_budget_reasons,

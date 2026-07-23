@@ -26,7 +26,7 @@ provider credentials.
 
 ## Status
 
-The platform is currently **v0.9.0** and remains under active construction.
+The platform is currently **v0.9.1** and remains under active construction.
 See [`CHANGELOG.md`](CHANGELOG.md). This release includes the canonical
 “terminal repository” challenge, account isolation, administrator controls,
 server monitoring, a live Agent activity console, and the complete execution,
@@ -45,6 +45,19 @@ Long investigations can be paused at a safe Provider/tool boundary and resumed
 without discarding the candidate workspace or conversation. Paused time does
 not consume the configured hard execution budget. Pause state is held by the
 live Runner process; it does not make a run safe to survive a Runner restart.
+
+Malformed native tool arguments are quarantined rather than executed or treated
+as an empty object. The whole mixed tool-call batch is rejected, an auditable
+`provider.tool_call_invalid` event is recorded, and the model receives a clean
+repair turn. Provider read/connect/protocol transport failures use bounded
+backoff, and every HTTP attempt still consumes the configured raw Provider
+request budget.
+
+If an unexpected terminal exception occurs after Scenario preparation, the
+Runner preserves a downloadable forensic checkpoint before removing the
+container. It contains the event stream, repository diffs/status, bounded
+investigation artifacts, incident audit, resource ledger, and failure summary.
+This checkpoint is replayable evidence, not a resumable model conversation.
 
 The control plane supports four explicit model protocols: OpenAI Responses,
 Anthropic Messages, OpenAI-compatible Chat Completions, and Ollama Chat.
@@ -78,7 +91,7 @@ Terminal run results can be soft-deleted with a separate confirmation.
 Soft-deletion hides the run from lists, dashboards, score aggregates, detail
 pages, and report endpoints without removing scores, events, graphs, artifacts,
 ownership, or replay data. Active runs must first finish or be cancelled. The
-retained row can be recovered administratively from the database; v0.9.0 does
+retained row can be recovered administratively from the database; v0.9.1 does
 not yet expose a restore UI.
 
 An optional independent LLM semantic judge now performs a real second Provider
@@ -235,8 +248,10 @@ administrator console can change it later without a restart. Each active slot
 can consume the configured per-sandbox CPU, memory and workspace limits and
 can issue independent Provider requests, so reduce it on a small machine or
 under a low API rate limit. HTTP 408/425/429 and common 5xx responses use
-bounded `Retry-After`-aware backoff; a Provider that remains unavailable after
-the retry budget still fails the run explicitly.
+bounded `Retry-After`-aware backoff; read/connect/protocol transport failures
+use the same bounded policy. A Provider that remains unavailable after the
+retry budget still fails explicitly and leaves a downloadable forensic
+checkpoint when Scenario preparation had completed.
 
 Deployment and shutdown fail closed while any run is queued, preparing,
 running, or scoring. Wait for those runs to finish or cancel them in the WebUI.

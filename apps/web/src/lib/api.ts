@@ -9,6 +9,7 @@ import type {
   BenchmarkSuite,
   PlatformSettings,
   Run,
+  RunArtifact,
   RunEvent,
   ServerMonitor,
   Task,
@@ -101,6 +102,10 @@ export const api = {
   models: () => request<ModelProfile[]>("/models"),
   runs: () => request<Run[]>("/runs"),
   run: (id: string) => request<Run>(`/runs/${id}`),
+  runArtifacts: (id: string) =>
+    request<RunArtifact[]>(`/runs/${id}/artifacts`),
+  runArtifactUrl: (runId: string, artifactId: string) =>
+    `${API_BASE}/runs/${runId}/artifacts/${artifactId}`,
   events: (id: string, after = 0) =>
     request<RunEvent[]>(`/runs/${id}/events?after=${after}`),
   graph: (id: string) => request<InvestigationGraph>(`/runs/${id}/graph`),

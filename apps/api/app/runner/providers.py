@@ -1,3 +1,4 @@
+import hashlib
 import json
 import logging
 import time
@@ -10,7 +11,7 @@ import httpx
 
 from app.model_parameters import safe_model_parameters
 from app.models import ModelProfile, ModelProvider
-from app.runner.protocol import AssistantTurn, ToolCall
+from app.runner.protocol import AssistantTurn, InvalidToolCall, ToolCall
 
 logger = logging.getLogger("evil-runner.providers")
 RETRYABLE_PROVIDER_STATUS = {408, 425, 429, 500, 502, 503, 504}
@@ -82,15 +83,16 @@ class ModelClient:
         body = response.json()
         message = body["choices"][0]["message"]
         usage = body.get("usage", {})
-        calls = []
+        calls: list[ToolCall] = []
+        invalid_calls: list[InvalidToolCall] = []
         for item in message.get("tool_calls", []):
             function = item["function"]
-            calls.append(
-                ToolCall(
-                    call_id=item.get("id", str(uuid.uuid4())),
-                    name=function["name"],
-                    arguments=json.loads(function.get("arguments") or "{}"),
-                )
+            append_tool_call(
+                calls,
+                invalid_calls,
+                call_id=item.get("id", str(uuid.uuid4())),
+                name=function["name"],
+                arguments=function.get("arguments"),
             )
         content = message.get("content") or ""
         if not self.profile.native_tools and not calls:
@@ -98,6 +100,7 @@ class ModelClient:
         return AssistantTurn(
             content=content,
             tool_calls=calls,
+            invalid_tool_calls=invalid_calls,
             input_tokens=int(usage.get("prompt_tokens", 0)),
             output_tokens=int(usage.get("completion_tokens", 0)),
         )
@@ -135,14 +138,15 @@ class ModelClient:
         body = response.json()
         content: list[str] = []
         calls: list[ToolCall] = []
+        invalid_calls: list[InvalidToolCall] = []
         for item in body.get("output", []):
             if item.get("type") == "function_call":
-                calls.append(
-                    ToolCall(
-                        call_id=item.get("call_id") or item.get("id") or str(uuid.uuid4()),
-                        name=item["name"],
-                        arguments=parse_arguments(item.get("arguments")),
-                    )
+                append_tool_call(
+                    calls,
+                    invalid_calls,
+                    call_id=item.get("call_id") or item.get("id") or str(uuid.uuid4()),
+                    name=item["name"],
+                    arguments=item.get("arguments"),
                 )
             elif item.get("type") == "message":
                 for block in item.get("content", []):
@@ -155,6 +159,7 @@ class ModelClient:
         return AssistantTurn(
             content=joined,
             tool_calls=calls,
+            invalid_tool_calls=invalid_calls,
             input_tokens=int(usage.get("input_tokens", 0)),
             output_tokens=int(usage.get("output_tokens", 0)),
         )
@@ -200,16 +205,17 @@ class ModelClient:
         body = response.json()
         content: list[str] = []
         calls: list[ToolCall] = []
+        invalid_calls: list[InvalidToolCall] = []
         for block in body.get("content", []):
             if block.get("type") == "text":
                 content.append(str(block.get("text", "")))
             elif block.get("type") == "tool_use":
-                calls.append(
-                    ToolCall(
-                        call_id=block.get("id", str(uuid.uuid4())),
-                        name=block["name"],
-                        arguments=block.get("input") or {},
-                    )
+                append_tool_call(
+                    calls,
+                    invalid_calls,
+                    call_id=block.get("id", str(uuid.uuid4())),
+                    name=block["name"],
+                    arguments=block.get("input"),
                 )
         joined = "\n".join(part for part in content if part)
         if not self.profile.native_tools and not calls:
@@ -218,6 +224,7 @@ class ModelClient:
         return AssistantTurn(
             content=joined,
             tool_calls=calls,
+            invalid_tool_calls=invalid_calls,
             input_tokens=int(usage.get("input_tokens", 0)),
             output_tokens=int(usage.get("output_tokens", 0)),
         )
@@ -248,15 +255,16 @@ class ModelClient:
         response.raise_for_status()
         body = response.json()
         message = body["message"]
-        calls = []
+        calls: list[ToolCall] = []
+        invalid_calls: list[InvalidToolCall] = []
         for item in message.get("tool_calls", []):
             function = item["function"]
-            calls.append(
-                ToolCall(
-                    call_id=str(uuid.uuid4()),
-                    name=function["name"],
-                    arguments=function.get("arguments") or {},
-                )
+            append_tool_call(
+                calls,
+                invalid_calls,
+                call_id=str(uuid.uuid4()),
+                name=function["name"],
+                arguments=function.get("arguments"),
             )
         content = message.get("content") or ""
         if not self.profile.native_tools and not calls:
@@ -264,6 +272,7 @@ class ModelClient:
         return AssistantTurn(
             content=content,
             tool_calls=calls,
+            invalid_tool_calls=invalid_calls,
             input_tokens=int(body.get("prompt_eval_count", 0)),
             output_tokens=int(body.get("eval_count", 0)),
         )
@@ -281,7 +290,40 @@ class ModelClient:
             if self.on_request:
                 self.on_request(request)
             self.request_attempts += 1
-            response = self.client.post(url, **kwargs)
+            try:
+                response = self.client.post(url, **kwargs)
+            except httpx.TransportError as exc:
+                if attempt >= self.max_retries:
+                    raise ProviderTransientError(
+                        f"Provider transport failure ({type(exc).__name__}) persisted after "
+                        f"{maximum_attempts} attempts for model {self.profile.model_id}"
+                    ) from exc
+                delay = provider_transport_retry_delay(attempt)
+                retry = {
+                    "provider": self.profile.provider.value,
+                    "model_id": self.profile.model_id,
+                    "status_code": None,
+                    "error_type": type(exc).__name__,
+                    "failed_attempt": attempt + 1,
+                    "next_attempt": attempt + 2,
+                    "maximum_attempts": maximum_attempts,
+                    "delay_seconds": delay,
+                }
+                logger.warning(
+                    "Provider transport error %s for %s; retrying attempt %d/%d in %.2fs",
+                    type(exc).__name__,
+                    self.profile.model_id,
+                    attempt + 2,
+                    maximum_attempts,
+                    delay,
+                )
+                if self.on_retry:
+                    try:
+                        self.on_retry(retry)
+                    except Exception:
+                        logger.exception("Failed to archive Provider retry telemetry")
+                self._sleep(delay)
+                continue
             if response.status_code not in RETRYABLE_PROVIDER_STATUS:
                 return response
             if attempt >= self.max_retries:
@@ -341,6 +383,65 @@ def provider_retry_delay(response: httpx.Response, attempt: int) -> float:
     return round(max(0.25, min(30.0, seconds)), 3)
 
 
+def provider_transport_retry_delay(attempt: int) -> float:
+    return min(30.0, float(2 ** (attempt + 1)))
+
+
+def append_tool_call(
+    calls: list[ToolCall],
+    invalid_calls: list[InvalidToolCall],
+    *,
+    call_id: str,
+    name: str,
+    arguments: Any,
+) -> None:
+    parsed, error = parse_tool_arguments(arguments)
+    if error is None:
+        calls.append(
+            ToolCall(
+                call_id=call_id,
+                name=name,
+                arguments=parsed or {},
+            )
+        )
+        return
+    raw = raw_arguments_text(arguments)
+    invalid_calls.append(
+        InvalidToolCall(
+            call_id=call_id,
+            name=name,
+            error=error,
+            arguments_preview=raw[:512],
+            arguments_sha256=hashlib.sha256(raw.encode()).hexdigest(),
+        )
+    )
+
+
+def parse_tool_arguments(value: Any) -> tuple[dict[str, Any] | None, str | None]:
+    if isinstance(value, dict):
+        return value, None
+    if value is None or value == "":
+        return {}, None
+    try:
+        parsed = json.loads(str(value))
+    except (json.JSONDecodeError, TypeError, ValueError) as exc:
+        if isinstance(exc, json.JSONDecodeError):
+            return None, f"invalid JSON at character {exc.pos}: {exc.msg}"
+        return None, f"invalid tool arguments: {type(exc).__name__}"
+    if not isinstance(parsed, dict):
+        return None, "tool arguments must decode to a JSON object"
+    return parsed, None
+
+
+def raw_arguments_text(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    try:
+        return json.dumps(value, ensure_ascii=False, sort_keys=True)
+    except (TypeError, ValueError):
+        return repr(value)
+
+
 def parse_json_fallback(content: str) -> list[ToolCall]:
     try:
         payload = json.loads(content.strip())
@@ -358,15 +459,8 @@ def parse_json_fallback(content: str) -> list[ToolCall]:
 
 
 def parse_arguments(value: Any) -> dict[str, Any]:
-    if isinstance(value, dict):
-        return value
-    if not value:
-        return {}
-    try:
-        parsed = json.loads(str(value))
-    except json.JSONDecodeError:
-        return {}
-    return parsed if isinstance(parsed, dict) else {}
+    parsed, error = parse_tool_arguments(value)
+    return parsed if error is None and parsed is not None else {}
 
 
 def openai_responses_input(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
