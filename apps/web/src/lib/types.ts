@@ -95,6 +95,10 @@ export interface Task {
       hard_seconds: number;
       soft_tool_calls: number;
       hard_tool_calls: number;
+      soft_provider_requests?: number;
+      hard_provider_requests?: number;
+      soft_total_tokens?: number | null;
+      hard_total_tokens?: number | null;
     };
     context_pressure?: {
       target_files: number;
@@ -117,6 +121,39 @@ export interface Task {
   enabled: boolean;
   created_at: string;
   updated_at: string;
+}
+
+export interface BenchmarkSuite {
+  schema_version: number;
+  slug: string;
+  version: string;
+  name: string;
+  description: string;
+  families: Array<{
+    id: string;
+    name: string;
+    description: string;
+    capabilities: string[];
+    status: "active" | "planned" | "retired";
+  }>;
+  scenarios: Array<{
+    slug: string;
+    version: string;
+    family: string;
+    split: "development" | "validation" | "held_out";
+    instances: number;
+    weight: number;
+  }>;
+  readiness: {
+    active_families: number;
+    held_out_families: number;
+    scenario_references: number;
+    required_active_families: number;
+    required_held_out_families: number;
+    required_scenarios: number;
+    leaderboard_eligible: boolean;
+  };
+  localizations?: Record<string, { name?: string; description?: string }>;
 }
 
 export interface CompletionSpec {
@@ -241,6 +278,13 @@ export interface Run {
     behavior_profile?: Record<string, number>;
     error_profile?: Record<string, number>;
     semantic_review?: SemanticJudgeReview;
+    resources?: Record<string, unknown>;
+    agent_graph?: {
+      schema_version: number;
+      execution_mode: "single_agent" | "multi_agent";
+      agent_count: number;
+      edge_count: number;
+    };
     completion?: {
       met: boolean;
       tool_calls: number;

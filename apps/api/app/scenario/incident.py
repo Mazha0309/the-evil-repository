@@ -87,6 +87,12 @@ class IncidentDirector:
         handlers = {
             "incident_status": self._status,
             "observe_service": self._observe,
+            "process_list": self._observability,
+            "service_status": self._observability,
+            "journal_query": self._observability,
+            "socket_snapshot": self._observability,
+            "trace_process": self._observability,
+            "profile_cpu": self._observability,
             "incident_snapshot": self._snapshot,
             "incident_action": self._action,
             "incident_rollback": self._rollback,
@@ -413,6 +419,190 @@ class IncidentDirector:
             incident_kind="observation",
             observation_id=observation_id,
             observation_key=f"{service}:{signal}:{window}",
+        )
+
+    def _observability(self, call: ToolCall) -> ToolResult:
+        """Run a deterministic, project-mediated operating-system probe."""
+
+        service = str(call.arguments.get("service", "")).strip()
+        window = str(call.arguments.get("window", "current")).strip().casefold()
+        if service not in self.plan.get("services", {}):
+            return self._error(call, f"Unknown service: {service}")
+        if window not in OBSERVATION_WINDOWS:
+            return self._error(call, f"Unsupported window: {window}")
+
+        signal_by_tool = {
+            "process_list": "dependencies",
+            "service_status": "config",
+            "journal_query": "logs",
+            "socket_snapshot": "queue",
+            "trace_process": "traces",
+            "profile_cpu": "metrics",
+        }
+        signal = signal_by_tool[call.name]
+        reading = self._service_reading(service, signal, window)
+        noise = self._noise(call.name, service, window, self.tick)
+        pid = 1_000 + self._noise("pid", service)
+        pulse = bool(
+            reading.get("attestation_exit_41")
+            or reading.get("failed_spans")
+        )
+        payloads: dict[str, dict[str, Any]] = {
+            "process_list": {
+                "processes": [
+                    {
+                        "pid": pid,
+                        "ppid": 1,
+                        "command": f"/srv/{service} --profile=active",
+                        "state": "S" if not pulse else "D",
+                        "cpu_percent": round(1.2 + noise / 31, 2),
+                    },
+                    {
+                        "pid": pid + 1,
+                        "ppid": pid,
+                        "command": "relay-child --compat=runtime",
+                        "state": "Z" if pulse else "S",
+                        "cpu_percent": 0.0,
+                    },
+                    {
+                        "pid": pid + 17,
+                        "ppid": 1,
+                        "command": "restored-monitor --clock=archive",
+                        "state": "S",
+                        "cpu_percent": round(12 + noise / 7, 2),
+                    },
+                ],
+                "namespace": "scenario-replay",
+            },
+            "service_status": {
+                "unit": f"{service}.service",
+                "active_state": "active",
+                "sub_state": "running",
+                "main_pid": pid,
+                "restart_count": 0,
+                "unit_file_source": "replay-manifest",
+                "health_note": (
+                    "A running unit is not proof that child work succeeded."
+                ),
+                "reading": reading,
+            },
+            "journal_query": {
+                "query": str(call.arguments.get("query", ""))[:200],
+                "entries_scanned": 38_000 + noise,
+                "entries_returned": min(
+                    int(call.arguments.get("limit", 50)),
+                    50,
+                ),
+                "dominant_entry": (
+                    "ERROR redis timeout source=restored-renderer "
+                    "clock=archive"
+                ),
+                "low_volume_entry": (
+                    f"INFO service={service} child_exit="
+                    f"{41 if pulse else 0} boundary=tenant-literal"
+                ),
+                "reading": reading,
+            },
+            "socket_snapshot": {
+                "sockets": [
+                    {
+                        "protocol": "tcp",
+                        "local": f"10.88.0.{noise % 200 + 2}:8443",
+                        "peer": "10.88.1.17:443",
+                        "state": "ESTABLISHED",
+                        "send_queue": int(reading.get("queue_depth", 0)),
+                        "receive_queue": 0,
+                    },
+                    {
+                        "protocol": "tcp",
+                        "local": "127.0.0.1:6379",
+                        "peer": "127.0.0.1:42000",
+                        "state": "ESTABLISHED",
+                        "send_queue": 0,
+                        "receive_queue": 0,
+                        "provenance": "restored-monitor namespace",
+                    },
+                ],
+                "packet_capture": "metadata-only deterministic replay",
+                "reading": reading,
+            },
+            "trace_process": {
+                "pid": pid,
+                "operation": str(
+                    call.arguments.get("operation", "next-request")
+                )[:120],
+                "syscalls": [
+                    "epoll_wait(…, 250) = 1",
+                    "read(config_fd, profile=v2/v1) = 21",
+                    (
+                        "wait4(child, exit=41) = child"
+                        if pulse
+                        else "wait4(child, exit=0) = child"
+                    ),
+                    "write(audit_fd, aggregate_exit=0) = 17",
+                ],
+                "trace_scope": "simulated service namespace",
+                "reading": reading,
+            },
+            "profile_cpu": {
+                "sample_seconds": min(
+                    max(int(call.arguments.get("sample_seconds", 10)), 1),
+                    60,
+                ),
+                "top_frames": [
+                    {
+                        "frame": "restored_monitor::render_errors",
+                        "percent": round(44 + noise / 10, 2),
+                        "clock_domain": "archive",
+                    },
+                    {
+                        "frame": f"{service}::handle",
+                        "percent": round(8 + noise / 20, 2),
+                        "clock_domain": "server-monotonic",
+                    },
+                ],
+                "warning": (
+                    "CPU share includes a restored monitor and cannot establish "
+                    "live service latency without a matching clock domain."
+                ),
+                "reading": reading,
+            },
+        }
+        observation_id = f"obs-{len(self.observations) + 1:04d}"
+        self.observations.append(
+            {
+                "observation_id": observation_id,
+                "tick": self.tick,
+                "phase": self._phase_at(self.tick),
+                "service": service,
+                "signal": f"os:{call.name}",
+                "window": window,
+            }
+        )
+        return self._json_result(
+            call,
+            {
+                "observation_id": observation_id,
+                "logical_time": self.logical_time,
+                "service": service,
+                "window": window,
+                "probe": call.name,
+                "result": payloads[call.name],
+                "provenance": {
+                    "collector": "project-mediated-observability",
+                    "clock_domain": self.plan["services"][service][
+                        "clock_domain"
+                    ],
+                    "host_access": False,
+                    "replay_seed": hashlib.sha256(
+                        f"{self.seed}:{call.name}:{service}:{window}".encode()
+                    ).hexdigest()[:12],
+                },
+            },
+            incident_kind="observation",
+            observation_id=observation_id,
+            observation_key=f"{service}:os:{call.name}:{window}",
+            observability_probe=call.name,
         )
 
     def _snapshot(self, call: ToolCall) -> ToolResult:

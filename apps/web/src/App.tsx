@@ -320,8 +320,8 @@ function DashboardPage() {
         eyebrow={text("控制中心", "CONTROL ROOM")}
         title={text("高压之下，证据为王。", "Evidence under pressure.")}
         description={text(
-          "观察模型如何调查恶意仓库、脏数据与被污染的权威信息，同时始终待在沙箱边界内。",
-          "Watch models investigate hostile repositories, dirty data, and poisoned authority without crossing the sandbox boundary.",
+          "观察模型如何调查仓库级事故、脏数据与互相冲突的权威信息，同时始终待在沙箱边界内。",
+          "Watch models investigate repository-scale incidents, dirty data, and conflicting authority without crossing the sandbox boundary.",
         )}
         action={
           <Link className="button" to="/runs/new">
@@ -434,7 +434,7 @@ function DashboardPage() {
             <Pressure value="5K" label={text("文件", "files")} />
             <Pressure value="2K" label={text("提交", "commits")} />
             <Pressure value="100MB" label={text("离线文档", "offline docs")} />
-            <Pressure value="240m" label={text("硬限制", "hard limit")} />
+            <Pressure value="80m" label={text("硬限制", "hard limit")} />
           </div>
           <Link className="button button--ghost" to="/scenarios">
             {text("查看场景", "Inspect scenario")} <ArrowRight size={15} />
@@ -446,18 +446,67 @@ function DashboardPage() {
 }
 
 function ScenariosPage() {
-  const { text } = useLocale();
+  const { isChinese, text } = useLocale();
   const tasks = useQuery({ queryKey: ["tasks"], queryFn: api.tasks });
+  const suites = useQuery({ queryKey: ["suites"], queryFn: api.suites });
+  const suite = suites.data?.[0];
+  const suiteCopy =
+    isChinese && suite?.localizations?.["zh-CN"]
+      ? {
+          name: suite.localizations["zh-CN"].name ?? suite.name,
+          description:
+            suite.localizations["zh-CN"].description ?? suite.description,
+        }
+      : suite;
   return (
     <>
       <PageHeader
         eyebrow="SCENARIO SDK"
-        title={text("版本化的敌意世界。", "Hostile worlds, versioned.")}
+        title={text("版本化的生产事故世界。", "Production incidents, versioned.")}
         description={text(
-          "每个场景独立封装仓库、数据库、注入内容、故障脚本、隐藏裁判、回放契约与离线互联网。",
-          "Each scenario owns its repositories, databases, injections, failure scripts, hidden judge, replay contract, and offline internet.",
+          "每个场景独立封装仓库、数据库、冲突证据、故障脚本、隐藏裁判、回放契约与离线互联网。",
+          "Each scenario owns its repositories, databases, conflicting evidence, failure scripts, hidden judge, replay contract, and offline internet.",
         )}
       />
+      {suite && (
+        <section className="panel suite-status">
+          <div>
+            <span className="eyebrow">
+              SUITE / {suite.version} ·{" "}
+              {suite.readiness.leaderboard_eligible
+                ? text("可进入排行榜", "LEADERBOARD READY")
+                : text("开发中", "IN DEVELOPMENT")}
+            </span>
+            <h2>{suiteCopy?.name}</h2>
+            <p>{suiteCopy?.description}</p>
+          </div>
+          <div className="scenario-metrics">
+            <Metric
+              label={text("活跃题族", "Active families")}
+              value={`${suite.readiness.active_families}/${suite.readiness.required_active_families}`}
+            />
+            <Metric
+              label={text("隐藏题族", "Held-out families")}
+              value={`${suite.readiness.held_out_families}/${suite.readiness.required_held_out_families}`}
+            />
+            <Metric
+              label={text("场景引用", "Scenario refs")}
+              value={`${suite.readiness.scenario_references}/${suite.readiness.required_scenarios}`}
+            />
+          </div>
+          {!suite.readiness.leaderboard_eligible && (
+            <div className="callout callout--warning">
+              <AlertTriangle size={16} />
+              <span>
+                {text(
+                  "当前只有一个公开开发题族，适合工程分析，不应当冒充统计有效的总榜。",
+                  "Only one public development family exists today. It is useful for engineering analysis, not a statistically valid global leaderboard.",
+                )}
+              </span>
+            </div>
+          )}
+        </section>
+      )}
       <div className="card-stack">
         {(tasks.data ?? []).map((task) => (
           <ScenarioCard key={task.id} task={task} />
@@ -1104,6 +1153,10 @@ function NewRunPage() {
     event.preventDefault();
     const data = new FormData(event.currentTarget);
     const seed = String(data.get("instance_seed") ?? "").trim();
+    const optionalNumber = (name: string) => {
+      const value = String(data.get(name) ?? "").trim();
+      return value ? Number(value) : null;
+    };
     create.mutate({
       task_id: data.get("task_id"),
       candidate_model_id: data.get("candidate_model_id"),
@@ -1115,13 +1168,20 @@ function NewRunPage() {
       hard_seconds: Number(data.get("hard_seconds")),
       soft_tool_calls: Number(data.get("soft_tool_calls")),
       hard_tool_calls: Number(data.get("hard_tool_calls")),
+      soft_provider_requests: Number(data.get("soft_provider_requests")),
+      hard_provider_requests: Number(data.get("hard_provider_requests")),
+      soft_total_tokens: optionalNumber("soft_total_tokens"),
+      hard_total_tokens: optionalNumber("hard_total_tokens"),
     });
   };
   return (
     <>
       <PageHeader
         eyebrow={text("新调查", "NEW INVESTIGATION")}
-        title={text("把一个模型扔进地狱。", "Drop a model into hell.")}
+        title={text(
+          "发起一次生产事故工程评估。",
+          "Start a production incident engineering evaluation.",
+        )}
         description={text(
           "系统会按所选场景生成全新的 Rootless Docker 工作区，并在评分完成后销毁。",
           "A fresh Rootless Docker workspace will be generated from the selected Scenario and destroyed after grading.",
@@ -1211,8 +1271,8 @@ function NewRunPage() {
             icon={<Gauge size={16} />}
             title={text("预算", "Budgets")}
             detail={text(
-              "40 分钟 / 250 次软告警，80 分钟 / 650 次硬停止",
-              "40 min / 250-call soft warning; 80 min / 650-call hard stop",
+              "时间、工具、Provider 请求及可选 Token 限制",
+              "Time, tool, Provider-request, and optional token limits",
             )}
           />
           <div className="budget-grid">
@@ -1252,6 +1312,64 @@ function NewRunPage() {
                 type="number"
                 defaultValue={650}
                 min={20}
+              />
+            </Field>
+            <Field
+              label={text(
+                "软 Provider 请求限制",
+                "Soft Provider requests",
+              )}
+              hint={text(
+                "包含 429 / 5xx 重试",
+                "Includes 429 / 5xx retries",
+              )}
+            >
+              <input
+                name="soft_provider_requests"
+                type="number"
+                defaultValue={180}
+                min={1}
+              />
+            </Field>
+            <Field
+              label={text(
+                "硬 Provider 请求限制",
+                "Hard Provider requests",
+              )}
+              hint={text(
+                "真实 HTTP 请求上限",
+                "Raw HTTP request cap",
+              )}
+            >
+              <input
+                name="hard_provider_requests"
+                type="number"
+                defaultValue={360}
+                min={2}
+              />
+            </Field>
+            <Field
+              label={text("软 Token 限制（可选）", "Soft tokens (optional)")}
+              hint={text(
+                "输入与输出合计；需与硬限制成对填写",
+                "Input + output; configure together with hard tokens",
+              )}
+            >
+              <input
+                name="soft_total_tokens"
+                type="number"
+                min={1000}
+                placeholder={text("不限制", "unlimited")}
+              />
+            </Field>
+            <Field
+              label={text("硬 Token 限制（可选）", "Hard tokens (optional)")}
+            >
+              <input
+                name="hard_total_tokens"
+                type="number"
+                min={2000}
+                placeholder={text("不限制", "unlimited")}
               />
             </Field>
             <Field

@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import admin, auth, dashboard, model_profiles, reports, runs, tasks
+from app.api import admin, auth, dashboard, model_profiles, reports, runs, suites, tasks
 from app.config import get_settings
 from app.database import SessionLocal, create_schema
 from app.platform import ensure_platform_settings
@@ -25,7 +25,10 @@ settings = get_settings()
 app = FastAPI(
     title=settings.app_name,
     version=VERSION,
-    description="Control plane for evidence-hostile, container-isolated AI agent evaluation.",
+    description=(
+        "Control plane for evidence-grounded, container-isolated, "
+        "repository-scale AI incident-response evaluation."
+    ),
     lifespan=lifespan,
 )
 app.add_middleware(
@@ -39,6 +42,7 @@ for api_router in [
     auth.router,
     admin.router,
     dashboard.router,
+    suites.router,
     tasks.router,
     model_profiles.router,
     runs.router,

@@ -185,6 +185,10 @@ class RunCreate(BaseModel):
     hard_seconds: int = Field(default=4_800, ge=300, le=21_600)
     soft_tool_calls: int = Field(default=250, ge=10, le=2_000)
     hard_tool_calls: int = Field(default=650, ge=20, le=3_000)
+    soft_provider_requests: int = Field(default=180, ge=1, le=5_000)
+    hard_provider_requests: int = Field(default=360, ge=2, le=10_000)
+    soft_total_tokens: int | None = Field(default=None, ge=1_000, le=1_000_000_000)
+    hard_total_tokens: int | None = Field(default=None, ge=2_000, le=2_000_000_000)
 
     @model_validator(mode="after")
     def validate_budget_order(self) -> "RunCreate":
@@ -192,7 +196,28 @@ class RunCreate(BaseModel):
             raise ValueError("Soft time budget must be lower than the hard time budget")
         if self.soft_tool_calls >= self.hard_tool_calls:
             raise ValueError("Soft tool-call budget must be lower than the hard tool-call budget")
+        if self.soft_provider_requests >= self.hard_provider_requests:
+            raise ValueError(
+                "Soft Provider-request budget must be lower than the hard "
+                "Provider-request budget"
+            )
+        self._validate_optional_pair(
+            "Token",
+            self.soft_total_tokens,
+            self.hard_total_tokens,
+        )
         return self
+
+    @staticmethod
+    def _validate_optional_pair(
+        label: str,
+        soft: int | float | None,
+        hard: int | float | None,
+    ) -> None:
+        if (soft is None) != (hard is None):
+            raise ValueError(f"{label} soft and hard budgets must be configured together")
+        if soft is not None and hard is not None and soft >= hard:
+            raise ValueError(f"Soft {label.lower()} budget must be lower than the hard budget")
 
 
 class RunRead(ORMModel):

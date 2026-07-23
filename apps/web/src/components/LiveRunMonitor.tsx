@@ -72,6 +72,27 @@ export default function LiveRunMonitor({
   const softCalls = numericConfig(run.config.soft_tool_calls);
   const hardSeconds = numericConfig(run.config.hard_seconds);
   const softSeconds = numericConfig(run.config.soft_seconds);
+  const hardProviderRequests = numericConfig(
+    run.config.hard_provider_requests,
+  );
+  const softProviderRequests = numericConfig(
+    run.config.soft_provider_requests,
+  );
+  const hardTokens = numericConfig(run.config.hard_total_tokens);
+  const softTokens = numericConfig(run.config.soft_total_tokens);
+  const totalTokens = run.input_tokens + run.output_tokens;
+  const providerRequests = events.reduce(
+    (maximum, event) =>
+      Math.max(
+        maximum,
+        Number(
+          event.payload.provider_requests_total ??
+            event.payload.provider_requests ??
+            0,
+        ) || 0,
+      ),
+    0,
+  );
   const phaseAgeMs = analysis.phaseSince
     ? Math.max(0, now - new Date(analysis.phaseSince).getTime())
     : 0;
@@ -222,6 +243,22 @@ export default function LiveRunMonitor({
             hard={hardSeconds}
             display={formatDuration(activeElapsedMs, locale)}
           />
+          <LiveMeter
+            label={text("Provider 请求", "Provider requests")}
+            value={providerRequests}
+            soft={softProviderRequests}
+            hard={hardProviderRequests}
+            display={`${providerRequests} / ${hardProviderRequests || "—"}`}
+          />
+          {hardTokens > 0 && (
+            <LiveMeter
+              label={text("Token 总量", "Total tokens")}
+              value={totalTokens}
+              soft={softTokens}
+              hard={hardTokens}
+              display={`${compact(totalTokens)} / ${compact(hardTokens)}`}
+            />
+          )}
           <div className="live-stat-row">
             <span>
               <Bot size={13} />
@@ -1004,6 +1041,18 @@ function softBudgetDetail(event: RunEvent, locale: "zh-CN" | "en") {
       locale === "zh-CN"
         ? `时间 ${formatDuration(active * 1_000, locale)} / ${formatDuration(soft * 1_000, locale)}`
         : `time ${formatDuration(active * 1_000, locale)} / ${formatDuration(soft * 1_000, locale)}`,
+    );
+  }
+  if (crossed.includes("provider_requests")) {
+    details.push(
+      locale === "zh-CN"
+        ? `Provider 请求 ${String(event.payload.provider_requests ?? "—")} / ${String(event.payload.soft_provider_requests ?? "—")}`
+        : `Provider requests ${String(event.payload.provider_requests ?? "—")} / ${String(event.payload.soft_provider_requests ?? "—")}`,
+    );
+  }
+  if (crossed.includes("total_tokens")) {
+    details.push(
+      `Token ${String(event.payload.total_tokens ?? "—")} / ${String(event.payload.soft_total_tokens ?? "—")}`,
     );
   }
   return locale === "zh-CN"

@@ -3,6 +3,53 @@
 All notable platform changes are recorded here. The project follows Semantic
 Versioning while individual benchmark scenarios retain independent versions.
 
+## [0.8.0] - 2026-07-23
+
+### Added
+
+- A versioned Benchmark Suite contract with explicit scenario families,
+  development/validation/held-out splits, immutable scenario references, and a
+  machine-readable leaderboard-readiness policy.
+- The initial Production Incident Engineering Suite 0.1.0. It honestly reports
+  one active development family and is not leaderboard-eligible until it
+  reaches five active families, three held-out families, and 20 scenario
+  references.
+- A private Truth Graph SDK with typed causal nodes and edges, multiple
+  acceptable resolution paths, objective hidden checks, weighted causal
+  coverage, partial credit, and strict reference validation.
+- A generic Agent Graph schema and `/runs/{id}/agents` endpoint. Current
+  built-in runs are explicitly single-Agent; spawn, delegation, roles,
+  parent/child relationships, terminal states, and per-Agent usage are ready
+  for external orchestrators without claiming an internal multi-Agent
+  scheduler.
+- Project-mediated deterministic observability tools for future scenarios:
+  process listing, service status, journal queries, socket metadata, bounded
+  process traces, and CPU profiles. They never inspect the host and are not
+  retroactively enabled in Terminal Repository 3.0.2.
+- Raw Provider-request budgets and telemetry, including retry attempts, plus
+  optional paired Token budgets and a versioned resource-ledger artifact.
+
+### Changed
+
+- Repositioned the bilingual README, design specification, API description, and
+  WebUI around realistic repository-scale production incident engineering
+  instead of difficulty as a product claim.
+- The Scenario page now shows Suite diversity and held-out readiness rather
+  than implying that one public scenario is a statistically valid global
+  leaderboard.
+- Candidate events now carry a stable `candidate/root` identity, and archives
+  include derived Agent Graph and resource-ledger artifacts.
+- Resource accounting deliberately does not estimate or rank dollar cost:
+  cache reads/writes, hidden reasoning Tokens, batch/service tiers, discounts,
+  and compatible-API usage semantics are not reliably comparable.
+- Clarified that the 180-tick Incident Director horizon is logical replay time,
+  while real execution remains a 40-minute soft threshold and 80-minute hard
+  stop.
+
+### Fixed
+
+- Corrected the dashboard's stale `240m` hard-limit label to `80m`.
+
 ## [0.7.1] - 2026-07-23
 
 ### Fixed

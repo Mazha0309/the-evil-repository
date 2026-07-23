@@ -23,6 +23,7 @@ RUN apt-get update \
 WORKDIR /app
 COPY --from=builder --chown=evil:evil /app /app
 COPY --chown=evil:evil scenarios /scenarios
+COPY --chown=evil:evil suites /suites
 USER evil
 EXPOSE 8080
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]

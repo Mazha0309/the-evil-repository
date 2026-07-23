@@ -33,6 +33,14 @@ def test_run_budget_soft_limits_must_precede_hard_limits() -> None:
         RunCreate(**common, soft_seconds=4_800, hard_seconds=4_800)
     with pytest.raises(ValueError, match="Soft tool-call budget"):
         RunCreate(**common, soft_tool_calls=650, hard_tool_calls=650)
+    with pytest.raises(ValueError, match="Provider-request"):
+        RunCreate(
+            **common,
+            soft_provider_requests=360,
+            hard_provider_requests=360,
+        )
+    with pytest.raises(ValueError, match="configured together"):
+        RunCreate(**common, soft_total_tokens=10_000)
 
 
 def test_pause_and_resume_update_cooperative_control_flag(monkeypatch) -> None:

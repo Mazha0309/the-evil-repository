@@ -26,8 +26,21 @@ def export_report(
         "score": run.score,
         "scorecard": run.scorecard,
         "tool_calls": run.tool_calls,
-        "tokens": {"input": run.input_tokens, "output": run.output_tokens},
-        "estimated_cost": run.estimated_cost,
+        "resources": {
+            "provider_requests": run.scorecard.get("resources", {}).get(
+                "provider_requests"
+            ),
+            "tokens": {
+                "input": run.input_tokens,
+                "output": run.output_tokens,
+                "total": run.input_tokens + run.output_tokens,
+            },
+            "budgets": {
+                key: value
+                for key, value in run.config.items()
+                if key.startswith("soft_") or key.startswith("hard_")
+            },
+        },
         "created_at": run.created_at.isoformat(),
         "started_at": run.started_at.isoformat() if run.started_at else None,
         "completed_at": run.completed_at.isoformat() if run.completed_at else None,

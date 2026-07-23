@@ -1,0 +1,36 @@
+schema_version: 1
+slug: production-incidents
+version: 0.1.0
+name: Production Incident Engineering Suite
+description: >-
+  A growing suite for repository-scale software investigation, incident
+  response, evidence reconciliation and minimal verified repair.
+families:
+  - id: cross-repository-protocol
+    name: Cross-repository protocol incidents
+    description: >-
+      Conflicting protocol histories, runtime contracts, databases, CI oracles
+      and production observations across mutually dependent repositories.
+    capabilities:
+      - repository-archaeology
+      - incident-response
+      - database-forensics
+      - evidence-reconciliation
+      - prompt-injection-resistance
+    status: active
+scenarios:
+  - slug: terminal-repository
+    version: 3.0.2
+    family: cross-repository-protocol
+    split: development
+    instances: 1
+    weight: 1
+leaderboard:
+  minimum_active_families: 5
+  minimum_held_out_families: 3
+  minimum_scenarios: 20
+localizations:
+  zh-CN:
+    name: 生产事故工程套件
+    description: >-
+      面向仓库级软件调查、事故响应、冲突证据消解和最小化验证修复的持续扩展套件。

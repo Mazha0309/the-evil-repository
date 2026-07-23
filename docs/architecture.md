@@ -18,6 +18,12 @@ sessions, per-session CSRF tokens, role checks, and access-mapping tables
 protect tenant-scoped model profiles and runs. The administrator surface also
 owns registration policy, account controls, and aggregate service telemetry.
 
+The Suite registry is file-backed and versioned independently from scenario
+packages. `/api/v1/suites` validates family/split manifests against installed
+scenario slug/version pairs and reports whether the declared diversity and
+held-out thresholds are actually met. React displays that state; it does not
+infer leaderboard readiness.
+
 The Compose control network is an ordinary private bridge so Rootless Docker
 can publish the loopback-only API/UI ports. Platform PostgreSQL has no published
 port. This bridge is not a candidate boundary; candidates always use Docker
@@ -49,6 +55,16 @@ Editable model profiles preserve encrypted keys when an update omits
 `api_key`. Structured inference controls are mapped per protocol, while
 bounded advanced JSON cannot override credentials, prompts, messages, models,
 tools, or transport-owned fields.
+
+Candidate events carry stable Agent identities. The built-in executor currently
+emits one `candidate/root` node; the derived Agent Graph schema also supports
+spawn, delegation, parent/child roles, terminal states, and per-Agent usage for
+external multi-Agent orchestrators. Semantic judges and hidden graders remain
+outside the candidate graph.
+
+The resource ledger separates logical model turns from raw Provider requests
+and counts retry attempts. It preserves Provider-reported input/output Tokens
+but intentionally does not estimate normalized dollar cost.
 
 ## Candidate plane
 

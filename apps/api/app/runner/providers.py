@@ -29,11 +29,14 @@ class ModelClient:
         timeout_seconds: float = 180,
         max_retries: int = 5,
         on_retry: Callable[[dict[str, Any]], None] | None = None,
+        on_request: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
         self.profile = profile
         self.api_key = api_key
         self.max_retries = max(0, max_retries)
         self.on_retry = on_retry
+        self.on_request = on_request
+        self.request_attempts = 0
         self._sleep = time.sleep
         self.client = httpx.Client(
             timeout=httpx.Timeout(
@@ -268,6 +271,16 @@ class ModelClient:
     def _post(self, url: str, **kwargs: Any) -> httpx.Response:
         maximum_attempts = self.max_retries + 1
         for attempt in range(maximum_attempts):
+            request = {
+                "provider": self.profile.provider.value,
+                "model_id": self.profile.model_id,
+                "request_number": self.request_attempts + 1,
+                "attempt": attempt + 1,
+                "maximum_attempts": maximum_attempts,
+            }
+            if self.on_request:
+                self.on_request(request)
+            self.request_attempts += 1
             response = self.client.post(url, **kwargs)
             if response.status_code not in RETRYABLE_PROVIDER_STATUS:
                 return response
