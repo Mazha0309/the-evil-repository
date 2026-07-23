@@ -29,19 +29,21 @@ visualization path around it.
 Requirements:
 
 - Linux with Rootless Docker and Docker Compose
-- Node.js 22+ and pnpm
-- Python 3.12+ and uv
+- GNU Make
 
 ```bash
 cp .env.example .env
 # If your local uid is not 1000, update ROOTLESS_DOCKER_SOCKET in .env.
-make preflight
-make bootstrap
-make sandbox
-docker compose up --build
+make deploy
 ```
 
+`make deploy` runs the Rootless Docker preflight, builds the isolated candidate
+sandbox and application images, starts all services, and prints their status.
 Then open `http://127.0.0.1:5173`.
+
+Node.js 22+, pnpm, Python 3.12+, and uv are only required for host-side
+development; the deployment command builds application dependencies inside
+containers.
 
 On a fresh database, the first page creates the initial administrator. Set
 `SETUP_TOKEN` before startup if anyone else could reach the service during

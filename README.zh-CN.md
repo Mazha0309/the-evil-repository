@@ -39,19 +39,19 @@ Runner 会把它们各自的消息、工具调用和 Token 用量转换成统一
 环境要求：
 
 - Linux 与 Rootless Docker / Docker Compose；
-- Node.js 22+ 与 pnpm；
-- Python 3.12+ 与 uv。
+- GNU Make。
 
 ```bash
 cp .env.example .env
 # 如果本机 uid 不是 1000，请修改 .env 中的 ROOTLESS_DOCKER_SOCKET。
-make preflight
-make bootstrap
-make sandbox
-docker compose up --build
+make deploy
 ```
 
-然后打开 `http://127.0.0.1:5173`。
+`make deploy` 会自动检查 Rootless Docker、构建隔离候选沙箱与全部应用镜像、启动
+所有服务并打印运行状态。完成后打开 `http://127.0.0.1:5173`。
+
+Node.js 22+、pnpm、Python 3.12+ 和 uv 只在宿主机参与开发时需要；一键部署会在
+容器内构建应用依赖。
 
 全新数据库首次打开时会进入初始管理员创建页面。如果初始化期间服务可能被其他人
 访问，请在启动前设置 `SETUP_TOKEN`。公开注册默认关闭，管理员可在后台即时开关，
