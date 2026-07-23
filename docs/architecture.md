@@ -25,10 +25,18 @@ network mode `none`.
 
 ## Runner plane
 
-The worker claims queued runs, invokes the Scenario SDK lifecycle, calls the
-selected model provider, validates normalized tool requests, and relays them to
-one ephemeral candidate container. It is the only service with access to the
-Rootless Docker socket.
+The worker claims queued runs into a bounded in-process pool, invokes the
+Scenario SDK lifecycle, calls each selected model provider, validates
+normalized tool requests, and relays them to ephemeral candidate containers.
+It is the only service with access to the Rootless Docker socket.
+
+`RUNNER_CONCURRENCY` initializes a fresh database to two slots. Administrators
+can change the 1–16 limit live; lowering it stops new claims but never kills
+active work. Every concurrent run has a distinct container, tmpfs workspace,
+Provider client, conversation, prepared private state, and archive. The
+administrator monitor reads aggregate occupied/total slot counts from the
+Runner heartbeat. The Runner service remains a singleton; operators tune its
+pool instead of starting replicas with competing in-memory ownership.
 
 The trusted Runner process uses UID 0 inside its control container because a
 Rootless Docker socket bind mount maps its host owner to container root. That
@@ -37,6 +45,10 @@ daemon rootful. Candidate containers remain fixed at unprivileged UID 1000.
 
 Model inference happens outside the candidate container. Provider credentials
 are never copied into a scenario workspace or sandbox environment.
+Editable model profiles preserve encrypted keys when an update omits
+`api_key`. Structured inference controls are mapped per protocol, while
+bounded advanced JSON cannot override credentials, prompts, messages, models,
+tools, or transport-owned fields.
 
 ## Candidate plane
 

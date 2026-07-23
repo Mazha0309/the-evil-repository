@@ -157,3 +157,80 @@ def test_text_only_review_omits_empty_tool_configuration() -> None:
     assert "tools" not in captured
     assert "tool_choice" not in captured
     assert turn.content == '{"score": 80}'
+
+
+def test_profile_parameters_cannot_override_runner_owned_request_fields() -> None:
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.update(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": "safe"}}],
+                "usage": {},
+            },
+        )
+
+    model = profile(
+        ModelProvider.openai_compatible,
+        {
+            "model": "wrong-model",
+            "messages": [{"role": "user", "content": "wrong message"}],
+            "tools": [{"type": "wrong"}],
+            "tool_choice": "none",
+            "stream": True,
+            "headers": {"Authorization": "legacy-secret"},
+            "metadata": {"api_key": "nested-legacy-secret", "safe": "kept"},
+            "temperature": 0.25,
+        },
+    )
+    client = ModelClient(model, "secret")
+    client.client = httpx.Client(transport=httpx.MockTransport(handler))
+    client.complete(MESSAGES, TOOLS)
+
+    assert captured["model"] == "test-model"
+    assert captured["messages"] == MESSAGES
+    assert captured["tools"] == TOOLS
+    assert captured["tool_choice"] == "auto"
+    assert "stream" not in captured
+    assert "headers" not in captured
+    assert captured["metadata"] == {"safe": "kept"}
+    assert captured["temperature"] == 0.25
+
+
+def test_ollama_thinking_mode_is_sent_at_request_level() -> None:
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.update(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "message": {"content": "done"},
+                "prompt_eval_count": 3,
+                "eval_count": 1,
+            },
+        )
+
+    model = profile(
+        ModelProvider.ollama,
+        {
+            "temperature": 0.1,
+            "num_predict": 4096,
+            "think": "high",
+            "format": "json",
+            "options": {"num_ctx": 32768, "temperature": 0.9},
+        },
+    )
+    client = ModelClient(model, None)
+    client.client = httpx.Client(transport=httpx.MockTransport(handler))
+    client.complete(MESSAGES, TOOLS)
+
+    assert captured["think"] == "high"
+    assert captured["format"] == "json"
+    assert captured["options"] == {
+        "temperature": 0.1,
+        "num_predict": 4096,
+        "num_ctx": 32768,
+    }

@@ -30,6 +30,7 @@ import {
   Network,
   OctagonAlert,
   Pause,
+  Pencil,
   Play,
   Plus,
   Radar,
@@ -38,6 +39,7 @@ import {
   Settings,
   ShieldAlert,
   ShieldCheck,
+  SlidersHorizontal,
   Skull,
   SquareTerminal,
   TimerReset,
@@ -69,9 +71,20 @@ import AuthScreen from "./components/AuthScreen";
 import LiveRunMonitor from "./components/LiveRunMonitor";
 import { api } from "./lib/api";
 import { useLocale } from "./lib/i18n";
+import {
+  buildModelParameters,
+  decomposeModelParameters,
+  emptyModelParameterDraft,
+  modelParameterSummary,
+  parameterFieldNames,
+  reasoningOptions,
+  serviceTierOptions,
+  type ModelParameterDraft,
+} from "./lib/modelParameters";
 import type {
   AuthConfig,
   AuthResponse,
+  ModelProfile,
   ModelProvider,
   Run,
   RunEvent,
@@ -538,42 +551,93 @@ function ModelsPage() {
   const queryClient = useQueryClient();
   const models = useQuery({ queryKey: ["models"], queryFn: api.models });
   const [open, setOpen] = useState(false);
+  const [editing, setEditing] = useState<ModelProfile | null>(null);
   const [error, setError] = useState("");
   const [provider, setProvider] = useState<ModelProvider>("openai_responses");
   const [baseUrl, setBaseUrl] = useState("");
-  const create = useMutation({
-    mutationFn: api.createModel,
+  const [parameterDraft, setParameterDraft] = useState<ModelParameterDraft>(
+    emptyModelParameterDraft,
+  );
+  const save = useMutation({
+    mutationFn: ({
+      id,
+      payload,
+    }: {
+      id?: string;
+      payload: Record<string, unknown>;
+    }) => (id ? api.updateModel(id, payload) : api.createModel(payload)),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["models"] });
-      setOpen(false);
-      setError("");
+      closeForm();
     },
-    onError: (cause) => setError(String(cause)),
+    onError: (cause) =>
+      setError(cause instanceof Error ? cause.message : String(cause)),
   });
   const remove = useMutation({
     mutationFn: api.deleteModel,
     onSuccess: () =>
       void queryClient.invalidateQueries({ queryKey: ["models"] }),
+    onError: (cause) =>
+      setError(cause instanceof Error ? cause.message : String(cause)),
   });
+  const openCreate = () => {
+    setEditing(null);
+    setProvider("openai_responses");
+    setBaseUrl("");
+    setParameterDraft(emptyModelParameterDraft());
+    setError("");
+    setOpen(true);
+  };
+  const openEdit = (model: ModelProfile) => {
+    setEditing(model);
+    setProvider(model.provider);
+    setBaseUrl(model.base_url);
+    setParameterDraft(
+      decomposeModelParameters(model.provider, model.parameters),
+    );
+    setError("");
+    setOpen(true);
+  };
+  const closeForm = () => {
+    setOpen(false);
+    setEditing(null);
+    setError("");
+  };
+  const updateParameter = (key: keyof ModelParameterDraft, value: string) => {
+    setParameterDraft((current) => ({ ...current, [key]: value }));
+  };
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const data = new FormData(event.currentTarget);
-    create.mutate({
+    let parameters: Record<string, unknown>;
+    try {
+      parameters = buildModelParameters(provider, parameterDraft);
+    } catch (cause) {
+      const detail = cause instanceof Error ? cause.message : String(cause);
+      setError(
+        text(`模型参数无效：${detail}`, `Invalid model parameters: ${detail}`),
+      );
+      return;
+    }
+    const apiKey = String(data.get("api_key") ?? "");
+    const payload: Record<string, unknown> = {
       name: data.get("name"),
       provider,
       base_url: data.get("base_url"),
       model_id: data.get("model_id"),
-      api_key: data.get("api_key") || null,
       native_tools: data.get("native_tools") === "on",
-      parameters:
-        provider === "anthropic"
-          ? { temperature: 0, max_tokens: 8192 }
-          : provider === "openai_responses"
-            ? {}
-            : { temperature: 0 },
-      enabled: true,
-    });
+      parameters,
+      enabled: data.get("enabled") === "on",
+    };
+    if (!editing || apiKey) payload.api_key = apiKey || null;
+    if (editing && !apiKey && data.get("clear_api_key") === "on") {
+      payload.api_key = null;
+    }
+    save.mutate({ id: editing?.id, payload });
   };
+  const fieldNames = parameterFieldNames(provider);
+  const effortOptions = reasoningOptions(provider);
+  const tierOptions = serviceTierOptions(provider);
   return (
     <>
       <PageHeader
@@ -584,7 +648,7 @@ function ModelsPage() {
           "Provider credentials are encrypted in the control plane and never enter a candidate sandbox or run archive.",
         )}
         action={
-          <button className="button" onClick={() => setOpen(true)}>
+          <button className="button" onClick={openCreate}>
             <Plus size={15} /> {text("添加配置", "Add profile")}
           </button>
         }
@@ -600,13 +664,22 @@ function ModelsPage() {
                 <h3>{model.name}</h3>
                 <span>{providerLabel(model.provider)}</span>
               </div>
-              <button
-                className="icon-button icon-button--danger"
-                onClick={() => remove.mutate(model.id)}
-                title={text("删除模型配置", "Delete model profile")}
-              >
-                <Trash2 size={15} />
-              </button>
+              <div className="model-card__actions">
+                <button
+                  className="icon-button"
+                  onClick={() => openEdit(model)}
+                  title={text("编辑模型配置", "Edit model profile")}
+                >
+                  <Pencil size={15} />
+                </button>
+                <button
+                  className="icon-button icon-button--danger"
+                  onClick={() => remove.mutate(model.id)}
+                  title={text("删除模型配置", "Delete model profile")}
+                >
+                  <Trash2 size={15} />
+                </button>
+              </div>
             </div>
             <dl>
               <div>
@@ -626,6 +699,14 @@ function ModelsPage() {
                 </dd>
               </div>
               <div>
+                <dt>{text("状态", "Status")}</dt>
+                <dd className={model.enabled ? "text-safe" : "text-warning"}>
+                  {model.enabled
+                    ? text("已启用", "Enabled")
+                    : text("已停用", "Disabled")}
+                </dd>
+              </div>
+              <div>
                 <dt>{text("凭据", "Credential")}</dt>
                 <dd className={model.has_api_key ? "text-safe" : ""}>
                   {model.has_api_key
@@ -634,13 +715,28 @@ function ModelsPage() {
                 </dd>
               </div>
             </dl>
+            <div className="model-card__parameters">
+              <span>
+                <SlidersHorizontal size={12} />
+                {text("推理参数", "Inference parameters")}
+              </span>
+              <div>
+                {modelParameterSummary(model.provider, model.parameters)
+                  .length ? (
+                  modelParameterSummary(model.provider, model.parameters).map(
+                    (item) => <code key={item}>{item}</code>,
+                  )
+                ) : (
+                  <code>
+                    {text("使用 Provider 默认值", "Provider defaults")}
+                  </code>
+                )}
+              </div>
+            </div>
           </article>
         ))}
         {!models.isLoading && !models.data?.length && (
-          <button
-            className="model-card model-card--empty"
-            onClick={() => setOpen(true)}
-          >
+          <button className="model-card model-card--empty" onClick={openCreate}>
             <Plus size={28} />
             <strong>{text("添加第一个模型", "Add your first model")}</strong>
             <span>OpenAI Responses · Anthropic · Compatible · Ollama</span>
@@ -649,12 +745,26 @@ function ModelsPage() {
       </div>
       {open && (
         <Modal
-          title={text("添加模型配置", "Add model profile")}
-          onClose={() => setOpen(false)}
+          title={
+            editing
+              ? text("编辑模型配置", "Edit model profile")
+              : text("添加模型配置", "Add model profile")
+          }
+          onClose={closeForm}
+          wide
         >
-          <form className="form" onSubmit={submit}>
+          <form
+            className="form"
+            key={editing?.id ?? "new-model"}
+            onSubmit={submit}
+          >
             <Field label={text("配置名称", "Profile name")}>
-              <input name="name" required placeholder="Claude Sonnet" />
+              <input
+                name="name"
+                required
+                defaultValue={editing?.name}
+                placeholder="Claude Sonnet"
+              />
             </Field>
             <Field
               label="Provider"
@@ -670,6 +780,11 @@ function ModelsPage() {
                   const next = event.target.value as ModelProvider;
                   setProvider(next);
                   setBaseUrl("");
+                  setParameterDraft((current) => ({
+                    ...current,
+                    reasoningEffort: "",
+                    serviceTier: "",
+                  }));
                 }}
               >
                 <option value="openai_responses">OpenAI Responses API</option>
@@ -689,13 +804,22 @@ function ModelsPage() {
               />
             </Field>
             <Field label={text("模型 ID", "Model ID")}>
-              <input name="model_id" required placeholder="model-name" />
+              <input
+                name="model_id"
+                required
+                defaultValue={editing?.model_id}
+                placeholder="model-name"
+              />
             </Field>
             <Field
               label="API key"
               hint={text(
-                "静态加密保存；使用 Ollama 时可留空。",
-                "Encrypted at rest; leave blank for Ollama.",
+                editing?.has_api_key
+                  ? "已保存加密凭据；留空会保留原密钥。"
+                  : "静态加密保存；使用 Ollama 时可留空。",
+                editing?.has_api_key
+                  ? "An encrypted credential is stored; leave blank to keep it."
+                  : "Encrypted at rest; leave blank for Ollama.",
               )}
             >
               <input
@@ -704,8 +828,174 @@ function ModelsPage() {
                 autoComplete="new-password"
               />
             </Field>
+            {editing?.has_api_key && (
+              <label className="check-row check-row--compact">
+                <input name="clear_api_key" type="checkbox" />
+                <span>
+                  <strong>
+                    {text("清除已保存密钥", "Clear stored API key")}
+                  </strong>
+                </span>
+              </label>
+            )}
+            <div className="form-section-heading">
+              <SlidersHorizontal size={14} />
+              <div>
+                <strong>{text("推理参数", "Inference parameters")}</strong>
+                <small>
+                  {text(
+                    "留空即使用 Provider 或模型默认值；字段会按所选协议映射。",
+                    "Leave blank for provider/model defaults; fields map to the selected protocol.",
+                  )}
+                </small>
+              </div>
+            </div>
+            <div className="model-parameter-grid">
+              <Field
+                label={text("温度", "Temperature")}
+                hint={text("范围 0–2。", "Range 0–2.")}
+              >
+                <input
+                  type="number"
+                  min="0"
+                  max="2"
+                  step="0.01"
+                  value={parameterDraft.temperature}
+                  placeholder={text("默认", "default")}
+                  onChange={(event) =>
+                    updateParameter("temperature", event.target.value)
+                  }
+                />
+              </Field>
+              <Field
+                label="Top P"
+                hint={text(
+                  "范围 0–1；通常只调整它或温度之一。",
+                  "Range 0–1; normally tune this or temperature, not both.",
+                )}
+              >
+                <input
+                  type="number"
+                  min="0"
+                  max="1"
+                  step="0.01"
+                  value={parameterDraft.topP}
+                  placeholder={text("默认", "default")}
+                  onChange={(event) =>
+                    updateParameter("topP", event.target.value)
+                  }
+                />
+              </Field>
+              <Field
+                label={text("最大输出 Token", "Maximum output tokens")}
+                hint={fieldNames.maxOutputTokens}
+              >
+                <input
+                  type="number"
+                  min="1"
+                  step="1"
+                  value={parameterDraft.maxOutputTokens}
+                  placeholder={
+                    provider === "anthropic" ? "8192" : text("默认", "default")
+                  }
+                  onChange={(event) =>
+                    updateParameter("maxOutputTokens", event.target.value)
+                  }
+                />
+              </Field>
+              <Field
+                label={
+                  provider === "ollama"
+                    ? text("思考模式", "Thinking mode")
+                    : text("推理挡位", "Reasoning effort")
+                }
+                hint={fieldNames.effort}
+              >
+                <select
+                  value={parameterDraft.reasoningEffort}
+                  onChange={(event) =>
+                    updateParameter("reasoningEffort", event.target.value)
+                  }
+                >
+                  <option value="">{text("模型默认", "Model default")}</option>
+                  {parameterDraft.reasoningEffort &&
+                    !effortOptions.some(
+                      (item) => item.value === parameterDraft.reasoningEffort,
+                    ) && (
+                      <option value={parameterDraft.reasoningEffort}>
+                        {text("自定义", "Custom")} ·{" "}
+                        {parameterDraft.reasoningEffort}
+                      </option>
+                    )}
+                  {effortOptions.map((item) => (
+                    <option key={item.value} value={item.value}>
+                      {effortLabel(item.label, text)}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+              {tierOptions.length > 0 && (
+                <Field
+                  label={text("服务挡位", "Service tier")}
+                  hint="service_tier"
+                >
+                  <select
+                    value={parameterDraft.serviceTier}
+                    onChange={(event) =>
+                      updateParameter("serviceTier", event.target.value)
+                    }
+                  >
+                    <option value="">
+                      {text("Provider 默认", "Provider default")}
+                    </option>
+                    {parameterDraft.serviceTier &&
+                      !tierOptions.some(
+                        (item) => item.value === parameterDraft.serviceTier,
+                      ) && (
+                        <option value={parameterDraft.serviceTier}>
+                          {text("自定义", "Custom")} ·{" "}
+                          {parameterDraft.serviceTier}
+                        </option>
+                      )}
+                    {tierOptions.map((item) => (
+                      <option key={item.value} value={item.value}>
+                        {item.label}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+              )}
+            </div>
+            <details className="advanced-parameters">
+              <summary>
+                {text(
+                  "高级 Provider 参数（JSON）",
+                  "Advanced provider parameters (JSON)",
+                )}
+              </summary>
+              <Field
+                label={text("额外请求字段", "Additional request fields")}
+                hint={text(
+                  "仅用于当前 Provider 的非核心字段；凭据、消息、工具和模型字段会被拒绝。",
+                  "Only non-core fields for this provider; credentials, messages, tools, and model fields are rejected.",
+                )}
+              >
+                <textarea
+                  rows={8}
+                  spellCheck={false}
+                  value={parameterDraft.advanced}
+                  onChange={(event) =>
+                    updateParameter("advanced", event.target.value)
+                  }
+                />
+              </Field>
+            </details>
             <label className="check-row">
-              <input name="native_tools" type="checkbox" defaultChecked />
+              <input
+                name="native_tools"
+                type="checkbox"
+                defaultChecked={editing?.native_tools ?? true}
+              />
               <span>
                 <strong>
                   {text("原生函数调用", "Native function calling")}
@@ -718,18 +1008,36 @@ function ModelsPage() {
                 </small>
               </span>
             </label>
+            <label className="check-row">
+              <input
+                name="enabled"
+                type="checkbox"
+                defaultChecked={editing?.enabled ?? true}
+              />
+              <span>
+                <strong>{text("启用此配置", "Enable this profile")}</strong>
+                <small>
+                  {text(
+                    "停用后不能用于新运行。",
+                    "Disabled profiles cannot be selected for new runs.",
+                  )}
+                </small>
+              </span>
+            </label>
             {error && <div className="inline-error">{error}</div>}
             <div className="modal__actions">
               <button
                 className="button button--ghost"
                 type="button"
-                onClick={() => setOpen(false)}
+                onClick={closeForm}
               >
                 {text("取消", "Cancel")}
               </button>
-              <button className="button" disabled={create.isPending}>
+              <button className="button" disabled={save.isPending}>
                 <KeyRound size={14} />{" "}
-                {text("保存加密配置", "Save encrypted profile")}
+                {editing
+                  ? text("保存修改", "Save changes")
+                  : text("保存加密配置", "Save encrypted profile")}
               </button>
             </div>
           </form>
@@ -785,6 +1093,7 @@ function NewRunPage() {
   const navigate = useNavigate();
   const tasks = useQuery({ queryKey: ["tasks"], queryFn: api.tasks });
   const models = useQuery({ queryKey: ["models"], queryFn: api.models });
+  const enabledModels = (models.data ?? []).filter((model) => model.enabled);
   const [error, setError] = useState("");
   const create = useMutation({
     mutationFn: api.createRun,
@@ -856,7 +1165,7 @@ function NewRunPage() {
                 <option value="" disabled>
                   {text("选择候选模型", "Select a candidate")}
                 </option>
-                {(models.data ?? []).map((model) => (
+                {enabledModels.map((model) => (
                   <option value={model.id} key={model.id}>
                     {model.name} · {model.model_id}
                   </option>
@@ -874,7 +1183,7 @@ function NewRunPage() {
                 <option value="">
                   {text("不启用 LLM 语义评审", "No LLM semantic review")}
                 </option>
-                {(models.data ?? []).map((model) => (
+                {enabledModels.map((model) => (
                   <option value={model.id} key={model.id}>
                     {model.name}
                   </option>
@@ -882,13 +1191,13 @@ function NewRunPage() {
               </select>
             </Field>
           </div>
-          {!models.data?.length && (
+          {!enabledModels.length && (
             <div className="callout callout--warning">
               <AlertTriangle size={17} />
               <span>
                 {text(
-                  "发起运行前请先添加模型配置。",
-                  "Add a model profile before launching a run.",
+                  "发起运行前请先添加并启用模型配置。",
+                  "Add and enable a model profile before launching a run.",
                 )}
               </span>
               <Link to="/models">
@@ -978,7 +1287,7 @@ function NewRunPage() {
           {error && <span className="text-danger">{error}</span>}
           <button
             className="button button--large"
-            disabled={!models.data?.length || create.isPending}
+            disabled={!enabledModels.length || create.isPending}
           >
             <Zap size={16} fill="currentColor" />{" "}
             {text("创建运行", "Create run")}
@@ -997,6 +1306,8 @@ function RunDetailPage() {
   const [tab, setTab] = useState<
     "live" | "overview" | "graph" | "audit" | "score"
   >("live");
+  const [confirmCancel, setConfirmCancel] = useState(false);
+  const [cancelError, setCancelError] = useState("");
   const run = useQuery({
     queryKey: ["run", runId],
     queryFn: () => api.run(runId),
@@ -1041,6 +1352,16 @@ function RunDetailPage() {
       queryClient.setQueryData(["run", runId], updated);
     },
   });
+  const cancelRun = useMutation({
+    mutationFn: () => api.cancelRun(runId),
+    onSuccess: (updated) => {
+      queryClient.setQueryData(["run", runId], updated);
+      setConfirmCancel(false);
+      setCancelError("");
+    },
+    onError: (cause) =>
+      setCancelError(cause instanceof Error ? cause.message : String(cause)),
+  });
   const data = run.data;
   if (run.isLoading) return <LoadingState />;
   if (!data) {
@@ -1061,15 +1382,13 @@ function RunDetailPage() {
     evidence: [],
     edges: [],
   };
-  const taskManifest = tasks.data?.find((task) => task.id === data.task_id)
-    ?.manifest;
+  const taskManifest = tasks.data?.find(
+    (task) => task.id === data.task_id,
+  )?.manifest;
   const completion = taskManifest?.completion;
   const pauseRequested = data.config.pause_requested === true;
   const maximumScore = Math.max(1, data.scorecard.maximum ?? 1_200);
-  const achievedScore = Math.max(
-    0,
-    Math.min(maximumScore, data.score ?? 0),
-  );
+  const achievedScore = Math.max(0, Math.min(maximumScore, data.score ?? 0));
   const totalScorePercentage = (achievedScore / maximumScore) * 100;
   return (
     <>
@@ -1235,7 +1554,9 @@ function RunDetailPage() {
                   </div>
                   <div className="score-total-axis__ticks" aria-hidden="true">
                     {[0, 0.25, 0.5, 0.75, 1].map((ratio) => (
-                      <span key={ratio}>{Math.round(maximumScore * ratio)}</span>
+                      <span key={ratio}>
+                        {Math.round(maximumScore * ratio)}
+                      </span>
                     ))}
                   </div>
                 </div>
@@ -1396,12 +1717,72 @@ function RunDetailPage() {
         {!isTerminal(data.status) && (
           <button
             className="button button--danger"
-            onClick={() => void api.cancelRun(data.id)}
+            onClick={() => {
+              setCancelError("");
+              setConfirmCancel(true);
+            }}
           >
             <X size={14} /> {text("取消运行", "Cancel run")}
           </button>
         )}
       </div>
+      {confirmCancel && (
+        <Modal
+          title={text("确认取消运行？", "Cancel this run?")}
+          onClose={() => setConfirmCancel(false)}
+        >
+          <div className="destructive-confirmation">
+            <div className="destructive-confirmation__warning">
+              <OctagonAlert size={22} />
+              <div>
+                <strong>
+                  {text(
+                    "当前调查将立即进入取消流程。",
+                    "This investigation will enter cancellation immediately.",
+                  )}
+                </strong>
+                <p>
+                  {text(
+                    "候选模型对话和临时 Docker 工作区会被清理，无法从当前位置恢复。若只是想稍后继续，请使用“安全暂停”。",
+                    "The candidate conversation and temporary Docker workspace will be cleaned up and cannot resume from this point. Use “Pause safely” if you only want to continue later.",
+                  )}
+                </p>
+              </div>
+            </div>
+            <dl>
+              <div>
+                <dt>{text("运行 ID", "Run ID")}</dt>
+                <dd>{data.id}</dd>
+              </div>
+              <div>
+                <dt>{text("当前阶段", "Current stage")}</dt>
+                <dd>{stageLabel(data.stage, locale)}</dd>
+              </div>
+            </dl>
+            {cancelError && <div className="inline-error">{cancelError}</div>}
+            <div className="modal__actions">
+              <button
+                className="button button--ghost"
+                type="button"
+                onClick={() => setConfirmCancel(false)}
+              >
+                {text("返回", "Go back")}
+              </button>
+              <button
+                className="button button--danger"
+                type="button"
+                disabled={cancelRun.isPending}
+                onClick={() => cancelRun.mutate()}
+              >
+                <X size={14} />
+                {cancelRun.isPending
+                  ? text("正在取消…", "Cancelling…")
+                  : text("确认取消并清理", "Cancel and clean up")}
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
     </>
   );
 }
@@ -1483,7 +1864,9 @@ function SemanticJudgePanel({
                 {review.judge?.name ?? text("未知裁判", "Unknown judge")}
               </span>
               <code>{review.judge?.model_id ?? "—"}</code>
-              <em className={`reliability reliability--${reliability ?? "low"}`}>
+              <em
+                className={`reliability reliability--${reliability ?? "low"}`}
+              >
                 {text("引用可靠性", "citation reliability")} ·{" "}
                 {semanticReliability(reliability, locale)}
               </em>
@@ -1580,7 +1963,13 @@ function SemanticFindingList({
   positive?: boolean;
 }) {
   return (
-    <div className={positive ? "semantic-finding semantic-finding--positive" : "semantic-finding"}>
+    <div
+      className={
+        positive
+          ? "semantic-finding semantic-finding--positive"
+          : "semantic-finding"
+      }
+    >
       <strong>{title}</strong>
       {values.length ? (
         <ul>
@@ -2057,14 +2446,20 @@ function Modal({
   title,
   onClose,
   children,
+  wide = false,
 }: {
   title: string;
   onClose: () => void;
   children: ReactNode;
+  wide?: boolean;
 }) {
   return (
     <div className="modal-backdrop" role="presentation">
-      <div className="modal" role="dialog" aria-modal="true">
+      <div
+        className={`modal ${wide ? "modal--wide" : ""}`}
+        role="dialog"
+        aria-modal="true"
+      >
         <div className="modal__head">
           <h2>{title}</h2>
           <button className="icon-button" onClick={onClose}>
@@ -2230,6 +2625,24 @@ function providerDefaultUrl(provider: ModelProvider) {
     ollama: "http://host.docker.internal:11434",
   };
   return urls[provider];
+}
+
+function effortLabel(
+  value: string,
+  text: (chinese: string, english: string) => string,
+) {
+  const labels: Record<string, string> = {
+    none: "关闭",
+    off: "关闭",
+    on: "开启",
+    minimal: "最小",
+    low: "低",
+    medium: "中",
+    high: "高",
+    xhigh: "超高",
+    max: "最高",
+  };
+  return text(`${labels[value] ?? value} · ${value}`, value);
 }
 
 function label(value: string, locale: "zh-CN" | "en" = "en") {

@@ -2,6 +2,7 @@ import json
 import time
 import uuid
 from collections.abc import Generator
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
@@ -50,18 +51,11 @@ def create_run(
     task = session.get(TaskDefinition, payload.task_id)
     candidate = session.get(ModelProfile, payload.candidate_model_id)
     judge = session.get(ModelProfile, payload.judge_model_id) if payload.judge_model_id else None
-    if (
-        not task
-        or not task.enabled
-        or not can_access_model(session, user, candidate)
-        or not candidate.enabled
-    ):
+    if not task or not task.enabled or not can_access_model(session, user, candidate) or not candidate.enabled:
         raise HTTPException(status_code=400, detail="Unknown task or candidate model")
     if payload.judge_model_id == payload.candidate_model_id:
         raise HTTPException(status_code=400, detail="Candidate model cannot judge itself")
-    if payload.judge_model_id and (
-        not can_access_model(session, user, judge) or not judge.enabled
-    ):
+    if payload.judge_model_id and (not can_access_model(session, user, judge) or not judge.enabled):
         raise HTTPException(status_code=400, detail="Unknown judge model")
     completion = task.manifest.get("completion", {})
     minimum_calls = int(completion.get("min_tool_calls", 0))
@@ -179,8 +173,12 @@ def cancel_run(
         raise HTTPException(status_code=404, detail="Run not found")
     if run.status in {RunStatus.completed, RunStatus.failed, RunStatus.cancelled}:
         return run
+    config = dict(run.config)
+    config["pause_requested"] = False
+    run.config = config
     run.status = RunStatus.cancelled
     run.stage = "Cancelled by user"
+    run.completed_at = datetime.now(UTC)
     append_event(session, run.id, "run.cancelled", {"reason": "user"})
     session.commit()
     session.refresh(run)

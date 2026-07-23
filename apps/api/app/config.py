@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     setup_token: str | None = None
     runner_enabled: bool = False
     runner_poll_seconds: float = 2.0
+    runner_concurrency: int = Field(default=2, ge=1, le=16)
     semantic_judge_timeout: int = 120
 
     docker_host: str = "unix:///var/run/docker.sock"

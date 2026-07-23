@@ -58,5 +58,23 @@ def create_schema() -> None:
             )
             connection.execute(text("ALTER TABLE user_accounts DROP COLUMN IF EXISTS display_name"))
             connection.execute(text("ALTER TABLE user_accounts ALTER COLUMN username TYPE VARCHAR(32)"))
+            connection.execute(
+                text(
+                    "ALTER TABLE platform_settings "
+                    "ADD COLUMN IF NOT EXISTS runner_concurrency INTEGER "
+                    f"NOT NULL DEFAULT {settings.runner_concurrency}"
+                )
+            )
         finally:
             connection.close()
+    elif engine.dialect.name == "sqlite":
+        with engine.begin() as connection:
+            columns = {row[1] for row in connection.execute(text("PRAGMA table_info(platform_settings)"))}
+            if "runner_concurrency" not in columns:
+                connection.execute(
+                    text(
+                        "ALTER TABLE platform_settings "
+                        "ADD COLUMN runner_concurrency INTEGER "
+                        f"NOT NULL DEFAULT {settings.runner_concurrency}"
+                    )
+                )

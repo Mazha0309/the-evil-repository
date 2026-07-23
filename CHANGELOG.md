@@ -3,6 +3,37 @@
 All notable platform changes are recorded here. The project follows Semantic
 Versioning while individual benchmark scenarios retain independent versions.
 
+## [0.7.0] - 2026-07-23
+
+### Added
+
+- Editable model profiles with preserve/replace/clear API-key semantics.
+- A bilingual, Provider-aware inference parameter editor for temperature,
+  top-p, maximum output tokens, reasoning/thinking effort, service tier, and
+  bounded advanced JSON.
+- An administrator-controlled 1–16 slot Runner pool, initialized by
+  `RUNNER_CONCURRENCY`, dynamically applied without restarting or terminating
+  active runs, with occupied/total slot telemetry in the monitor.
+- A destructive cancellation confirmation showing the run and current stage
+  before the non-resumable workspace and conversation cleanup begins.
+
+### Changed
+
+- OpenAI Responses, Anthropic Messages, compatible Chat Completions, and
+  Ollama parameters now map to protocol-correct request fields.
+- Model parameter validation rejects credentials, headers, prompts, tools,
+  transport fields, oversized JSON, excessive nesting, and invalid common
+  numeric ranges.
+- Provider adapters protect canonical model, message/input, tools, tool choice,
+  and stream values even when a legacy database profile contains conflicting
+  keys.
+
+### Fixed
+
+- Cancelling now records a terminal timestamp, clears a pending pause, exits at
+  safe Runner boundaries, and can no longer be overwritten by later scoring or
+  completion.
+
 ## [0.6.0] - 2026-07-23
 
 ### Added

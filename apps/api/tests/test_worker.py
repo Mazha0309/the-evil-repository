@@ -1,4 +1,6 @@
 import uuid
+from concurrent.futures import Future
+from pathlib import Path
 from types import SimpleNamespace
 
 from sqlalchemy import create_engine, select
@@ -26,6 +28,9 @@ class FakeSession:
         return None
 
     def get(self, _model: object, _identifier: object) -> SimpleNamespace:
+        return self.run
+
+    def scalar(self, _statement: object) -> SimpleNamespace:
         return self.run
 
     def commit(self) -> None:
@@ -112,9 +117,7 @@ def test_runner_startup_marks_interrupted_runs_as_non_resumable(
     with testing_session() as session:
         interrupted = session.get(BenchmarkRun, interrupted_id)
         queued = session.get(BenchmarkRun, queued_id)
-        event = session.scalar(
-            select(RunEvent).where(RunEvent.run_id == interrupted_id)
-        )
+        event = session.scalar(select(RunEvent).where(RunEvent.run_id == interrupted_id))
         assert interrupted is not None
         assert interrupted.status == RunStatus.failed
         assert interrupted.stage == "Interrupted by Runner restart"
@@ -131,6 +134,62 @@ def test_runner_startup_marks_interrupted_runs_as_non_resumable(
         }
         assert queued is not None
         assert queued.status == RunStatus.queued
+
+
+def test_worker_fills_configured_parallel_run_slots(monkeypatch) -> None:
+    worker = Worker()
+    run_ids = [uuid.uuid4(), uuid.uuid4(), uuid.uuid4()]
+    claimed = iter(run_ids)
+    submitted: list[uuid.UUID] = []
+
+    class FakeExecutor:
+        def submit(self, _callback, run_id: uuid.UUID) -> Future[None]:
+            submitted.append(run_id)
+            return Future()
+
+    monkeypatch.setattr(worker, "concurrency_limit", lambda: 2)
+    monkeypatch.setattr(worker, "claim", lambda: next(claimed, None))
+    futures: dict[Future[None], uuid.UUID] = {}
+
+    count = worker.fill_available_slots(FakeExecutor(), futures)
+
+    assert count == 2
+    assert submitted == run_ids[:2]
+    assert list(futures.values()) == run_ids[:2]
+
+
+def test_worker_tracks_active_run_while_thread_executes(monkeypatch) -> None:
+    worker = Worker()
+    run_id = uuid.uuid4()
+    observed: list[int] = []
+    monkeypatch.setattr(
+        worker,
+        "execute",
+        lambda _run_id: observed.append(worker.active_run_count()),
+    )
+
+    worker.execute_tracked(run_id)
+
+    assert observed == [1]
+    assert worker.active_run_count() == 0
+
+
+def test_cancelled_run_cannot_be_resurrected_by_completion(monkeypatch) -> None:
+    run = SimpleNamespace(status=RunStatus.cancelled, stage="Cancelled by user")
+    session = FakeSession(run)
+    monkeypatch.setattr(worker_module, "SessionLocal", lambda: session)
+
+    Worker().complete(
+        uuid.uuid4(),
+        ScenarioRunResult("", 0, 0, []),
+        {"score": 1_200, "maximum": 1_200},
+        Path("/archive-must-not-be-read.tar.gz"),
+        "unused",
+    )
+
+    assert run.status == RunStatus.cancelled
+    assert run.stage == "Cancelled by user"
+    assert session.commits == 0
 
 
 def test_semantic_judge_not_requested_is_explicitly_skipped(monkeypatch) -> None:
@@ -169,9 +228,7 @@ def test_semantic_judge_provider_failure_preserves_deterministic_run(
     monkeypatch.setattr(
         worker,
         "set_stage",
-        lambda _run_id, *, stage, kind, payload=None, **_kwargs: stages.append(
-            (stage, kind, payload or {})
-        ),
+        lambda _run_id, *, stage, kind, payload=None, **_kwargs: stages.append((stage, kind, payload or {})),
     )
     monkeypatch.setattr(
         worker_module.SecretBox,
@@ -222,9 +279,7 @@ def test_semantic_judge_success_archives_packet_and_raw_output(monkeypatch) -> N
     monkeypatch.setattr(
         worker,
         "set_stage",
-        lambda _run_id, *, stage, kind, payload=None, **_kwargs: stages.append(
-            (stage, kind, payload or {})
-        ),
+        lambda _run_id, *, stage, kind, payload=None, **_kwargs: stages.append((stage, kind, payload or {})),
     )
     monkeypatch.setattr(
         worker_module.SecretBox,

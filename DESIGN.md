@@ -105,6 +105,28 @@ because it must not be confused with the Responses API. Provider credentials
 remain encrypted in the control plane and are never copied into a candidate
 container or run archive.
 
+Profiles are mutable control-plane configuration with stable IDs. `PATCH`
+updates protocol, endpoint, model ID, tool mode, enabled state, and inference
+parameters. Omitting `api_key` preserves the existing encrypted credential;
+supplying a value replaces it and explicit `null` clears it.
+
+The WebUI provides protocol-aware structured controls:
+
+| Control | Responses API | Anthropic Messages | Compatible Chat | Ollama Chat |
+|---|---|---|---|---|
+| maximum output | `max_output_tokens` | `max_tokens` | `max_completion_tokens` | `options.num_predict` |
+| reasoning effort | `reasoning.effort` | `output_config.effort` | `reasoning_effort` | top-level `think` |
+| temperature / top-p | top-level | top-level | top-level | `options` |
+| service tier | `service_tier` | `service_tier` | `service_tier` | not exposed |
+
+An advanced JSON object carries other Provider-specific request fields. It is
+bounded by size, depth, and key count and may not contain credentials, headers,
+prompts, model/message/input fields, tool declarations, tool choice, or
+streaming controls. Adapters independently discard transport-owned keys from
+stored legacy profiles and write canonical `model`, message/input, tools, tool
+choice, and stream fields last. UI validation is convenience; this adapter
+boundary is authoritative.
+
 The same adapters serve optional semantic judges in text-only mode. Empty tool
 declarations are omitted because several Provider APIs reject an empty
 `tools` array. Candidate and Judge token usage remain separate.
@@ -155,6 +177,19 @@ scoring. An explicit operator override may interrupt them, but a replacement
 Runner must reconcile every inherited non-terminal execution as
 `run.orphaned` and failed; it must never display an in-memory run as resumable
 after the process that owned it has gone away.
+
+The Runner is a singleton scheduler with a bounded in-process worker pool.
+Platform settings accept 1–16 slots and are reread while scheduling;
+`RUNNER_CONCURRENCY` supplies the fresh-database default of two. Lowering the
+limit never terminates active work: the scheduler stops claiming until active
+futures fall below the new limit. It claims no more queued rows than available
+slots using database row locking. Each claimed run owns a distinct candidate
+container, tmpfs volume, prepared Scenario state, Provider client,
+conversation, event stream, and archive. Only aggregate slot counts enter
+heartbeat telemetry. Operators must tune concurrency against the sum of
+per-sandbox resource limits and Provider rate limits; scaling the Compose
+Runner service itself is unsupported because startup reconciliation assumes
+one process owns all live in-memory conversations.
 
 ## 4. Scenario SDK
 
@@ -1023,7 +1058,8 @@ Primary views:
 - login, registration, first-run administrator setup, and account sessions;
 - administrator user, role, registration-policy, and server-monitoring views;
 - scenario catalogue and version details;
-- model/provider profiles with server-side encrypted credentials;
+- editable model/provider profiles with server-side encrypted credentials,
+  structured protocol-aware inference controls, and bounded advanced JSON;
 - run builder and soft/hard budget controls;
 - live run matrix and container/resource state;
 - a default live Agent monitor that reports whether the Runner is waiting on
@@ -1042,6 +1078,8 @@ Primary views:
 - cooperative pause/resume controls: a pause request takes effect at the next
   Provider/tool boundary, leaves the workspace and conversation intact, and
   excludes the paused interval from active execution budgets;
+- explicit destructive confirmation before cancellation explains that
+  conversation and temporary workspace cleanup is not resumable;
 - Hypothesis Graph and hypothesis evolution;
 - Evidence Graph and derived Truth Tree;
 - Behavior Profile bars/radar with raw signals, applicability, confidence, and
@@ -1079,6 +1117,10 @@ not label a pending pause request as already paused, and cancellation remains
 available in both states. Pause is not a persistence checkpoint: deployment
 protection still treats a paused execution as active, and a Runner restart
 makes it non-resumable.
+
+Cancellation is destructive rather than a synonym for pause. The UI must name
+the run and current stage, explain workspace/conversation cleanup, and require
+a second explicit action before calling the cancel endpoint.
 
 ## 18. Open-source governance
 

@@ -63,6 +63,16 @@ def test_setup_login_registration_admin_and_tenant_model_scope() -> None:
     )
     assert enabled.status_code == 200
     assert enabled.json()["registration_enabled"] is True
+    assert enabled.json()["runner_concurrency"] == 2
+
+    concurrency = client.patch(
+        "/api/v1/admin/settings",
+        headers={"X-CSRF-Token": csrf},
+        json={"runner_concurrency": 4},
+    )
+    assert concurrency.status_code == 200
+    assert concurrency.json()["runner_concurrency"] == 4
+    assert concurrency.json()["registration_enabled"] is True
 
     monitor = client.get("/api/v1/admin/monitor")
     assert monitor.status_code == 200
@@ -109,6 +119,49 @@ def test_setup_login_registration_admin_and_tenant_model_scope() -> None:
     )
     assert created.status_code == 201
     assert client.get("/api/v1/models").json()[0]["name"] == "My Claude"
+    updated = client.patch(
+        f"/api/v1/models/{created.json()['id']}",
+        headers={"X-CSRF-Token": user_csrf},
+        json={
+            "name": "My Claude · high",
+            "model_id": "claude-updated",
+            "parameters": {
+                "temperature": 0.2,
+                "max_tokens": 16_384,
+                "output_config": {"effort": "high"},
+            },
+            "native_tools": False,
+            "enabled": False,
+        },
+    )
+    assert updated.status_code == 200
+    assert updated.json()["name"] == "My Claude · high"
+    assert updated.json()["model_id"] == "claude-updated"
+    assert updated.json()["parameters"]["output_config"]["effort"] == "high"
+    assert updated.json()["has_api_key"] is True
+    assert updated.json()["native_tools"] is False
+    assert updated.json()["enabled"] is False
+
+    cleared = client.patch(
+        f"/api/v1/models/{created.json()['id']}",
+        headers={"X-CSRF-Token": user_csrf},
+        json={"api_key": None},
+    )
+    assert cleared.status_code == 200
+    assert cleared.json()["has_api_key"] is False
+
+    unsafe = client.post(
+        "/api/v1/models",
+        headers={"X-CSRF-Token": user_csrf},
+        json={
+            "name": "Unsafe profile",
+            "provider": "openai_responses",
+            "base_url": "https://api.openai.com/v1",
+            "model_id": "gpt-test",
+            "parameters": {"model": "attacker-controlled", "temperature": 3},
+        },
+    )
+    assert unsafe.status_code == 422
 
     forbidden_admin = client.get("/api/v1/admin/users")
     assert forbidden_admin.status_code == 403

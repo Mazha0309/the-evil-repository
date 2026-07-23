@@ -99,6 +99,25 @@ Chat Completions 兼容协议不能与 OpenAI Responses API 混为一谈。
 Provider 凭据只在控制平面加密保存，绝不复制到候选容器或运行归档。Runner
 容器可以访问用户配置的 Provider 网络；候选容器始终没有网络。
 
+Profile 是 ID 稳定但内容可修改的控制平面配置。`PATCH` 可以更新协议、端点、
+模型 ID、工具模式、启用状态与推理参数。请求中省略 `api_key` 会保留已有加密
+凭据；提供新值会替换，显式传入 `null` 才会清除。
+
+WebUI 提供按协议映射的结构化控件：
+
+| 控件 | Responses API | Anthropic Messages | Compatible Chat | Ollama Chat |
+|---|---|---|---|---|
+| 最大输出 | `max_output_tokens` | `max_tokens` | `max_completion_tokens` | `options.num_predict` |
+| 推理挡位 | `reasoning.effort` | `output_config.effort` | `reasoning_effort` | 顶层 `think` |
+| 温度 / Top P | 顶层 | 顶层 | 顶层 | `options` |
+| 服务挡位 | `service_tier` | `service_tier` | `service_tier` | 不提供 |
+
+高级 JSON 用于其他 Provider 专属请求字段，并限制总大小、嵌套深度与键数量。
+其中不得出现凭据、Header、Prompt、模型/消息/输入字段、工具声明、工具选择或
+流式控制。适配器还会独立丢弃旧 Profile 中的传输层保留字段，并最后写入规范的
+`model`、消息/输入、工具、工具选择与流式字段。前端校验只用于改善体验，适配器
+边界才是最终权威。
+
 同一组适配器也以纯文本模式调用可选语义裁判。由于部分 Provider 会拒绝空的
 `tools` 数组，纯文本请求不会发送空工具声明；候选与裁判的 Token 用量分别记录。
 
@@ -139,6 +158,15 @@ socket，也不增加宿主机文件系统挂载。
 任务，就应失败关闭。运维人员可以显式绕过保护并中断任务，但新 Runner 必须把
 继承到的全部非终态执行记为 `run.orphaned` 和失败，绝不能在原进程已经消失后仍把
 内存任务显示成可恢复。
+
+Runner 是带有有界进程内线程池的单例调度器。平台设置允许 1–16 个槽位，调度时
+会动态重新读取；`RUNNER_CONCURRENCY` 只提供全新数据库的默认值 2。降低并发数
+不会终止活跃任务：调度器会停止领取，直到活跃 Future 数量低于新上限。它通过
+数据库行锁只领取空闲槽位能够容纳的排队任务。每个已领取 Run 独占候选容器、
+tmpfs Volume、准备后的 Scenario 状态、Provider Client、模型对话、事件流与归档。
+心跳只公开聚合槽位数量。运维人员必须按所有沙箱资源上限之和及 Provider 限流
+调整并发；不支持直接扩容 Compose Runner 副本，因为启动对账假定所有内存对话
+只归一个进程所有。
 
 ## 4. Scenario SDK
 
@@ -886,7 +914,8 @@ Replay 视图支持：
 - 登录、注册、首次管理员初始化与账户会话；
 - 管理员用户、角色、注册策略与服务器监控；
 - 场景目录与版本详情；
-- 使用服务端加密凭据的模型/Provider 配置；
+- 可编辑的模型/Provider 配置、服务端加密凭据、按协议映射的结构化推理参数与
+  有界高级 JSON；
 - 运行构建器与软/硬预算控制；
 - 实时运行矩阵与容器/资源状态；
 - 默认实时 Agent 监控，明确区分等待 Provider、执行工具、分析结果、准备场景和
@@ -901,6 +930,8 @@ Replay 视图支持：
   观察、快照、动作、决策，以及 Baseline / Canary / Replay / Soak 结果；
 - 协作式暂停/继续：暂停请求在下一个 Provider/工具边界生效，保留工作区和对话，
   并从有效运行预算中扣除暂停时间；
+- 取消前必须进行破坏性操作二次确认，明确说明模型对话与临时工作区清理后无法
+  恢复；
 - Hypothesis Graph 与假设演化；
 - Evidence Graph 与派生 Truth Tree；
 - 带原始信号、适用性、置信度和 Cohort 百分位的 Behavior Profile；
@@ -929,6 +960,9 @@ Provider；`assistant.message` 只包含 Provider 明确返回的文本。一个
 沿用同一份消息历史和候选容器。UI 不能把“暂停请求中”误报成“已经暂停”，两个状态
 下都必须保留取消能力。暂停不是持久化 Checkpoint：部署保护仍把暂停中的执行视为
 活跃任务，Runner 一旦重启，该任务就不可恢复。
+
+取消是破坏性操作，不是暂停的同义词。UI 必须显示 Run ID 与当前阶段，说明将
+清理工作区和对话，并要求用户再次明确操作后才能调用取消接口。
 
 ## 18. 开源治理
 

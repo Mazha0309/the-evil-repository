@@ -44,6 +44,7 @@ export interface AccountSession {
 
 export interface PlatformSettings {
   registration_enabled: boolean;
+  runner_concurrency: number;
   updated_by: string | null;
   updated_at: string;
 }

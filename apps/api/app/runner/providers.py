@@ -4,6 +4,7 @@ from typing import Any
 
 import httpx
 
+from app.model_parameters import safe_model_parameters
 from app.models import ModelProfile, ModelProvider
 from app.runner.protocol import AssistantTurn, ToolCall
 
@@ -46,9 +47,9 @@ class ModelClient:
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
         payload: dict[str, Any] = {
+            **safe_model_parameters(self.profile.parameters),
             "model": self.profile.model_id,
             "messages": messages,
-            **self.profile.parameters,
         }
         if self.profile.native_tools and tools:
             payload["tools"] = tools
@@ -91,9 +92,9 @@ class ModelClient:
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
         payload: dict[str, Any] = {
+            **safe_model_parameters(self.profile.parameters),
             "model": self.profile.model_id,
             "input": openai_responses_input(messages),
-            **self.profile.parameters,
         }
         if self.profile.native_tools and tools:
             payload["tools"] = [
@@ -144,7 +145,7 @@ class ModelClient:
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]],
     ) -> AssistantTurn:
-        parameters = dict(self.profile.parameters)
+        parameters = safe_model_parameters(self.profile.parameters)
         anthropic_version = str(parameters.pop("anthropic_version", "2023-06-01"))
         headers = {
             "Content-Type": "application/json",
@@ -154,10 +155,10 @@ class ModelClient:
             headers["x-api-key"] = self.api_key
         system, anthropic_messages = anthropic_input(messages)
         payload: dict[str, Any] = {
+            **parameters,
             "model": self.profile.model_id,
             "max_tokens": int(parameters.pop("max_tokens", 8_192)),
             "messages": anthropic_messages,
-            **parameters,
         }
         if system:
             payload["system"] = system
@@ -203,11 +204,21 @@ class ModelClient:
         )
 
     def _ollama(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> AssistantTurn:
+        parameters = safe_model_parameters(self.profile.parameters)
+        explicit_options = parameters.pop("options", {})
+        if not isinstance(explicit_options, dict):
+            explicit_options = {}
+        request_parameters = {
+            key: parameters.pop(key)
+            for key in ("think", "format", "keep_alive", "logprobs", "top_logprobs")
+            if key in parameters
+        }
         payload: dict[str, Any] = {
             "model": self.profile.model_id,
             "messages": messages,
             "stream": False,
-            "options": self.profile.parameters,
+            "options": {**explicit_options, **parameters},
+            **request_parameters,
         }
         if self.profile.native_tools and tools:
             payload["tools"] = tools
