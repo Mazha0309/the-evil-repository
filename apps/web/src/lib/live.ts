@@ -38,6 +38,7 @@ export interface LiveRunAnalysis {
   substantiveCalls: number;
   redundantCalls: number;
   toolErrors: number;
+  protocolRepairs: number;
   injectedFaults: number;
   boundaryViolations: number;
   pausedMs: number;
@@ -169,6 +170,9 @@ export function analyzeRunEvents(
     redundantCalls: Math.max(0, calls.length - substantiveCalls),
     toolErrors: results.filter(
       (event) => !["ok", "success"].includes(stringValue(event.payload.status)),
+    ).length,
+    protocolRepairs: events.filter(
+      (event) => event.kind === "provider.tool_call_invalid",
     ).length,
     injectedFaults: results.filter((event) =>
       Boolean(event.payload.injected_fault),

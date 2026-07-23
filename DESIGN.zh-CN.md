@@ -110,6 +110,17 @@ Chat Completions 兼容协议不能与 OpenAI Responses API 混为一谈。
 Provider 凭据只在控制平面加密保存，绝不复制到候选容器或运行归档。Runner
 容器可以访问用户配置的 Provider 网络；候选容器始终没有网络。
 
+原生工具参数必须通过严格协议边界。适配器只接受完整 JSON Object；格式损坏、
+被截断、标量或数组参数都会变成 `InvalidToolCall`，绝不能强制转换成 `{}`。
+Engine 会隔离整批响应，使用限长预览与摘要记录
+`provider.tool_call_invalid`，并要求模型发起全新调用，不把损坏参数重新当作指令。
+连续损坏超过固定次数后会干净终止，不会崩溃或无限循环。
+
+HTTP 408/425/429、常见 5xx，以及读取/连接超时、远端协议错误等 `httpx`
+传输异常共用一套有界重试策略。每次物理请求都必须经过 `provider.request`，
+消耗真实 Provider 请求预算并产生重试遥测；重试耗尽后抛出明确的终态传输错误，
+而不是泄漏底层库异常。
+
 Profile 是 ID 稳定但内容可修改的控制平面配置。`PATCH` 可以更新协议、端点、
 模型 ID、工具模式、启用状态与推理参数。请求中省略 `api_key` 会保留已有加密
 凭据；提供新值会替换，显式传入 `null` 才会清除。
@@ -306,6 +317,11 @@ load() → prepare() → run() → grade() → archive()
   数据库审计与复现元数据；
 - 对每个产物计算哈希；
 - 不归档 Provider key 或控制平面秘密。
+
+Scenario 准备完成后若发生意外异常，Runner 必须在清理沙箱前尽力生成失败检查点。
+它保存权威事件流、双仓库 Diff/Status、限长调查产物、资源与事故账本、采集失败项
+以及结构化异常摘要。已登记产物可以通过需要认证的列表/下载接口及运行详情页获取。
+检查点属于可回放取证证据，但不声称能够序列化或继续 Provider 对话。
 
 React 只消费标准化 API 数据，不读取场景内部目录。
 
@@ -1073,6 +1089,9 @@ Provider；`assistant.message` 只包含 Provider 明确返回的文本。一个
 会一直保持执行中状态，直到匹配的 `tool.result` 到达。事件序号是权威记录，墙上
 时间新鲜度和完成进度条则是明确标注的派生视图。客户端只请求最后已见序号之后的
 事件，长任务不再每秒重复传输完整审计流。
+
+`provider.tool_call_invalid` 是控制平面的协议事件，不是候选工具执行。它不增加
+`tool_calls`、不推进事故时钟，也不会伪造一个 `tool.result`。
 
 暂停刻意采用协作式语义。控制平面先记录 `run.pause_requested`，只有当前 Provider
 响应或工具调用返回后，Runner 才记录 `run.paused`。继续时记录 `run.resumed`，

@@ -1,3 +1,5 @@
+import json
+import tarfile
 import uuid
 from concurrent.futures import Future
 from pathlib import Path
@@ -10,10 +12,20 @@ from sqlalchemy.pool import StaticPool
 import app.worker as worker_module
 from app.database import Base
 from app.judging import SemanticJudgeOutcome
-from app.models import BenchmarkRun, ModelProvider, RunEvent, RunStatus
+from app.models import (
+    BenchmarkRun,
+    ModelProvider,
+    RunArtifact,
+    RunEvent,
+    RunStatus,
+)
 from app.runner.protocol import ToolResult
+from app.scenario import PreparedScenario, load_scenario
 from app.scenario.sdk import ScenarioRunResult
 from app.worker import Worker
+
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+SCENARIO_ROOT = PROJECT_ROOT / "scenarios" / "terminal-repository"
 
 
 class FakeSession:
@@ -190,6 +202,156 @@ def test_cancelled_run_cannot_be_resurrected_by_completion(monkeypatch) -> None:
     assert run.status == RunStatus.cancelled
     assert run.stage == "Cancelled by user"
     assert session.commits == 0
+
+
+def test_failure_checkpoint_preserves_events_diffs_and_resource_ledger(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    scenario = load_scenario(SCENARIO_ROOT)
+    prepared = PreparedScenario(
+        scenario_root=SCENARIO_ROOT,
+        workspace=tmp_path / "workspace",
+        metadata=scenario.metadata,
+        private_state={
+            "truth": {
+                "dead_letter_baseline": "dead-base",
+                "palimpsest_baseline": "pal-base",
+            }
+        },
+    )
+    result = ScenarioRunResult(
+        final_response="interrupted",
+        elapsed_seconds=123,
+        tool_calls=17,
+        events=[],
+        private_state={
+            "resource_ledger": {
+                "provider_requests": 7,
+                "tool_calls": 17,
+            },
+            "incident_audit": {"risk": 2},
+        },
+    )
+    engine = SimpleNamespace(
+        checkpoint_result=lambda _error: result,
+    )
+    sandbox = SimpleNamespace(
+        container=object(),
+        git_diff=lambda repository, baseline: f"{repository}:{baseline}:diff",
+        git_status=lambda repository: f"{repository}:dirty",
+        collect_text=lambda path: (
+            "# Investigation checkpoint" if path == "INVESTIGATION.md" else ""
+        ),
+    )
+    worker = Worker()
+    run_id = uuid.uuid4()
+    monkeypatch.setattr(worker_module.settings, "artifact_root", str(tmp_path))
+    monkeypatch.setattr(worker, "is_cancelled", lambda _run_id: False)
+    monkeypatch.setattr(
+        worker,
+        "run_events",
+        lambda _run_id: [
+            {"kind": "tool.call", "sequence": 1, "name": "read_file"}
+        ],
+    )
+
+    checkpoint = worker.create_failure_checkpoint(
+        run_id=run_id,
+        scenario=scenario,
+        prepared=prepared,
+        engine=engine,
+        result=None,
+        sandbox=sandbox,
+        error=RuntimeError("provider response was truncated"),
+    )
+
+    assert checkpoint is not None
+    archive_path, archive_sha = checkpoint
+    assert archive_path.name == f"{run_id}-failure-checkpoint.tar.gz"
+    assert len(archive_sha) == 64
+    with tarfile.open(archive_path, "r:gz") as archive:
+        names = set(archive.getnames())
+        assert {
+            "run.json",
+            "events.jsonl",
+            "artifacts/dead-letter.diff",
+            "artifacts/palimpsest.diff",
+            "artifacts/INVESTIGATION.md",
+            "artifacts/failure-summary.json",
+            "artifacts/resource-ledger.json",
+        } <= names
+        summary_member = archive.extractfile(
+            "artifacts/failure-summary.json"
+        )
+        assert summary_member is not None
+        summary = json.loads(summary_member.read())
+        assert summary["error_type"] == "RuntimeError"
+        assert summary["replayable"] is True
+        assert summary["resumable"] is False
+        assert summary["resource_ledger"]["tool_calls"] == 17
+
+
+def test_failed_run_registers_downloadable_checkpoint(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    testing_session = sessionmaker(
+        bind=engine,
+        expire_on_commit=False,
+        class_=Session,
+    )
+    run_id = uuid.uuid4()
+    with testing_session() as session:
+        session.add(
+            BenchmarkRun(
+                id=run_id,
+                task_id=uuid.uuid4(),
+                candidate_model_id=uuid.uuid4(),
+                status=RunStatus.running,
+                stage="Candidate investigation",
+                config={},
+            )
+        )
+        session.commit()
+    checkpoint_path = tmp_path / f"{run_id}-failure-checkpoint.tar.gz"
+    checkpoint_path.write_bytes(b"checkpoint")
+    monkeypatch.setattr(worker_module, "SessionLocal", testing_session)
+
+    Worker().fail(
+        run_id,
+        "provider response was truncated",
+        checkpoint=(checkpoint_path, "a" * 64),
+    )
+
+    with testing_session() as session:
+        run = session.get(BenchmarkRun, run_id)
+        artifact = session.scalar(
+            select(RunArtifact).where(RunArtifact.run_id == run_id)
+        )
+        event = session.scalar(
+            select(RunEvent).where(
+                RunEvent.run_id == run_id,
+                RunEvent.kind == "run.failed",
+            )
+        )
+        assert run is not None
+        assert run.status == RunStatus.failed
+        assert artifact is not None
+        assert artifact.name == checkpoint_path.name
+        assert artifact.metadata_json == {
+            "kind": "failure-checkpoint",
+            "resumable": False,
+            "replayable": True,
+        }
+        assert event is not None
+        assert event.payload["checkpoint"] == checkpoint_path.name
 
 
 def test_semantic_judge_not_requested_is_explicitly_skipped(monkeypatch) -> None:

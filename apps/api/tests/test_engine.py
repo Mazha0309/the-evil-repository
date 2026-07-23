@@ -10,7 +10,7 @@ from app.runner.engine import (
     substantive_tool_call_count,
 )
 from app.runner.faults import FaultController
-from app.runner.protocol import AssistantTurn
+from app.runner.protocol import AssistantTurn, InvalidToolCall, ToolCall
 from app.scenario import PreparedScenario, load_scenario
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -49,6 +49,50 @@ class MeteredFinalAnswerClient:
             content="Investigation complete.",
             input_tokens=800,
             output_tokens=300,
+        )
+
+
+class RepairingToolCallClient:
+    profile = SimpleNamespace(native_tools=True)
+    on_request = None
+
+    def __init__(self) -> None:
+        self.turn = 0
+        self.messages: list[list[dict]] = []
+
+    def complete(self, messages: list[dict], tools: list[dict]) -> AssistantTurn:
+        self.turn += 1
+        self.messages.append([dict(message) for message in messages])
+        if self.turn == 1:
+            return AssistantTurn(
+                invalid_tool_calls=[
+                    InvalidToolCall(
+                        call_id="broken-1",
+                        name="read_file",
+                        error="invalid JSON at character 17: Unterminated string",
+                        arguments_preview='{"path":"README.',
+                        arguments_sha256="a" * 64,
+                    )
+                ],
+                input_tokens=20,
+                output_tokens=3,
+            )
+        if self.turn == 2:
+            return AssistantTurn(
+                tool_calls=[
+                    ToolCall(
+                        call_id="fixed-1",
+                        name="read_file",
+                        arguments={"path": "README.md"},
+                    )
+                ],
+                input_tokens=30,
+                output_tokens=4,
+            )
+        return AssistantTurn(
+            content="Investigation complete.",
+            input_tokens=40,
+            output_tokens=5,
         )
 
 
@@ -92,6 +136,74 @@ def test_scenario_run_passes_prepared_scenario_to_agent_engine(
     assert result.events[1]["kind"] == "assistant.message"
     assert result.events[1]["turn"] == 1
     assert result.events[1]["duration_ms"] >= 0
+
+
+def test_invalid_tool_call_is_repaired_without_execution(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    scenario = load_scenario(SCENARIO_ROOT)
+    prepared = PreparedScenario(
+        scenario_root=SCENARIO_ROOT,
+        workspace=tmp_path,
+        metadata=scenario.metadata,
+    )
+    client = RepairingToolCallClient()
+    executed: list[ToolCall] = []
+    sandbox = SimpleNamespace(
+        execute=lambda call: executed.append(call)
+        or SimpleNamespace(
+            call_id=call.call_id,
+            name=call.name,
+            status="ok",
+            output="contents",
+            exit_code=0,
+            truncated=False,
+            metadata={},
+            model_dump_json=lambda: (
+                '{"call_id":"fixed-1","name":"read_file",'
+                '"status":"ok","output":"contents"}'
+            ),
+        )
+    )
+    engine = AgentEngine(
+        run_id=uuid.uuid4(),
+        client=client,
+        sandbox=sandbox,
+        prepared=prepared,
+        faults=FaultController([]),
+    )
+    monkeypatch.setattr(engine, "_cancelled", lambda: False)
+    monkeypatch.setattr(engine, "_wait_for_resume", lambda: True)
+    monkeypatch.setattr(engine, "_completion_gaps", lambda: [])
+    monkeypatch.setattr(
+        engine,
+        "_event",
+        lambda kind, payload: engine.events.append({"kind": kind, **payload}),
+    )
+
+    result = engine.run(prepared)
+
+    assert result.final_response == "Investigation complete."
+    assert [call.call_id for call in executed] == ["fixed-1"]
+    assert result.tool_calls == 1
+    assert result.private_state["invalid_tool_call_batches"] == 1
+    assert result.private_state["invalid_tool_calls"] == 1
+    invalid_event = next(
+        event
+        for event in result.events
+        if event["kind"] == "provider.tool_call_invalid"
+    )
+    assert invalid_event["executed"] is False
+    assert invalid_event["invalid_calls"][0]["call_id"] == "broken-1"
+    repair_messages = client.messages[1]
+    assert repair_messages[-1]["role"] == "user"
+    assert "No tool from that response was executed" in repair_messages[-1]["content"]
+    assert all(
+        not message.get("tool_calls")
+        for message in repair_messages
+        if message["role"] == "assistant"
+    )
 
 
 def test_completion_actions_require_observed_investigation_tools() -> None:

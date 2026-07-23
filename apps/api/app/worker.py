@@ -40,7 +40,7 @@ from app.runner.faults import FaultController
 from app.runner.protocol import ToolResult
 from app.runner.providers import ModelClient
 from app.runner.sandbox import DockerSandbox
-from app.scenario import ScenarioRunResult, load_scenario
+from app.scenario import PreparedScenario, Scenario, ScenarioRunResult, load_scenario
 from app.scenario.agent_graph import derive_agent_graph
 from app.seed import seed_canonical_task
 
@@ -260,6 +260,10 @@ class Worker:
     def execute(self, run_id: uuid.UUID) -> None:
         sandbox: DockerSandbox | None = None
         candidate_client: ModelClient | None = None
+        scenario: Scenario | None = None
+        prepared: PreparedScenario | None = None
+        engine: AgentEngine | None = None
+        result: ScenarioRunResult | None = None
         started = time.monotonic()
         try:
             with SessionLocal() as session:
@@ -565,7 +569,20 @@ class Worker:
                 self.complete(run_id, result, scorecard, archive_path, archive_sha)
         except Exception as exc:
             logger.error("Run %s failed: %s\n%s", run_id, exc, traceback.format_exc())
-            self.fail(run_id, str(exc))
+            checkpoint = None
+            try:
+                checkpoint = self.create_failure_checkpoint(
+                    run_id=run_id,
+                    scenario=scenario,
+                    prepared=prepared,
+                    engine=engine,
+                    result=result,
+                    sandbox=sandbox,
+                    error=exc,
+                )
+            except Exception:
+                logger.exception("Could not preserve failure checkpoint for run %s", run_id)
+            self.fail(run_id, str(exc), checkpoint=checkpoint)
         finally:
             if candidate_client:
                 candidate_client.close()
@@ -863,7 +880,136 @@ class Worker:
             )
             session.commit()
 
-    def fail(self, run_id: uuid.UUID, message: str) -> None:
+    def create_failure_checkpoint(
+        self,
+        *,
+        run_id: uuid.UUID,
+        scenario: Scenario | None,
+        prepared: PreparedScenario | None,
+        engine: AgentEngine | None,
+        result: ScenarioRunResult | None,
+        sandbox: DockerSandbox | None,
+        error: Exception,
+    ) -> tuple[Path, str] | None:
+        if scenario is None or prepared is None or self.is_cancelled(run_id):
+            return None
+        checkpoint_result = result
+        if checkpoint_result is None:
+            checkpoint_result = (
+                engine.checkpoint_result(error)
+                if engine is not None
+                else ScenarioRunResult(
+                    final_response=(
+                        f"Run interrupted by {type(error).__name__} before the "
+                        "candidate engine started."
+                    ),
+                    elapsed_seconds=0,
+                    tool_calls=0,
+                    events=[],
+                    private_state={
+                        "failure": {
+                            "type": type(error).__name__,
+                            "message": str(error)[:4_000],
+                        }
+                    },
+                )
+            )
+        checkpoint_result.private_state["failure"] = {
+            "type": type(error).__name__,
+            "message": str(error)[:4_000],
+        }
+        collection_errors: dict[str, str] = {}
+
+        def collect(name: str, operation: Callable[[], str]) -> None:
+            try:
+                checkpoint_result.artifacts[name] = operation()
+            except Exception as collection_error:
+                collection_errors[name] = (
+                    f"{type(collection_error).__name__}: {collection_error}"
+                )[:1_000]
+
+        if sandbox is not None and sandbox.container is not None:
+            truth = dict(prepared.private_state.get("truth", {}))
+            repositories = (
+                ("dead-letter", str(truth.get("dead_letter_baseline", "HEAD"))),
+                ("palimpsest", str(truth.get("palimpsest_baseline", "HEAD"))),
+            )
+            for repository, baseline in repositories:
+                collect(
+                    f"{repository}.diff",
+                    lambda repository=repository, baseline=baseline: sandbox.git_diff(
+                        repository,
+                        baseline,
+                    ),
+                )
+                collect(
+                    f"{repository}.status",
+                    lambda repository=repository: sandbox.git_status(repository),
+                )
+            collect(
+                "INVESTIGATION.md",
+                lambda: (
+                    sandbox.collect_text("INVESTIGATION.md")
+                    or sandbox.collect_text("dead-letter/INVESTIGATION.md")
+                ),
+            )
+        checkpoint_result.events = self.run_events(run_id)
+        failure_summary = {
+            "kind": "unexpected-run-failure",
+            "error_type": type(error).__name__,
+            "error": str(error)[:4_000],
+            "created_at": datetime.now(UTC).isoformat(),
+            "resumable": False,
+            "replayable": True,
+            "candidate_workspace_preserved_as": "repository diffs and bounded artifacts",
+            "collection_errors": collection_errors,
+            "resource_ledger": checkpoint_result.private_state.get(
+                "resource_ledger",
+                {},
+            ),
+        }
+        checkpoint_result.artifacts.update(
+            {
+                "failure-summary.json": json.dumps(
+                    failure_summary,
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                ),
+                "resource-ledger.json": json.dumps(
+                    checkpoint_result.private_state.get("resource_ledger", {}),
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                ),
+                "incident-audit.json": json.dumps(
+                    checkpoint_result.private_state.get("incident_audit", {}),
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                ),
+            }
+        )
+        archive_path = (
+            Path(settings.artifact_root)
+            / f"{run_id}-failure-checkpoint.tar.gz"
+        )
+        scenario.archive(prepared, checkpoint_result, archive_path)
+        archive_sha = hashlib.sha256(archive_path.read_bytes()).hexdigest()
+        logger.info(
+            "Preserved failure checkpoint for run %s at %s",
+            run_id,
+            archive_path,
+        )
+        return archive_path, archive_sha
+
+    def fail(
+        self,
+        run_id: uuid.UUID,
+        message: str,
+        *,
+        checkpoint: tuple[Path, str] | None = None,
+    ) -> None:
         with SessionLocal() as session:
             run = session.scalar(select(BenchmarkRun).where(BenchmarkRun.id == run_id).with_for_update())
             if not run:
@@ -874,7 +1020,35 @@ class Worker:
             run.stage = "Failed"
             run.error = message[:4_000]
             run.completed_at = datetime.now(UTC)
-            append_event(session, run_id, "run.failed", {"error": message[:1_000]})
+            checkpoint_name = None
+            if checkpoint is not None:
+                archive_path, archive_sha = checkpoint
+                if archive_path.is_file():
+                    checkpoint_name = archive_path.name
+                    session.add(
+                        RunArtifact(
+                            run_id=run_id,
+                            name=archive_path.name,
+                            media_type="application/gzip",
+                            path=str(archive_path),
+                            sha256=archive_sha,
+                            size=archive_path.stat().st_size,
+                            metadata_json={
+                                "kind": "failure-checkpoint",
+                                "resumable": False,
+                                "replayable": True,
+                            },
+                        )
+                    )
+            append_event(
+                session,
+                run_id,
+                "run.failed",
+                {
+                    "error": message[:1_000],
+                    "checkpoint": checkpoint_name,
+                },
+            )
             session.commit()
 
 

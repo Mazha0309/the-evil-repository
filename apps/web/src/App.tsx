@@ -1562,6 +1562,11 @@ function RunDetailPage() {
     queryFn: () => api.graph(runId),
     refetchInterval: isTerminal(run.data?.status) ? false : 3_000,
   });
+  const artifacts = useQuery({
+    queryKey: ["run-artifacts", runId],
+    queryFn: () => api.runArtifacts(runId),
+    enabled: isTerminal(run.data?.status),
+  });
   const tasks = useQuery({
     queryKey: ["tasks"],
     queryFn: api.tasks,
@@ -1940,6 +1945,18 @@ function RunDetailPage() {
         <a className="button button--ghost" href={api.reportUrl(data.id)}>
           <Download size={14} /> {text("导出报告", "Export report")}
         </a>
+        {artifacts.data?.map((artifact) => (
+          <a
+            className="button button--ghost"
+            href={api.runArtifactUrl(data.id, artifact.id)}
+            key={artifact.id}
+          >
+            <Download size={14} />{" "}
+            {artifact.metadata_json.kind === "failure-checkpoint"
+              ? text("下载失败检查点", "Download failure checkpoint")
+              : text("下载运行归档", "Download run archive")}
+          </a>
+        ))}
         {data.status === "running" &&
           (pauseRequested ? (
             <button

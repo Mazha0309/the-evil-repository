@@ -3,6 +3,35 @@
 All notable platform changes are recorded here. The project follows Semantic
 Versioning while individual benchmark scenarios retain independent versions.
 
+## [0.9.1] - 2026-07-24
+
+### Added
+
+- Authenticated run-artifact listing and download endpoints, with run-detail
+  controls for normal archives and unexpected-failure checkpoints.
+- Best-effort forensic checkpoints before sandbox cleanup on unexpected run
+  exceptions. They preserve the authoritative event stream, repository
+  diffs/status, bounded investigation artifacts, incident/resource ledgers,
+  collection errors and a structured failure summary.
+- Auditable `provider.tool_call_invalid` events and resource-ledger counters
+  for malformed native tool-call batches.
+
+### Changed
+
+- Native tool arguments now require a complete JSON object across Responses,
+  Anthropic, compatible Chat Completions and Ollama adapters. A malformed item
+  quarantines the entire batch and receives a clean model repair turn; no valid
+  sibling call is partially executed.
+- Provider transport exceptions now share bounded exponential backoff with
+  retry telemetry and raw request-budget accounting.
+
+### Fixed
+
+- Prevented a truncated compatible-Chat tool argument from raising an
+  unhandled `JSONDecodeError` and destroying a long-running investigation.
+- Prevented `ReadTimeout`, `ConnectError` and related transport exceptions from
+  bypassing the existing Provider retry policy.
+
 ## [0.9.0] - 2026-07-24
 
 ### Added
