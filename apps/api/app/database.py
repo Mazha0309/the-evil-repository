@@ -71,6 +71,12 @@ def create_schema() -> None:
                     "ADD COLUMN IF NOT EXISTS archived_at TIMESTAMP WITH TIME ZONE"
                 )
             )
+            connection.execute(
+                text(
+                    "ALTER TABLE benchmark_runs "
+                    "ADD COLUMN IF NOT EXISTS archived_at TIMESTAMP WITH TIME ZONE"
+                )
+            )
         finally:
             connection.close()
     elif engine.dialect.name == "sqlite":
@@ -92,4 +98,11 @@ def create_schema() -> None:
             if "archived_at" not in model_columns:
                 connection.execute(
                     text("ALTER TABLE model_profiles ADD COLUMN archived_at DATETIME")
+                )
+            run_columns = {
+                row[1] for row in connection.execute(text("PRAGMA table_info(benchmark_runs)"))
+            }
+            if "archived_at" not in run_columns:
+                connection.execute(
+                    text("ALTER TABLE benchmark_runs ADD COLUMN archived_at DATETIME")
                 )

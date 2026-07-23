@@ -26,7 +26,7 @@ provider credentials.
 
 ## Status
 
-The platform is currently **v0.8.1** and remains under active construction.
+The platform is currently **v0.9.0** and remains under active construction.
 See [`CHANGELOG.md`](CHANGELOG.md). This release includes the canonical
 “terminal repository” challenge, account isolation, administrator controls,
 server monitoring, a live Agent activity console, and the complete execution,
@@ -73,6 +73,13 @@ tmpfs workspace, conversation, fault state, and archive. The administrator
 monitor reports occupied and total slots. Cancelling a run requires explicit
 confirmation because its conversation and temporary workspace cannot be
 resumed after cleanup.
+
+Terminal run results can be soft-deleted with a separate confirmation.
+Soft-deletion hides the run from lists, dashboards, score aggregates, detail
+pages, and report endpoints without removing scores, events, graphs, artifacts,
+ownership, or replay data. Active runs must first finish or be cancelled. The
+retained row can be recovered administratively from the database; v0.9.0 does
+not yet expose a restore UI.
 
 An optional independent LLM semantic judge now performs a real second Provider
 call after deterministic grading. It assigns a separate 0–100 review for

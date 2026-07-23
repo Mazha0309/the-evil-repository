@@ -145,7 +145,10 @@ class Worker:
         with SessionLocal() as session:
             runs = session.scalars(
                 select(BenchmarkRun)
-                .where(BenchmarkRun.status.in_(interrupted_statuses))
+                .where(
+                    BenchmarkRun.status.in_(interrupted_statuses),
+                    BenchmarkRun.archived_at.is_(None),
+                )
                 .order_by(BenchmarkRun.created_at)
             ).all()
             for run in runs:
@@ -236,7 +239,10 @@ class Worker:
         with SessionLocal() as session:
             statement = (
                 select(BenchmarkRun)
-                .where(BenchmarkRun.status == RunStatus.queued)
+                .where(
+                    BenchmarkRun.status == RunStatus.queued,
+                    BenchmarkRun.archived_at.is_(None),
+                )
                 .order_by(BenchmarkRun.created_at)
                 .with_for_update(skip_locked=True)
                 .limit(1)

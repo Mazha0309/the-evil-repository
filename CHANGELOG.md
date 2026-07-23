@@ -3,7 +3,17 @@
 All notable platform changes are recorded here. The project follows Semantic
 Versioning while individual benchmark scenarios retain independent versions.
 
-## [0.8.1] - 2026-07-24
+## [0.9.0] - 2026-07-24
+
+### Added
+
+- Soft-deletion for completed, failed and cancelled run results. It preserves
+  scores, events, evidence graphs, artifacts, ownership and replay data while
+  hiding archived runs from lists, details, reports and score aggregates.
+- Bilingual run-result confirmations on both the run archive and detail page,
+  with explicit retained-data and no-restore-UI disclosure.
+- Idempotent PostgreSQL and SQLite migration coverage for both model-profile
+  and benchmark-run archive timestamps.
 
 ### Changed
 
@@ -15,6 +25,9 @@ Versioning while individual benchmark scenarios retain independent versions.
 - Active runs serialize against profile changes and prevent deletion until
   they finish or are cancelled; archived profiles are excluded from model
   registries, run creation and dashboard counts.
+- Active runs cannot be soft-deleted. Archived runs are excluded from Runner
+  recovery/claim paths, dashboard summaries, administrator totals and queue
+  telemetry.
 
 ### Fixed
 

@@ -27,7 +27,7 @@ def dashboard_summary(
     session: Session = Depends(get_session),
     user: UserAccount = Depends(current_user),
 ) -> DashboardSummary:
-    run_scope = []
+    run_scope = [BenchmarkRun.archived_at.is_(None)]
     model_scope = [ModelProfile.archived_at.is_(None)]
     if user.role != UserRole.admin:
         run_scope.append(BenchmarkRun.id.in_(select(UserRunAccess.run_id).where(UserRunAccess.user_id == user.id)))

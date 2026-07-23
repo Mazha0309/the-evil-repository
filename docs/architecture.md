@@ -103,6 +103,12 @@ Run archives contain replay metadata, patch/report artifacts, event data, and
 hashes. They must never contain API keys, hidden fixtures, or control-plane
 credentials.
 
+A terminal run may be soft-deleted by setting `benchmark_runs.archived_at`.
+Normal list, detail, report, graph, event, dashboard, and administrator
+aggregate queries exclude archived runs, while ownership and all dependent
+evidence remain intact for administrative database recovery. Active runs must
+be cancelled or finish before archival.
+
 ## Data flow
 
 ```text

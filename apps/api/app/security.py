@@ -210,7 +210,7 @@ def can_access_model(session: Session, user: UserAccount, model: ModelProfile | 
 
 
 def can_access_run(session: Session, user: UserAccount, run: BenchmarkRun | None) -> bool:
-    if run is None:
+    if run is None or getattr(run, "archived_at", None) is not None:
         return False
     if user.role == UserRole.admin:
         return True

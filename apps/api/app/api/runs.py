@@ -35,7 +35,7 @@ def list_runs(
     session: Session = Depends(get_session),
     user: UserAccount = Depends(current_user),
 ) -> list[BenchmarkRun]:
-    statement = select(BenchmarkRun)
+    statement = select(BenchmarkRun).where(BenchmarkRun.archived_at.is_(None))
     if user.role != UserRole.admin:
         statement = statement.join(
             UserRunAccess,
@@ -111,6 +111,37 @@ def create_run(
     session.commit()
     session.refresh(run)
     return run
+
+
+@router.delete("/{run_id}", status_code=status.HTTP_204_NO_CONTENT)
+def archive_run(
+    run_id: uuid.UUID,
+    session: Session = Depends(get_session),
+    user: UserAccount = Depends(csrf_protection),
+) -> None:
+    run = session.scalar(
+        select(BenchmarkRun).where(BenchmarkRun.id == run_id).with_for_update()
+    )
+    if not can_access_run(session, user, run):
+        raise HTTPException(status_code=404, detail="Run not found")
+    assert run is not None
+    if run.status not in {
+        RunStatus.completed,
+        RunStatus.failed,
+        RunStatus.cancelled,
+    }:
+        raise HTTPException(
+            status_code=409,
+            detail="Active runs must finish or be cancelled before archival",
+        )
+    append_event(
+        session,
+        run.id,
+        "run.archived",
+        {"actor_user_id": str(user.id)},
+    )
+    run.archived_at = datetime.now(UTC)
+    session.commit()
 
 
 @router.get("/{run_id}", response_model=RunRead)
@@ -286,7 +317,8 @@ def active_run_count(session: Session) -> int:
     return (
         session.scalar(
             select(func.count(BenchmarkRun.id)).where(
-                BenchmarkRun.status.in_([RunStatus.queued, RunStatus.preparing, RunStatus.running, RunStatus.scoring])
+                BenchmarkRun.status.in_([RunStatus.queued, RunStatus.preparing, RunStatus.running, RunStatus.scoring]),
+                BenchmarkRun.archived_at.is_(None),
             )
         )
         or 0

@@ -200,6 +200,10 @@ class BenchmarkRun(Base):
     output_tokens: Mapped[int] = mapped_column(Integer, default=0)
     estimated_cost: Mapped[float] = mapped_column(Float, default=0)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    archived_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

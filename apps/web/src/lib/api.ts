@@ -120,6 +120,8 @@ export const api = {
     request<Run>("/runs", { method: "POST", body: JSON.stringify(payload) }),
   cancelRun: (id: string) =>
     request<Run>(`/runs/${id}/cancel`, { method: "POST" }),
+  deleteRun: (id: string) =>
+    request<void>(`/runs/${id}`, { method: "DELETE" }),
   pauseRun: (id: string) =>
     request<Run>(`/runs/${id}/pause`, { method: "POST" }),
   resumeRun: (id: string) =>

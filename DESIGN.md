@@ -1274,6 +1274,14 @@ Cancellation is destructive rather than a synonym for pause. The UI must name
 the run and current stage, explain workspace/conversation cleanup, and require
 a second explicit action before calling the cancel endpoint.
 
+Soft-deleting a result is a separate terminal-run lifecycle operation. It is
+forbidden for queued or active runs and requires its own confirmation. The
+control plane sets `benchmark_runs.archived_at`, records `run.archived`, keeps
+ownership and every dependent event, graph, score, artifact and replay record,
+and excludes the row from user-visible access and aggregates. This release
+does not expose a restore UI; database recovery remains possible because no
+result evidence is physically deleted.
+
 ## 18. Open-source governance
 
 Code, design documents, and original scenario content are licensed
