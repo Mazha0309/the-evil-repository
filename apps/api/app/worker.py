@@ -51,6 +51,12 @@ class Worker:
         create_schema()
         with SessionLocal() as session:
             seed_canonical_task(session)
+        orphaned = self.reconcile_orphaned_runs()
+        if orphaned:
+            logger.warning(
+                "Marked %d interrupted run(s) as orphaned after Runner startup",
+                orphaned,
+            )
         threading.Thread(
             target=self.heartbeat_forever,
             name="evil-runner-heartbeat",
@@ -63,6 +69,48 @@ class Worker:
                 self.execute(run_id)
             else:
                 time.sleep(settings.runner_poll_seconds)
+
+    @staticmethod
+    def reconcile_orphaned_runs() -> int:
+        interrupted_statuses = {
+            RunStatus.preparing,
+            RunStatus.running,
+            RunStatus.scoring,
+        }
+        reconciled = 0
+        with SessionLocal() as session:
+            runs = session.scalars(
+                select(BenchmarkRun)
+                .where(BenchmarkRun.status.in_(interrupted_statuses))
+                .order_by(BenchmarkRun.created_at)
+            ).all()
+            for run in runs:
+                previous_status = run.status.value
+                previous_stage = run.stage
+                config = dict(run.config)
+                config["pause_requested"] = False
+                run.config = config
+                run.status = RunStatus.failed
+                run.stage = "Interrupted by Runner restart"
+                run.error = (
+                    "Runner restarted before this run completed. The in-memory "
+                    "model conversation cannot be resumed safely."
+                )
+                run.completed_at = datetime.now(UTC)
+                append_event(
+                    session,
+                    run.id,
+                    "run.orphaned",
+                    {
+                        "reason": "runner_restart",
+                        "resumable": False,
+                        "previous_status": previous_status,
+                        "previous_stage": previous_stage,
+                    },
+                )
+                reconciled += 1
+            session.commit()
+        return reconciled
 
     def heartbeat_forever(self) -> None:
         while True:

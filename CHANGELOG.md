@@ -29,6 +29,9 @@ Versioning while individual benchmark scenarios retain independent versions.
   archived unchanged with an explicit review failure.
 - The run form now describes the judge accurately instead of presenting an
   inert or ambiguous “independent judge” option.
+- Deployment and shutdown commands now fail closed while runs are queued or
+  active. A deliberately forced Runner restart marks interrupted in-memory
+  runs as non-resumable failures instead of leaving false-live records.
 
 ## [0.5.0] - 2026-07-23
 

@@ -2343,6 +2343,7 @@ function stageLabel(stage: string, locale: "zh-CN" | "en") {
     "Semantic judge failed; deterministic score preserved":
       "LLM 语义评审失败；确定性分数已保留",
     "Archiving run evidence": "正在归档运行证据",
+    "Interrupted by Runner restart": "Runner 重启导致运行中断",
   };
   return stages[stage] ?? stage;
 }

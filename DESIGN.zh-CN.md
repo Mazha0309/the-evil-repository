@@ -134,6 +134,12 @@ socket，也不增加宿主机文件系统挂载。
 `/api/v1` 转发到内部 API。部署者可以自行选择 Caddy、Nginx、Traefik、Tunnel
 或云负载均衡；API、Runner 和 PostgreSQL 继续留在内部网络或回环地址。
 
+执行期间，候选对话状态和准备好的 Scenario 私有状态都属于 Runner 进程内状态。
+因此正常部署和停止必须先查询 PostgreSQL；只要存在排队、准备、运行或评分中的
+任务，就应失败关闭。运维人员可以显式绕过保护并中断任务，但新 Runner 必须把
+继承到的全部非终态执行记为 `run.orphaned` 和失败，绝不能在原进程已经消失后仍把
+内存任务显示成可恢复。
+
 ## 4. Scenario SDK
 
 Benchmark 严格分为两层，依赖方向只能向下：
@@ -920,7 +926,8 @@ Provider；`assistant.message` 只包含 Provider 明确返回的文本。一个
 暂停刻意采用协作式语义。控制平面先记录 `run.pause_requested`，只有当前 Provider
 响应或工具调用返回后，Runner 才记录 `run.paused`。继续时记录 `run.resumed`，
 沿用同一份消息历史和候选容器。UI 不能把“暂停请求中”误报成“已经暂停”，两个状态
-下都必须保留取消能力。
+下都必须保留取消能力。暂停不是持久化 Checkpoint：部署保护仍把暂停中的执行视为
+活跃任务，Runner 一旦重启，该任务就不可恢复。
 
 ## 18. 开源治理
 

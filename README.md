@@ -33,7 +33,8 @@ telemetry, scoring, and visualization path around it.
 
 Long investigations can be paused at a safe Provider/tool boundary and resumed
 without discarding the candidate workspace or conversation. Paused time does
-not consume the configured hard execution budget.
+not consume the configured hard execution budget. Pause state is held by the
+live Runner process; it does not make a run safe to survive a Runner restart.
 
 The control plane supports four explicit model protocols: OpenAI Responses,
 Anthropic Messages, OpenAI-compatible Chat Completions, and Ollama Chat.
@@ -152,6 +153,12 @@ make deploy
 sandbox and application images, starts all services, and prints their status.
 Then open `http://127.0.0.1:5173`.
 
+Deployment and shutdown fail closed while any run is queued, preparing,
+running, or scoring. Wait for those runs to finish or cancel them in the WebUI.
+If interruption is intentional, `ALLOW_ACTIVE_RUN_DISRUPTION=1 make deploy`
+overrides the guard; interrupted runs are marked failed on Runner startup
+because their in-memory model conversations cannot be reconstructed.
+
 Node.js 22+, pnpm, Python 3.12+, and uv are only required for host-side
 development; the deployment command builds application dependencies inside
 containers.
@@ -208,9 +215,12 @@ Do not expose a fresh installation without setting `SETUP_TOKEN`.
 make down
 ```
 
-This stops and removes the application containers and Compose networks while
-preserving the PostgreSQL data volume. Run `make deploy` again to resume with
-the existing accounts, settings, and benchmark data.
+This refuses to stop while runs are queued or active. Once safe, it stops and
+removes the application containers and Compose networks while preserving the
+PostgreSQL data volume. Run `make deploy` again to resume with the existing
+accounts, settings, and benchmark data. Use
+`ALLOW_ACTIVE_RUN_DISRUPTION=1 make down` only to abandon active runs
+deliberately.
 
 ## Repository layout
 

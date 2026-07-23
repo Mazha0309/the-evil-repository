@@ -148,6 +148,14 @@ private API service. A deployer may put Caddy, Nginx, Traefik, a tunnel, or a
 cloud load balancer in front of that port. API, Runner, and PostgreSQL remain
 on internal or loopback interfaces.
 
+Candidate conversation state and the prepared private Scenario state are
+process-local during execution. Normal deployment and shutdown therefore query
+PostgreSQL first and fail closed while runs are queued, preparing, running, or
+scoring. An explicit operator override may interrupt them, but a replacement
+Runner must reconcile every inherited non-terminal execution as
+`run.orphaned` and failed; it must never display an in-memory run as resumable
+after the process that owned it has gone away.
+
 ## 4. Scenario SDK
 
 The benchmark uses two layers with a strict dependency direction:
@@ -1066,7 +1074,9 @@ Pause is deliberately cooperative. The control plane first records
 Provider response or tool call returns. Resume records `run.resumed` and
 continues with the same message history and candidate container. The UI must
 not label a pending pause request as already paused, and cancellation remains
-available in both states.
+available in both states. Pause is not a persistence checkpoint: deployment
+protection still treats a paused execution as active, and a Runner restart
+makes it non-resumable.
 
 ## 18. Open-source governance
 

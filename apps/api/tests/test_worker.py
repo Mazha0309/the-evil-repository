@@ -1,9 +1,14 @@
 import uuid
 from types import SimpleNamespace
 
+from sqlalchemy import create_engine, select
+from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import StaticPool
+
 import app.worker as worker_module
+from app.database import Base
 from app.judging import SemanticJudgeOutcome
-from app.models import ModelProvider, RunStatus
+from app.models import BenchmarkRun, ModelProvider, RunEvent, RunStatus
 from app.runner.protocol import ToolResult
 from app.scenario.sdk import ScenarioRunResult
 from app.worker import Worker
@@ -59,6 +64,73 @@ def test_hidden_check_publishes_started_and_completed_events(monkeypatch) -> Non
     assert events[-1][1]["check"] == "static"
     assert events[-1][1]["status"] == "ok"
     assert int(events[-1][1]["duration_ms"]) >= 0
+
+
+def test_runner_startup_marks_interrupted_runs_as_non_resumable(
+    monkeypatch,
+) -> None:
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    testing_session = sessionmaker(
+        bind=engine,
+        expire_on_commit=False,
+        class_=Session,
+    )
+    interrupted_id = uuid.uuid4()
+    queued_id = uuid.uuid4()
+    with testing_session() as session:
+        session.add_all(
+            [
+                BenchmarkRun(
+                    id=interrupted_id,
+                    task_id=uuid.uuid4(),
+                    candidate_model_id=uuid.uuid4(),
+                    status=RunStatus.running,
+                    stage="Pause requested",
+                    config={"pause_requested": True},
+                ),
+                BenchmarkRun(
+                    id=queued_id,
+                    task_id=uuid.uuid4(),
+                    candidate_model_id=uuid.uuid4(),
+                    status=RunStatus.queued,
+                    stage="Queued",
+                    config={},
+                ),
+            ]
+        )
+        session.commit()
+    monkeypatch.setattr(worker_module, "SessionLocal", testing_session)
+
+    reconciled = Worker.reconcile_orphaned_runs()
+
+    assert reconciled == 1
+    with testing_session() as session:
+        interrupted = session.get(BenchmarkRun, interrupted_id)
+        queued = session.get(BenchmarkRun, queued_id)
+        event = session.scalar(
+            select(RunEvent).where(RunEvent.run_id == interrupted_id)
+        )
+        assert interrupted is not None
+        assert interrupted.status == RunStatus.failed
+        assert interrupted.stage == "Interrupted by Runner restart"
+        assert interrupted.config["pause_requested"] is False
+        assert interrupted.completed_at is not None
+        assert "cannot be resumed safely" in str(interrupted.error)
+        assert event is not None
+        assert event.kind == "run.orphaned"
+        assert event.payload == {
+            "reason": "runner_restart",
+            "resumable": False,
+            "previous_status": "running",
+            "previous_stage": "Pause requested",
+        }
+        assert queued is not None
+        assert queued.status == RunStatus.queued
 
 
 def test_semantic_judge_not_requested_is_explicitly_skipped(monkeypatch) -> None:
