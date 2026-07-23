@@ -4,11 +4,105 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl
 
-from app.models import EvidenceRelation, HypothesisStatus, ModelProvider, RunStatus
+from app.models import EvidenceRelation, HypothesisStatus, ModelProvider, RunStatus, UserRole
 
 
 class ORMModel(BaseModel):
     model_config = ConfigDict(from_attributes=True)
+
+
+class AuthConfig(BaseModel):
+    setup_required: bool
+    registration_enabled: bool
+    setup_token_required: bool
+    version: str
+
+
+class LoginCreate(BaseModel):
+    username: str = Field(min_length=2, max_length=32)
+    password: str = Field(min_length=1, max_length=256)
+
+
+class SetupCreate(BaseModel):
+    username: str = Field(min_length=2, max_length=32)
+    password: str = Field(min_length=12, max_length=256)
+    setup_token: str | None = Field(default=None, max_length=500)
+
+
+class RegisterCreate(BaseModel):
+    username: str = Field(min_length=2, max_length=32)
+    password: str = Field(min_length=12, max_length=256)
+
+
+class UserRead(ORMModel):
+    id: uuid.UUID
+    username: str
+    role: UserRole
+    enabled: bool
+    last_login_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class AuthRead(BaseModel):
+    user: UserRead
+    csrf_token: str
+    expires_at: datetime
+
+
+class AccountUpdate(BaseModel):
+    username: str | None = Field(default=None, min_length=2, max_length=32)
+    current_password: str | None = Field(default=None, max_length=256)
+    new_password: str | None = Field(default=None, min_length=12, max_length=256)
+
+
+class SessionRead(ORMModel):
+    id: uuid.UUID
+    expires_at: datetime
+    user_agent: str | None
+    ip_address: str | None
+    created_at: datetime
+    last_seen_at: datetime
+    current: bool = False
+
+
+class AdminUserCreate(RegisterCreate):
+    role: UserRole = UserRole.user
+    enabled: bool = True
+
+
+class AdminUserUpdate(BaseModel):
+    username: str | None = Field(default=None, min_length=2, max_length=32)
+    role: UserRole | None = None
+    enabled: bool | None = None
+    password: str | None = Field(default=None, min_length=12, max_length=256)
+
+
+class PlatformSettingsRead(ORMModel):
+    registration_enabled: bool
+    updated_by: uuid.UUID | None
+    updated_at: datetime
+
+
+class PlatformSettingsUpdate(BaseModel):
+    registration_enabled: bool
+
+
+class AdminSummary(BaseModel):
+    users: int
+    enabled_users: int
+    admins: int
+    models: int
+    total_runs: int
+    active_runs: int
+
+
+class ServerMonitor(BaseModel):
+    observed_at: datetime
+    api: dict[str, Any]
+    runner: dict[str, Any]
+    database: dict[str, Any]
+    queue: dict[str, Any]
 
 
 class TaskCreate(BaseModel):

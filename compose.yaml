@@ -27,13 +27,21 @@ services:
       DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://evil_repository:change-me@postgres:5432/evil_repository}
       APP_SECRET: ${APP_SECRET:-development-only-secret-change-me}
       WEB_ORIGIN: ${WEB_ORIGIN:-http://127.0.0.1:5173}
+      SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-false}
+      SESSION_TTL_HOURS: ${SESSION_TTL_HOURS:-168}
+      SETUP_TOKEN: ${SETUP_TOKEN:-}
       RUNNER_ENABLED: "false"
       SCENARIOS_ROOT: /scenarios
     depends_on:
       postgres:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=2)"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
     ports:
-      - "127.0.0.1:8080:8080"
+      - "${API_BIND_HOST:-127.0.0.1}:${API_BIND_PORT:-8080}:8080"
     networks:
       - control
     restart: unless-stopped
@@ -57,7 +65,7 @@ services:
       SANDBOX_TOOL_TIMEOUT: ${SANDBOX_TOOL_TIMEOUT:-30}
       SANDBOX_HARD_TIMEOUT: ${SANDBOX_HARD_TIMEOUT:-10800}
     depends_on:
-      postgres:
+      api:
         condition: service_healthy
     volumes:
       - ${ROOTLESS_DOCKER_SOCKET:-/run/user/1000/docker.sock}:/var/run/docker.sock
@@ -74,13 +82,19 @@ services:
       context: .
       dockerfile: apps/web/Dockerfile
       args:
-        VITE_API_BASE: http://127.0.0.1:8080/api/v1
+        VITE_API_BASE: /api/v1
     depends_on:
-      - api
+      api:
+        condition: service_healthy
     ports:
-      - "127.0.0.1:5173:80"
+      - "${WEB_BIND_HOST:-127.0.0.1}:${WEB_BIND_PORT:-5173}:80"
     networks:
       - control
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
     restart: unless-stopped
 
 networks:

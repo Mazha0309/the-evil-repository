@@ -6,19 +6,27 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.database import get_session
-from app.models import TaskDefinition
+from app.models import TaskDefinition, UserAccount
 from app.schemas import TaskCreate, TaskRead
+from app.security import admin_csrf, current_user
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 
 
 @router.get("", response_model=list[TaskRead])
-def list_tasks(session: Session = Depends(get_session)) -> list[TaskDefinition]:
+def list_tasks(
+    session: Session = Depends(get_session),
+    _: UserAccount = Depends(current_user),
+) -> list[TaskDefinition]:
     return list(session.scalars(select(TaskDefinition).order_by(TaskDefinition.created_at.desc())).all())
 
 
 @router.post("", response_model=TaskRead, status_code=status.HTTP_201_CREATED)
-def create_task(payload: TaskCreate, session: Session = Depends(get_session)) -> TaskDefinition:
+def create_task(
+    payload: TaskCreate,
+    session: Session = Depends(get_session),
+    _: UserAccount = Depends(admin_csrf),
+) -> TaskDefinition:
     task = TaskDefinition(**payload.model_dump())
     session.add(task)
     try:
@@ -31,7 +39,11 @@ def create_task(payload: TaskCreate, session: Session = Depends(get_session)) ->
 
 
 @router.get("/{task_id}", response_model=TaskRead)
-def get_task(task_id: uuid.UUID, session: Session = Depends(get_session)) -> TaskDefinition:
+def get_task(
+    task_id: uuid.UUID,
+    session: Session = Depends(get_session),
+    _: UserAccount = Depends(current_user),
+) -> TaskDefinition:
     task = session.get(TaskDefinition, task_id)
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
@@ -39,7 +51,11 @@ def get_task(task_id: uuid.UUID, session: Session = Depends(get_session)) -> Tas
 
 
 @router.get("/{task_id}/export")
-def export_task(task_id: uuid.UUID, session: Session = Depends(get_session)) -> Response:
+def export_task(
+    task_id: uuid.UUID,
+    session: Session = Depends(get_session),
+    _: UserAccount = Depends(current_user),
+) -> Response:
     task = session.get(TaskDefinition, task_id)
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")

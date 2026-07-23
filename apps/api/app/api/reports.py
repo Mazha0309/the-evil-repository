@@ -5,15 +5,20 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy.orm import Session
 
 from app.database import get_session
-from app.models import BenchmarkRun
+from app.models import BenchmarkRun, UserAccount
+from app.security import can_access_run, current_user
 
 router = APIRouter(prefix="/reports", tags=["reports"])
 
 
 @router.get("/{run_id}")
-def export_report(run_id: uuid.UUID, session: Session = Depends(get_session)) -> Response:
+def export_report(
+    run_id: uuid.UUID,
+    session: Session = Depends(get_session),
+    user: UserAccount = Depends(current_user),
+) -> Response:
     run = session.get(BenchmarkRun, run_id)
-    if not run:
+    if not can_access_run(session, user, run):
         raise HTTPException(status_code=404, detail="Run not found")
     payload = {
         "run_id": str(run.id),

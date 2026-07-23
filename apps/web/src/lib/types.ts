@@ -7,6 +7,68 @@ export type RunStatus =
   | "failed"
   | "cancelled";
 
+export type UserRole = "admin" | "user";
+
+export interface AuthConfig {
+  setup_required: boolean;
+  registration_enabled: boolean;
+  setup_token_required: boolean;
+  version: string;
+}
+
+export interface UserAccount {
+  id: string;
+  username: string;
+  role: UserRole;
+  enabled: boolean;
+  last_login_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AuthResponse {
+  user: UserAccount;
+  csrf_token: string;
+  expires_at: string;
+}
+
+export interface AccountSession {
+  id: string;
+  expires_at: string;
+  user_agent: string | null;
+  ip_address: string | null;
+  created_at: string;
+  last_seen_at: string;
+  current: boolean;
+}
+
+export interface PlatformSettings {
+  registration_enabled: boolean;
+  updated_by: string | null;
+  updated_at: string;
+}
+
+export interface AdminSummary {
+  users: number;
+  enabled_users: number;
+  admins: number;
+  models: number;
+  total_runs: number;
+  active_runs: number;
+}
+
+export interface ServerMonitor {
+  observed_at: string;
+  api: Record<string, number | string | boolean | null>;
+  runner: Record<string, number | string | boolean | null>;
+  database: Record<string, number | string | boolean | null>;
+  queue: {
+    counts: Record<RunStatus, number>;
+    active: number;
+    queued: number;
+  };
+}
+
 export interface DashboardSummary {
   tasks: number;
   models: number;

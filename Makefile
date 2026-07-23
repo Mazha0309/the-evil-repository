@@ -1,4 +1,4 @@
-.PHONY: bootstrap dev test lint build up down sandbox sandbox-smoke challenge preflight
+.PHONY: bootstrap dev test lint build up deploy deploy-public production-check down sandbox sandbox-smoke challenge preflight version-check
 
 bootstrap:
 	pnpm install
@@ -14,6 +14,10 @@ test:
 lint:
 	pnpm lint
 	cd apps/api && uv run ruff check .
+	./scripts/check-version.sh
+
+version-check:
+	./scripts/check-version.sh
 
 build:
 	pnpm build
@@ -36,6 +40,20 @@ preflight:
 
 up: sandbox
 	docker compose up --build -d
+
+deploy: preflight sandbox
+	docker compose up --build -d
+	docker compose ps
+
+production-check:
+	test -f .env.production
+	! grep -q "CHANGE_ME" .env.production
+	grep -Eq '^WEB_ORIGIN=https://' .env.production
+	grep -Eq '^SESSION_COOKIE_SECURE=true$$' .env.production
+
+deploy-public: preflight sandbox production-check
+	docker compose --env-file .env.production up --build -d
+	docker compose --env-file .env.production ps
 
 down:
 	docker compose down

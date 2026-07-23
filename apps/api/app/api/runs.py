@@ -11,27 +11,50 @@ from sqlalchemy.orm import Session
 from app.database import SessionLocal, get_session
 from app.events import append_event
 from app.investigation import graph_payload
-from app.models import BenchmarkRun, ModelProfile, RunEvent, RunStatus, TaskDefinition
+from app.models import (
+    BenchmarkRun,
+    ModelProfile,
+    RunEvent,
+    RunStatus,
+    TaskDefinition,
+    UserAccount,
+    UserRole,
+    UserRunAccess,
+)
 from app.schemas import EventRead, InvestigationGraph, RunCreate, RunRead
+from app.security import can_access_model, can_access_run, csrf_protection, current_user
 
 router = APIRouter(prefix="/runs", tags=["runs"])
 
 
 @router.get("", response_model=list[RunRead])
-def list_runs(session: Session = Depends(get_session)) -> list[BenchmarkRun]:
-    return list(session.scalars(select(BenchmarkRun).order_by(BenchmarkRun.created_at.desc()).limit(200)).all())
+def list_runs(
+    session: Session = Depends(get_session),
+    user: UserAccount = Depends(current_user),
+) -> list[BenchmarkRun]:
+    statement = select(BenchmarkRun)
+    if user.role != UserRole.admin:
+        statement = statement.join(
+            UserRunAccess,
+            UserRunAccess.run_id == BenchmarkRun.id,
+        ).where(UserRunAccess.user_id == user.id)
+    return list(session.scalars(statement.order_by(BenchmarkRun.created_at.desc()).limit(200)).all())
 
 
 @router.post("", response_model=RunRead, status_code=status.HTTP_202_ACCEPTED)
-def create_run(payload: RunCreate, session: Session = Depends(get_session)) -> BenchmarkRun:
+def create_run(
+    payload: RunCreate,
+    session: Session = Depends(get_session),
+    user: UserAccount = Depends(csrf_protection),
+) -> BenchmarkRun:
     task = session.get(TaskDefinition, payload.task_id)
     candidate = session.get(ModelProfile, payload.candidate_model_id)
     judge = session.get(ModelProfile, payload.judge_model_id) if payload.judge_model_id else None
-    if not task or not candidate:
+    if not task or not can_access_model(session, user, candidate):
         raise HTTPException(status_code=400, detail="Unknown task or candidate model")
     if payload.judge_model_id == payload.candidate_model_id:
         raise HTTPException(status_code=400, detail="Candidate model cannot judge itself")
-    if payload.judge_model_id and not judge:
+    if payload.judge_model_id and not can_access_model(session, user, judge):
         raise HTTPException(status_code=400, detail="Unknown judge model")
     run = BenchmarkRun(
         task_id=task.id,
@@ -41,6 +64,7 @@ def create_run(payload: RunCreate, session: Session = Depends(get_session)) -> B
     )
     session.add(run)
     session.flush()
+    session.add(UserRunAccess(user_id=user.id, run_id=run.id))
     append_event(
         session,
         run.id,
@@ -53,9 +77,13 @@ def create_run(payload: RunCreate, session: Session = Depends(get_session)) -> B
 
 
 @router.get("/{run_id}", response_model=RunRead)
-def get_run(run_id: uuid.UUID, session: Session = Depends(get_session)) -> BenchmarkRun:
+def get_run(
+    run_id: uuid.UUID,
+    session: Session = Depends(get_session),
+    user: UserAccount = Depends(current_user),
+) -> BenchmarkRun:
     run = session.get(BenchmarkRun, run_id)
-    if not run:
+    if not can_access_run(session, user, run):
         raise HTTPException(status_code=404, detail="Run not found")
     return run
 
@@ -65,8 +93,9 @@ def get_events(
     run_id: uuid.UUID,
     after: int = 0,
     session: Session = Depends(get_session),
+    user: UserAccount = Depends(current_user),
 ) -> list[RunEvent]:
-    if not session.get(BenchmarkRun, run_id):
+    if not can_access_run(session, user, session.get(BenchmarkRun, run_id)):
         raise HTTPException(status_code=404, detail="Run not found")
     return list(
         session.scalars(
@@ -79,14 +108,22 @@ def get_events(
 def get_investigation_graph(
     run_id: uuid.UUID,
     session: Session = Depends(get_session),
+    user: UserAccount = Depends(current_user),
 ) -> dict:
-    if not session.get(BenchmarkRun, run_id):
+    if not can_access_run(session, user, session.get(BenchmarkRun, run_id)):
         raise HTTPException(status_code=404, detail="Run not found")
     return graph_payload(session, run_id)
 
 
 @router.get("/{run_id}/stream")
-def stream_events(run_id: uuid.UUID) -> StreamingResponse:
+def stream_events(
+    run_id: uuid.UUID,
+    session: Session = Depends(get_session),
+    user: UserAccount = Depends(current_user),
+) -> StreamingResponse:
+    if not can_access_run(session, user, session.get(BenchmarkRun, run_id)):
+        raise HTTPException(status_code=404, detail="Run not found")
+
     def event_stream() -> Generator[str, None, None]:
         sequence = 0
         idle_ticks = 0
@@ -118,9 +155,13 @@ def stream_events(run_id: uuid.UUID) -> StreamingResponse:
 
 
 @router.post("/{run_id}/cancel", response_model=RunRead)
-def cancel_run(run_id: uuid.UUID, session: Session = Depends(get_session)) -> BenchmarkRun:
+def cancel_run(
+    run_id: uuid.UUID,
+    session: Session = Depends(get_session),
+    user: UserAccount = Depends(csrf_protection),
+) -> BenchmarkRun:
     run = session.get(BenchmarkRun, run_id)
-    if not run:
+    if not can_access_run(session, user, run):
         raise HTTPException(status_code=404, detail="Run not found")
     if run.status in {RunStatus.completed, RunStatus.failed, RunStatus.cancelled}:
         return run

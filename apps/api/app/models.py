@@ -32,6 +32,11 @@ class ModelProvider(StrEnum):
     ollama = "ollama"
 
 
+class UserRole(StrEnum):
+    admin = "admin"
+    user = "user"
+
+
 class RunStatus(StrEnum):
     queued = "queued"
     preparing = "preparing"
@@ -56,6 +61,65 @@ class EvidenceRelation(StrEnum):
     derived_from = "derived_from"
     supersedes = "supersedes"
     corroborates = "corroborates"
+
+
+class UserAccount(Base):
+    __tablename__ = "user_accounts"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    username: Mapped[str] = mapped_column(String(32), unique=True, index=True)
+    password_hash: Mapped[str] = mapped_column(Text)
+    role: Mapped[UserRole] = mapped_column(Enum(UserRole), default=UserRole.user, index=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
+
+
+class UserSession(Base):
+    __tablename__ = "user_sessions"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("user_accounts.id", ondelete="CASCADE"),
+        index=True,
+    )
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    csrf_token: Mapped[str] = mapped_column(String(64))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    user_agent: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    ip_address: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+
+
+class LoginFailure(Base):
+    __tablename__ = "login_failures"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    fingerprint: Mapped[str] = mapped_column(String(64), index=True)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, index=True)
+
+
+class PlatformSettings(Base):
+    __tablename__ = "platform_settings"
+
+    name: Mapped[str] = mapped_column(String(80), primary_key=True, default="default")
+    registration_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    updated_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("user_accounts.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
+
+
+class ServiceTelemetry(Base):
+    __tablename__ = "service_telemetry"
+
+    service: Mapped[str] = mapped_column(String(80), primary_key=True)
+    healthy: Mapped[bool] = mapped_column(Boolean, default=False)
+    metrics: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, index=True)
 
 
 class RunnerHeartbeat(Base):
@@ -88,7 +152,7 @@ class ModelProfile(Base):
     __tablename__ = "model_profiles"
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
-    name: Mapped[str] = mapped_column(String(120), unique=True)
+    name: Mapped[str] = mapped_column(String(120))
     provider: Mapped[ModelProvider] = mapped_column(Enum(ModelProvider))
     base_url: Mapped[str] = mapped_column(String(500))
     model_id: Mapped[str] = mapped_column(String(200))
@@ -98,6 +162,20 @@ class ModelProfile(Base):
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
+
+
+class UserModelAccess(Base):
+    __tablename__ = "user_model_access"
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("user_accounts.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    model_profile_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("model_profiles.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
 
 
 class BenchmarkRun(Base):
@@ -120,6 +198,20 @@ class BenchmarkRun(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class UserRunAccess(Base):
+    __tablename__ = "user_run_access"
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("user_accounts.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    run_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("benchmark_runs.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
 
 
 class RunEvent(Base):

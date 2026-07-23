@@ -5,28 +5,59 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.database import get_session
-from app.models import BenchmarkRun, ModelProfile, RunnerHeartbeat, RunStatus, TaskDefinition
+from app.models import (
+    BenchmarkRun,
+    ModelProfile,
+    RunnerHeartbeat,
+    RunStatus,
+    TaskDefinition,
+    UserAccount,
+    UserModelAccess,
+    UserRole,
+    UserRunAccess,
+)
 from app.schemas import DashboardSummary
+from app.security import current_user
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
 
 @router.get("/summary", response_model=DashboardSummary)
-def dashboard_summary(session: Session = Depends(get_session)) -> DashboardSummary:
-    total_runs = session.scalar(select(func.count(BenchmarkRun.id))) or 0
+def dashboard_summary(
+    session: Session = Depends(get_session),
+    user: UserAccount = Depends(current_user),
+) -> DashboardSummary:
+    run_scope = []
+    model_scope = []
+    if user.role != UserRole.admin:
+        run_scope.append(BenchmarkRun.id.in_(select(UserRunAccess.run_id).where(UserRunAccess.user_id == user.id)))
+        model_scope.append(
+            ModelProfile.id.in_(select(UserModelAccess.model_profile_id).where(UserModelAccess.user_id == user.id))
+        )
+    total_runs = session.scalar(select(func.count(BenchmarkRun.id)).where(*run_scope)) or 0
     active_runs = (
         session.scalar(
             select(func.count(BenchmarkRun.id)).where(
-                BenchmarkRun.status.in_([RunStatus.queued, RunStatus.preparing, RunStatus.running, RunStatus.scoring])
+                BenchmarkRun.status.in_([RunStatus.queued, RunStatus.preparing, RunStatus.running, RunStatus.scoring]),
+                *run_scope,
             )
         )
         or 0
     )
     completed_runs = (
-        session.scalar(select(func.count(BenchmarkRun.id)).where(BenchmarkRun.status == RunStatus.completed)) or 0
+        session.scalar(
+            select(func.count(BenchmarkRun.id)).where(
+                BenchmarkRun.status == RunStatus.completed,
+                *run_scope,
+            )
+        )
+        or 0
     )
     average_score = session.scalar(
-        select(func.avg(BenchmarkRun.score)).where(BenchmarkRun.status == RunStatus.completed)
+        select(func.avg(BenchmarkRun.score)).where(
+            BenchmarkRun.status == RunStatus.completed,
+            *run_scope,
+        )
     )
     heartbeat = session.get(RunnerHeartbeat, "default")
     heartbeat_at = heartbeat.updated_at if heartbeat else None
@@ -35,7 +66,7 @@ def dashboard_summary(session: Session = Depends(get_session)) -> DashboardSumma
     runner_alive = bool(heartbeat_at and heartbeat_at >= datetime.now(UTC) - timedelta(seconds=15))
     return DashboardSummary(
         tasks=session.scalar(select(func.count(TaskDefinition.id))) or 0,
-        models=session.scalar(select(func.count(ModelProfile.id))) or 0,
+        models=session.scalar(select(func.count(ModelProfile.id)).where(*model_scope)) or 0,
         total_runs=total_runs,
         active_runs=active_runs,
         completed_runs=completed_runs,

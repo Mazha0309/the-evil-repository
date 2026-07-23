@@ -34,5 +34,29 @@ def create_schema() -> None:
         try:
             for value in ("openai_responses", "anthropic"):
                 connection.execute(text(f"ALTER TYPE modelprovider ADD VALUE IF NOT EXISTS '{value}'"))
+            connection.execute(text("ALTER TABLE model_profiles DROP CONSTRAINT IF EXISTS model_profiles_name_key"))
+            connection.execute(
+                text(
+                    """
+                    DO $$
+                    BEGIN
+                        IF EXISTS (
+                            SELECT 1
+                            FROM information_schema.columns
+                            WHERE table_name = 'user_accounts' AND column_name = 'email'
+                        ) AND NOT EXISTS (
+                            SELECT 1
+                            FROM information_schema.columns
+                            WHERE table_name = 'user_accounts' AND column_name = 'username'
+                        ) THEN
+                            ALTER TABLE user_accounts RENAME COLUMN email TO username;
+                        END IF;
+                    END
+                    $$;
+                    """
+                )
+            )
+            connection.execute(text("ALTER TABLE user_accounts DROP COLUMN IF EXISTS display_name"))
+            connection.execute(text("ALTER TABLE user_accounts ALTER COLUMN username TYPE VARCHAR(32)"))
         finally:
             connection.close()

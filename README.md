@@ -18,9 +18,11 @@ provider credentials.
 
 ## Status
 
-This repository is under active construction. The first release targets one
-canonical “terminal repository” challenge and the complete execution,
-telemetry, scoring, and visualization path around it.
+The platform is currently **v0.2.0** and remains under active construction.
+See [`CHANGELOG.md`](CHANGELOG.md). This release includes the canonical
+“terminal repository” challenge, account isolation, administrator controls,
+server monitoring, and the complete execution, telemetry, scoring, and
+visualization path around it.
 
 ## Quick start
 
@@ -41,8 +43,50 @@ docker compose up --build
 
 Then open `http://127.0.0.1:5173`.
 
+On a fresh database, the first page creates the initial administrator. Set
+`SETUP_TOKEN` before startup if anyone else could reach the service during
+initialization. Public registration is disabled by default and can be switched
+on or off immediately from the administrator console.
+
 The UI and API bind to loopback by default. Do not expose a development
 deployment to an untrusted network.
+
+## Accounts and administration
+
+Authentication is implemented by the application, not delegated to a reverse
+proxy. It provides:
+
+- first-run administrator setup and optional public registration;
+- one unique account name for both sign-in and display, with no email-service
+  dependency;
+- `admin` and `user` roles;
+- HttpOnly session cookies, CSRF-protected mutations, session listing and
+  revocation;
+- per-user model-profile, run, event, graph, and report isolation;
+- administrator account creation, enable/disable, role changes, and global
+  session revocation;
+- live API, Runner, PostgreSQL, queue, CPU, memory, disk, and Rootless Docker
+  monitoring.
+
+Administrators can see legacy and global benchmark data. Ordinary users see
+only resources mapped to their account.
+
+## External deployment
+
+The project does not bundle Caddy, Nginx, Traefik, DNS, or certificate
+management. The production Compose profile exposes one Web entrypoint and
+proxies `/api/v1` internally; API, Runner, and PostgreSQL remain private.
+
+```bash
+cp .env.production.example .env.production
+# Replace every CHANGE_ME value and set your public WEB_ORIGIN.
+make deploy-public
+```
+
+Point your own reverse proxy at the configured `WEB_BIND_PORT`. When the public
+origin uses HTTPS, keep `SESSION_COOKIE_SECURE=true`. `make deploy-public`
+refuses placeholder secrets, a non-HTTPS origin, or insecure session cookies.
+Do not expose a fresh installation without setting `SETUP_TOKEN`.
 
 ## Repository layout
 
@@ -66,6 +110,7 @@ Further reading:
 - [`docs/threat-model.md`](docs/threat-model.md) — security assumptions and residual risk
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — local setup and contribution rules
 - [`SECURITY.md`](SECURITY.md) — responsible disclosure
+- [`CHANGELOG.md`](CHANGELOG.md) — platform release history
 
 ## Safety model
 

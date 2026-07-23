@@ -98,6 +98,45 @@ because it must not be confused with the Responses API. Provider credentials
 remain encrypted in the control plane and are never copied into a candidate
 container or run archive.
 
+### Identity, tenancy, and administration
+
+Authentication is an application responsibility. A reverse proxy may add
+another access layer but is not the source of user identity or authorization.
+The control plane provides:
+
+- first-run administrator creation, optionally guarded by `SETUP_TOKEN`;
+- administrator-controlled public registration;
+- one case-insensitive, unique account name used for both login and display;
+- `admin` and `user` roles;
+- high-entropy HttpOnly session cookies with expiration;
+- a per-session CSRF token for every mutation;
+- password hashing with a salted, memory-hard KDF;
+- account disablement and session revocation.
+
+Email is deliberately not part of the account model. The platform has no
+mail-verification, notification, or password-recovery service, so requiring an
+address would create a misleading dependency without providing a capability.
+
+Model profiles and benchmark runs retain their existing immutable identifiers.
+Separate access-mapping tables associate them with users, which adds tenancy
+without destructively rewriting archived benchmark rows. Ordinary users can
+only access their mapped profiles, runs, events, graphs, and reports.
+Administrators can inspect global and legacy data.
+
+The administrator console controls accounts, roles, registration policy, and
+sessions. It also displays safe aggregate telemetry for API CPU load, memory,
+disk, PostgreSQL latency, run queues, Runner heartbeat, and selected Rootless
+Docker capacity. The Runner collects Docker telemetry because it already owns
+the socket; the API never receives a Docker socket or host filesystem mount.
+
+### Deployment boundary
+
+The repository ships no public reverse proxy or certificate manager. The Web
+container exposes one application entrypoint and proxies `/api/v1` to the
+private API service. A deployer may put Caddy, Nginx, Traefik, a tunnel, or a
+cloud load balancer in front of that port. API, Runner, and PostgreSQL remain
+on internal or loopback interfaces.
+
 ## 4. Scenario SDK
 
 Scenarios are directory packages with a host-side trusted entrypoint:
@@ -658,6 +697,8 @@ and must preserve links back to original events.
 
 Primary views:
 
+- login, registration, first-run administrator setup, and account sessions;
+- administrator user, role, registration-policy, and server-monitoring views;
 - scenario catalogue and version details;
 - model/provider profiles with server-side encrypted credentials;
 - run builder and soft/hard budget controls;
@@ -698,3 +739,21 @@ AGPL-3.0-only. New scenarios must include:
 - validation that the scenario remains solvable inside the soft budget.
 
 Architecture changes should update this document in the same pull request.
+
+## 19. Versioning and releases
+
+The platform follows Semantic Versioning. `VERSION` is the release source of
+truth, and CI verifies that the root package, Web package, API package, and
+runtime-reported version match it.
+
+Platform and scenario versions are deliberately independent:
+
+- a platform release changes the control plane, Runner, UI, security model, or
+  shared SDK;
+- a scenario release changes its world, truth model, faults, grading, or
+  expected solve path;
+- an analyzer version changes behavior extraction or normalization.
+
+Every platform release updates `CHANGELOG.md`. Published run archives retain
+platform, scenario, SDK, and analyzer versions so later replays can identify
+the exact contracts that produced a result.

@@ -7,10 +7,16 @@ The Evil Repository has four execution planes.
 The React application reads normalized JSON and server-sent events from
 FastAPI. It can create model profiles and runs, inspect scores, and render the
 hypothesis/evidence graph. It does not load scenario Python or talk to Docker.
+The Web container is the single deployment entrypoint and proxies `/api/v1`
+to FastAPI over the private control network.
 
 FastAPI persists model profiles, queued runs, append-only events, hypotheses,
 evidence, graph edges, scorecards, and artifact metadata in the platform
-PostgreSQL database. Provider keys are encrypted before storage.
+PostgreSQL database. Provider keys are encrypted before storage. Application
+accounts use one unique account name, with no email dependency. HttpOnly
+sessions, per-session CSRF tokens, role checks, and access-mapping tables
+protect tenant-scoped model profiles and runs. The administrator surface also
+owns registration policy, account controls, and aggregate service telemetry.
 
 The Compose control network is an ordinary private bridge so Rootless Docker
 can publish the loopback-only API/UI ports. Platform PostgreSQL has no published

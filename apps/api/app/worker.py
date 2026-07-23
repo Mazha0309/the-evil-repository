@@ -22,6 +22,7 @@ from app.models import (
     RunEvent,
     RunnerHeartbeat,
     RunStatus,
+    ServiceTelemetry,
     TaskDefinition,
 )
 from app.runner.engine import AgentEngine
@@ -58,10 +59,22 @@ class Worker:
         while True:
             ready = False
             detail = "Docker daemon unavailable"
+            metrics: dict[str, int | str | None] = {}
             client: docker.DockerClient | None = None
             try:
                 client = docker.DockerClient(base_url=settings.docker_host)
                 client.ping()
+                info = client.info()
+                version = client.version()
+                metrics = {
+                    "docker_version": version.get("Version"),
+                    "storage_driver": info.get("Driver"),
+                    "containers_running": int(info.get("ContainersRunning", 0)),
+                    "containers_total": int(info.get("Containers", 0)),
+                    "images": int(info.get("Images", 0)),
+                    "cpu_count": int(info.get("NCPU", 0)),
+                    "memory_total": int(info.get("MemTotal", 0)),
+                }
                 ready = True
                 detail = "Rootless Docker daemon ready"
             except Exception as exc:
@@ -78,6 +91,13 @@ class Worker:
                     heartbeat.docker_ready = ready
                     heartbeat.detail = detail
                     heartbeat.updated_at = datetime.now(UTC)
+                    telemetry = session.get(ServiceTelemetry, "runner")
+                    if telemetry is None:
+                        telemetry = ServiceTelemetry(service="runner")
+                        session.add(telemetry)
+                    telemetry.healthy = ready
+                    telemetry.metrics = metrics
+                    telemetry.observed_at = datetime.now(UTC)
                     session.commit()
             except Exception:
                 logger.exception("Could not persist Runner heartbeat")

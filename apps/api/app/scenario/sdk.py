@@ -14,6 +14,7 @@ import yaml
 from pydantic import BaseModel, Field
 
 from app.challenge.spec import BudgetSpec, RepositorySpec
+from app.version import VERSION
 
 
 class ScenarioComponents(BaseModel):
@@ -109,6 +110,7 @@ class Scenario(ABC):
     ) -> Path:
         destination.parent.mkdir(parents=True, exist_ok=True)
         manifest = {
+            "platform_version": VERSION,
             "scenario": self.metadata.model_dump(mode="json"),
             "result": {
                 "final_response": result.final_response,

@@ -22,6 +22,10 @@ class Settings(BaseSettings):
     database_url: str = "sqlite:///./evil-repository-dev.db"
     app_secret: str = "development-only-secret-change-me"
     web_origin: str = "http://127.0.0.1:5173"
+    session_cookie_name: str = "evil_session"
+    session_cookie_secure: bool = False
+    session_ttl_hours: int = 168
+    setup_token: str | None = None
     runner_enabled: bool = False
     runner_poll_seconds: float = 2.0
 

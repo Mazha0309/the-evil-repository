@@ -1,5 +1,5 @@
 FROM node:22-alpine AS builder
-ARG VITE_API_BASE=http://127.0.0.1:8080/api/v1
+ARG VITE_API_BASE=/api/v1
 ENV VITE_API_BASE=$VITE_API_BASE
 RUN corepack enable && corepack prepare pnpm@11.3.0 --activate
 WORKDIR /app

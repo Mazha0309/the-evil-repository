@@ -25,6 +25,7 @@ import {
   Languages,
   Lightbulb,
   ListFilter,
+  LogOut,
   Menu,
   Network,
   OctagonAlert,
@@ -39,6 +40,7 @@ import {
   SquareTerminal,
   TimerReset,
   Trash2,
+  UserRound,
   X,
   XCircle,
   Zap,
@@ -59,9 +61,14 @@ import {
   useNavigate,
   useParams,
 } from "react-router-dom";
+import AccountPage from "./components/AccountPage";
+import AdminPage from "./components/AdminPage";
+import AuthScreen from "./components/AuthScreen";
 import { api } from "./lib/api";
 import { useLocale } from "./lib/i18n";
 import type {
+  AuthConfig,
+  AuthResponse,
   ModelProvider,
   Run,
   RunEvent,
@@ -75,8 +82,43 @@ const InvestigationGraphView = lazy(
 const ScoreRadar = lazy(() => import("./components/ScoreRadar"));
 
 export default function App() {
+  const config = useQuery({
+    queryKey: ["auth-config"],
+    queryFn: api.authConfig,
+    staleTime: 30_000,
+  });
+  const me = useQuery({
+    queryKey: ["me"],
+    queryFn: api.me,
+    enabled: Boolean(config.data && !config.data.setup_required),
+    retry: false,
+  });
+  if (config.isLoading || me.isLoading) return <LoadingState />;
+  if (!config.data) return <BootError />;
+  if (config.data.setup_required || !me.data) {
+    return <AuthScreen config={config.data} />;
+  }
+  return <ControlPlane auth={me.data} config={config.data} />;
+}
+
+function ControlPlane({
+  auth,
+  config,
+}: {
+  auth: AuthResponse;
+  config: AuthConfig;
+}) {
   const [mobileNav, setMobileNav] = useState(false);
   const { isChinese, text, toggle } = useLocale();
+  const queryClient = useQueryClient();
+  const logout = useMutation({
+    mutationFn: api.logout,
+    onSuccess: () => {
+      queryClient.setQueryData(["me"], null);
+      queryClient.removeQueries({ queryKey: ["sessions"] });
+    },
+  });
+  const user = auth.user;
   return (
     <div className="app-shell">
       <aside className={`sidebar ${mobileNav ? "sidebar--open" : ""}`}>
@@ -116,12 +158,24 @@ export default function App() {
             icon={<Settings size={17} />}
             label={text("设置", "Settings")}
           />
+          <NavItem
+            to="/account"
+            icon={<UserRound size={17} />}
+            label={text("个人账户", "Account")}
+          />
+          {user.role === "admin" && (
+            <NavItem
+              to="/admin"
+              icon={<ShieldCheck size={17} />}
+              label={text("管理员后台", "Administration")}
+            />
+          )}
         </nav>
         <div className="sidebar__footer">
           <span className="status-dot status-dot--safe" />
           <div>
             <strong>{text("Rootless 隔离边界", "Rootless boundary")}</strong>
-            <small>{text("本机控制平面", "Local control plane")}</small>
+            <small>EvilBench v{config.version}</small>
           </div>
         </div>
       </aside>
@@ -139,7 +193,7 @@ export default function App() {
           <div className="topbar__context">
             <span className="eyebrow">AI AGENT CTF / INCIDENT RESPONSE</span>
             <span className="topbar__divider" />
-            <span>localhost</span>
+            <span>{window.location.hostname}</span>
           </div>
           <div className="topbar__actions">
             <button
@@ -159,6 +213,17 @@ export default function App() {
             >
               AGPLv3 <ExternalLink size={12} />
             </a>
+            <Link className="quiet-link user-link" to="/account">
+              <UserRound size={13} /> {user.username}
+            </Link>
+            <button
+              className="quiet-link language-toggle"
+              type="button"
+              onClick={() => logout.mutate()}
+              title={text("退出登录", "Sign out")}
+            >
+              <LogOut size={13} />
+            </button>
             <Link className="button button--small" to="/runs/new">
               <Play size={14} fill="currentColor" />{" "}
               {text("新建运行", "New run")}
@@ -174,6 +239,17 @@ export default function App() {
             <Route path="/runs/new" element={<NewRunPage />} />
             <Route path="/runs/:runId" element={<RunDetailPage />} />
             <Route path="/settings" element={<SettingsPage />} />
+            <Route path="/account" element={<AccountPage user={user} />} />
+            <Route
+              path="/admin"
+              element={
+                user.role === "admin" ? (
+                  <AdminPage currentUser={user} />
+                ) : (
+                  <Navigate to="/" replace />
+                )
+              }
+            />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </div>
@@ -441,10 +517,7 @@ function ScenarioCard({ task }: { task: Task }) {
         </div>
       </div>
       <div className="scenario-card__actions">
-        <a
-          className="button button--ghost"
-          href={`http://127.0.0.1:8080/api/v1/tasks/${task.id}/export`}
-        >
+        <a className="button button--ghost" href={api.taskExportUrl(task.id)}>
           <Download size={14} /> {text("元数据", "Metadata")}
         </a>
         <Link className="button" to={`/runs/new?task=${task.id}`}>
@@ -462,9 +535,7 @@ function ModelsPage() {
   const [open, setOpen] = useState(false);
   const [error, setError] = useState("");
   const [provider, setProvider] = useState<ModelProvider>("openai_responses");
-  const [baseUrl, setBaseUrl] = useState(
-    providerDefaultUrl("openai_responses"),
-  );
+  const [baseUrl, setBaseUrl] = useState("");
   const create = useMutation({
     mutationFn: api.createModel,
     onSuccess: () => {
@@ -593,7 +664,7 @@ function ModelsPage() {
                 onChange={(event) => {
                   const next = event.target.value as ModelProvider;
                   setProvider(next);
-                  setBaseUrl(providerDefaultUrl(next));
+                  setBaseUrl("");
                 }}
               >
                 <option value="openai_responses">OpenAI Responses API</option>
@@ -608,6 +679,7 @@ function ModelsPage() {
                 type="url"
                 required
                 value={baseUrl}
+                placeholder={providerDefaultUrl(provider)}
                 onChange={(event) => setBaseUrl(event.target.value)}
               />
             </Field>
@@ -1628,6 +1700,24 @@ function LoadingState() {
       <div className="spinner" />
       <span>{text("正在读取归档…", "Reading the archive…")}</span>
     </div>
+  );
+}
+
+function BootError() {
+  const { text } = useLocale();
+  return (
+    <main className="auth-shell">
+      <div className="empty-state">
+        <OctagonAlert size={28} />
+        <h3>{text("控制平面不可用", "Control plane unavailable")}</h3>
+        <p>
+          {text(
+            "无法读取认证配置，请检查 API 服务。",
+            "Could not load authentication configuration. Check the API service.",
+          )}
+        </p>
+      </div>
+    </main>
   );
 }
 
