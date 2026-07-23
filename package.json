@@ -1,0 +1,14 @@
+{
+  "name": "the-evil-repository",
+  "version": "0.1.0",
+  "private": true,
+  "license": "AGPL-3.0-only",
+  "packageManager": "pnpm@11.3.0",
+  "scripts": {
+    "dev": "pnpm --filter @evil-repository/web dev",
+    "build": "pnpm --filter @evil-repository/web build",
+    "lint": "pnpm --filter @evil-repository/web lint",
+    "test": "pnpm --filter @evil-repository/web test",
+    "format": "pnpm --filter @evil-repository/web format"
+  }
+}

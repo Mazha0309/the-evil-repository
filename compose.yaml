@@ -1,0 +1,91 @@
+name: evil-repository
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-evil_repository}
+      POSTGRES_USER: ${POSTGRES_USER:-evil_repository}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - platform-data:/var/lib/postgresql/data
+    networks:
+      - control
+    restart: unless-stopped
+
+  api:
+    image: evil-repository-control:local
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://evil_repository:change-me@postgres:5432/evil_repository}
+      APP_SECRET: ${APP_SECRET:-development-only-secret-change-me}
+      WEB_ORIGIN: ${WEB_ORIGIN:-http://127.0.0.1:5173}
+      RUNNER_ENABLED: "false"
+      SCENARIOS_ROOT: /scenarios
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8080:8080"
+    networks:
+      - control
+    restart: unless-stopped
+
+  runner:
+    image: evil-repository-control:local
+    command: ["python", "-m", "app.worker"]
+    user: "0:0"
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://evil_repository:change-me@postgres:5432/evil_repository}
+      APP_SECRET: ${APP_SECRET:-development-only-secret-change-me}
+      DOCKER_HOST: unix:///var/run/docker.sock
+      RUNNER_ENABLED: "true"
+      SCENARIOS_ROOT: /scenarios
+      RUNNER_POLL_SECONDS: ${RUNNER_POLL_SECONDS:-2}
+      SANDBOX_IMAGE: ${SANDBOX_IMAGE:-evil-repository-sandbox:local}
+      SANDBOX_MEMORY: ${SANDBOX_MEMORY:-1073741824}
+      SANDBOX_WORKSPACE_SIZE: ${SANDBOX_WORKSPACE_SIZE:-1536m}
+      SANDBOX_NANO_CPUS: ${SANDBOX_NANO_CPUS:-1000000000}
+      SANDBOX_PIDS_LIMIT: ${SANDBOX_PIDS_LIMIT:-256}
+      SANDBOX_TOOL_TIMEOUT: ${SANDBOX_TOOL_TIMEOUT:-30}
+      SANDBOX_HARD_TIMEOUT: ${SANDBOX_HARD_TIMEOUT:-10800}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ${ROOTLESS_DOCKER_SOCKET:-/run/user/1000/docker.sock}:/var/run/docker.sock
+      - ./artifacts:/var/lib/evil-repository/artifacts
+    networks:
+      - control
+      - providers
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      args:
+        VITE_API_BASE: http://127.0.0.1:8080/api/v1
+    depends_on:
+      - api
+    ports:
+      - "127.0.0.1:5173:80"
+    networks:
+      - control
+    restart: unless-stopped
+
+networks:
+  control:
+  providers:
+
+volumes:
+  platform-data:

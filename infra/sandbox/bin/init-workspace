@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+runtime_dir=/workspace/.runtime
+data_dir="$runtime_dir/postgres"
+socket_dir="$runtime_dir/postgres-socket"
+seed_file=/workspace/dead-letter/database/postgres-seed.sql
+
+mkdir -p "$runtime_dir" "$socket_dir"
+chmod 700 "$runtime_dir"
+
+if [[ -f "$seed_file" ]]; then
+  postgres_bin="$(dirname "$(find /usr/lib/postgresql -type f -name initdb -print -quit)")"
+  if [[ ! -f "$data_dir/PG_VERSION" ]]; then
+    "$postgres_bin/initdb" \
+      -D "$data_dir" \
+      --username=sandbox \
+      --auth-local=trust \
+      --auth-host=reject \
+      --no-locale >/dev/null
+  fi
+  "$postgres_bin/pg_ctl" \
+    -D "$data_dir" \
+    -o "-c listen_addresses='' -c unix_socket_directories='$socket_dir' -c max_connections=12" \
+    -w start >/dev/null
+  createdb evil_challenge 2>/dev/null || true
+  psql -v ON_ERROR_STOP=1 -f "$seed_file" evil_challenge >/dev/null
+fi
+
+cat > "$runtime_dir/README.txt" <<'EOF'
+This directory is ephemeral and exists only inside the candidate container.
+PostgreSQL listens on a local Unix socket; no TCP network is available.
+EOF
+
+echo "workspace-ready"

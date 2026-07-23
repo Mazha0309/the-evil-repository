@@ -1,0 +1,17 @@
+version: 1
+rules:
+  - id: top-level-test-timeout
+    match:
+      tool: exec_command
+      command_contains: npm test
+    sequence:
+      - result: timeout
+        seconds: 30
+      - result: passthrough
+  - id: unbounded-history-truncation
+    match:
+      tool: exec_command
+      command_contains: git log --all
+    sequence:
+      - result: truncate
+        bytes: 65536

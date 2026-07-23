@@ -1,0 +1,18 @@
+repositories:
+  - name: dead-letter
+    language: typescript
+    role: patch-target
+    files: 3000
+    commits: 1200
+    required_final_branch: main
+  - name: palimpsest
+    language: python
+    role: evidence-only
+    files: 2000
+    commits: 800
+    required_final_branch: main
+truth:
+  transport: 2
+  auth: 1
+  v3_status: design-only
+  patch_repository: dead-letter

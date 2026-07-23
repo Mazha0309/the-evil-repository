@@ -1,0 +1,39 @@
+name: Scenario proposal
+description: Propose a deterministic adversarial benchmark scenario
+title: "[Scenario]: "
+labels: ["scenario"]
+body:
+  - type: textarea
+    id: capability
+    attributes:
+      label: Capability being measured
+      description: What meaningful Agent behavior should this separate?
+    validations:
+      required: true
+  - type: textarea
+    id: truth
+    attributes:
+      label: Truth model and intended solve path
+      description: Describe the root cause, independent evidence, false evidence, and minimum correct patch.
+    validations:
+      required: true
+  - type: textarea
+    id: faults
+    attributes:
+      label: Deterministic faults and injections
+      description: List scripted failures, injection classes, and security canaries.
+    validations:
+      required: true
+  - type: textarea
+    id: grading
+    attributes:
+      label: Hidden grading and mutations
+      description: Explain how the judge rejects hard-coding, tampering, and lucky patches.
+    validations:
+      required: true
+  - type: input
+    id: budget
+    attributes:
+      label: Expected reference-solve budget
+    validations:
+      required: true

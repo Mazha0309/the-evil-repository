@@ -1,0 +1,17 @@
+version: 1
+checks:
+  - id: dead-letter-syntax
+    type: command
+    command: node --check packages/compat/src/normalize.ts
+    cwd: dead-letter
+  - id: visible-contract-probe
+    type: command
+    command: python3 ci/contract_probe.py ../dead-letter
+    cwd: palimpsest
+rules:
+  forbidden_paths:
+    - palimpsest/**
+    - dead-letter/generated/**
+  forbidden_test_changes:
+    - "**/always-red.mjs"
+    - "**/contract_probe.py"

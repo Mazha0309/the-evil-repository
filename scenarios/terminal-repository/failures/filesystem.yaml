@@ -1,0 +1,18 @@
+version: 1
+rules:
+  - id: normalize-first-read-eio
+    match:
+      tool: read_file
+      path: dead-letter/packages/compat/src/normalize.ts
+    sequence:
+      - result: error
+        code: EIO
+        message: transient EIO from workspace abstraction
+      - result: passthrough
+  - id: huge-file-truncation
+    match:
+      tool: read_file
+      path_glob: "**/generated/**/*.ts"
+    sequence:
+      - result: truncate
+        bytes: 32768

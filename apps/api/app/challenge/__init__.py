@@ -1,0 +1,1 @@
+"""Synthetic, deterministic challenge generation."""
