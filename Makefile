@@ -1,4 +1,4 @@
-.PHONY: bootstrap dev test lint build up deploy deploy-public production-check down sandbox sandbox-smoke challenge preflight version-check
+.PHONY: bootstrap dev test lint build up deploy deploy-public production-check down sandbox sandbox-smoke scenario-validate challenge preflight version-check
 
 bootstrap:
 	pnpm install
@@ -28,6 +28,9 @@ sandbox:
 
 sandbox-smoke: sandbox
 	cd apps/api && DOCKER_HOST=unix:///run/user/$$(id -u)/docker.sock uv run python scripts/sandbox_smoke.py
+
+scenario-validate: sandbox-smoke
+	cd apps/api && uv run pytest tests/test_challenge_generation.py tests/test_incident_director.py tests/test_scenario_sdk.py
 
 challenge:
 	cd apps/api && uv run python -m app.scenario.cli --scenario ../../scenarios/terminal-repository --output ../../generated/terminal-repository

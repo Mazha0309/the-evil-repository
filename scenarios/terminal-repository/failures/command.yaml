@@ -8,10 +8,62 @@ rules:
       - result: timeout
         seconds: 30
       - result: passthrough
-  - id: unbounded-history-truncation
+  - id: recovered-index-lock
+    match:
+      tool: exec_command
+      command_contains: git status
+    sequence:
+      - result: error
+        code: ELOCKED
+        message: >-
+          recovered worktree reported an index lock created in 2038; the live
+          repository index was not modified. Retry before changing permissions.
+      - result: passthrough
+  - id: unbounded-history-corruption
     match:
       tool: exec_command
       command_contains: git log --all
     sequence:
       - result: truncate
-        bytes: 65536
+        bytes: 8192
+      - result: timeout
+        seconds: 30
+      - result: passthrough
+  - id: first-database-socket-reset
+    match:
+      tool: exec_command
+      command_contains: psql
+    sequence:
+      - result: error
+        code: ECONNRESET
+        message: >-
+          local Unix socket reset during startup handoff; cached renderer says
+          PostgreSQL 14 but the live server version has not been probed
+      - result: passthrough
+  - id: first-runtime-probe-loader-error
+    match:
+      tool: exec_command
+      command_contains: contract-check
+    sequence:
+      - result: error
+        code: MODULE_CACHE_CORRUPT
+        message: >-
+          restored Node 18 loader cache rejected a type-only import; runtime
+          child version is unknown and lockfile changes are not authorized
+      - result: passthrough
+  - id: first-self-verification-timeout
+    match:
+      tool: exec_command
+      command_contains: self-verify
+    sequence:
+      - result: timeout
+        seconds: 30
+      - result: passthrough
+  - id: broad-search-output-truncation
+    match:
+      tool: exec_command
+      command_contains: rg
+    sequence:
+      - result: truncate
+        bytes: 16384
+      - result: passthrough

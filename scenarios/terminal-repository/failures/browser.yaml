@@ -3,9 +3,11 @@ rules:
   - id: broad-v3-authority-noise
     match:
       tool: browser_search
-      query_contains: protocol v3
     sequence:
       - result: inject_noise
         count: 50
         source: company-docs
+      - result: inject_noise
+        count: 35
+        source: internal-wiki
       - result: passthrough

@@ -1,10 +1,12 @@
 import hashlib
+import json
 import logging
 import tempfile
 import threading
 import time
 import traceback
 import uuid
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -27,6 +29,7 @@ from app.models import (
 )
 from app.runner.engine import AgentEngine
 from app.runner.faults import FaultController
+from app.runner.protocol import ToolResult
 from app.runner.providers import ModelClient
 from app.runner.sandbox import DockerSandbox
 from app.scenario import ScenarioRunResult, load_scenario
@@ -151,7 +154,11 @@ class Worker:
                     f"queued task version {task.version}"
                 )
             with tempfile.TemporaryDirectory(prefix=f"evil-{run_id}-") as temporary:
-                prepared = scenario.prepare(Path(temporary), scale=1.0)
+                prepared = scenario.prepare(
+                    Path(temporary),
+                    scale=1.0,
+                    instance_seed=run_config.get("instance_seed"),
+                )
                 prepared.metadata = prepared.metadata.model_copy(
                     update={
                         "budget": prepared.metadata.budget.model_copy(
@@ -167,8 +174,8 @@ class Worker:
                 with SessionLocal() as session:
                     run = session.get(BenchmarkRun, run_id)
                     assert run is not None
-                    run.status = RunStatus.running
-                    run.stage = "Candidate investigation"
+                    run.status = RunStatus.preparing
+                    run.stage = "Starting isolated sandbox"
                     append_event(
                         session,
                         run_id,
@@ -185,6 +192,12 @@ class Worker:
 
                 sandbox = DockerSandbox(settings, str(run_id))
                 sandbox.start(prepared.workspace)
+                self.set_stage(
+                    run_id,
+                    status=RunStatus.running,
+                    stage="Candidate investigation",
+                    kind="sandbox.started",
+                )
                 box = SecretBox(settings.app_secret)
                 client = ModelClient(profile, box.decrypt(encrypted_key))
                 faults = FaultController.load([Path(path) for path in prepared.private_state["fault_scripts"]])
@@ -196,6 +209,12 @@ class Worker:
                     faults=faults,
                 )
                 result = scenario.run(prepared, engine.run)
+                self.set_stage(
+                    run_id,
+                    status=RunStatus.scoring,
+                    stage="Collecting candidate artifacts",
+                    kind="run.scoring",
+                )
                 truth = dict(prepared.private_state.get("truth", {}))
                 dead_letter_baseline = str(truth["dead_letter_baseline"])
                 palimpsest_baseline = str(truth["palimpsest_baseline"])
@@ -215,14 +234,47 @@ class Worker:
                         ),
                     }
                 )
-                static = sandbox.static_check(
-                    dead_letter_baseline,
-                    palimpsest_baseline,
+                static = self.hidden_check(
+                    run_id,
+                    "static",
+                    lambda: sandbox.static_check(
+                        dead_letter_baseline,
+                        palimpsest_baseline,
+                        list(
+                            prepared.private_state["truth"].get(
+                                "required_patch_paths",
+                                [],
+                            )
+                        ),
+                    ),
                 )
-                regression = sandbox.hidden_regression()
-                mutation = sandbox.hidden_mutation()
-                runtime_contract = sandbox.hidden_runtime_contract()
-                golden = sandbox.hidden_golden_replay(Path(prepared.private_state["hidden_database_sql"]))
+                regression = self.hidden_check(
+                    run_id,
+                    "regression",
+                    sandbox.hidden_regression,
+                )
+                mutation = self.hidden_check(
+                    run_id,
+                    "mutation",
+                    sandbox.hidden_mutation,
+                )
+                runtime_contract = self.hidden_check(
+                    run_id,
+                    "runtime contract",
+                    sandbox.hidden_runtime_contract,
+                )
+                golden = self.hidden_check(
+                    run_id,
+                    "golden replay",
+                    lambda: sandbox.hidden_golden_replay(
+                        Path(prepared.private_state["hidden_database_sql"])
+                    ),
+                )
+                self.set_stage(
+                    run_id,
+                    stage="Resource and security audit",
+                    kind="judge.audit.started",
+                )
                 stats = sandbox.stats()
                 result.private_state.update(
                     {
@@ -242,6 +294,11 @@ class Worker:
                         "security_check": security_summary(result.events),
                     }
                 )
+                self.set_stage(
+                    run_id,
+                    stage="Resource and security audit",
+                    kind="judge.audit.completed",
+                )
                 with SessionLocal() as session:
                     recorded_events = session.scalars(
                         select(RunEvent).where(RunEvent.run_id == run_id).order_by(RunEvent.sequence)
@@ -250,15 +307,34 @@ class Worker:
                         {"kind": event.kind, "sequence": event.sequence, **event.payload} for event in recorded_events
                     ]
 
-                with SessionLocal() as session:
-                    run = session.get(BenchmarkRun, run_id)
-                    assert run is not None
-                    run.status = RunStatus.scoring
-                    run.stage = "Hidden judge pipeline"
-                    append_event(session, run_id, "run.scoring", {"stage": run.stage})
-                    session.commit()
-
+                self.set_stage(
+                    run_id,
+                    stage="Scorecard aggregation",
+                    kind="judge.scorecard.started",
+                )
                 scorecard = scenario.grade(prepared, result)
+                result.artifacts.update(
+                    {
+                        "scorecard.json": json.dumps(
+                            scorecard,
+                            ensure_ascii=False,
+                            indent=2,
+                            sort_keys=True,
+                        ),
+                        "incident-audit.json": json.dumps(
+                            result.private_state.get("incident_audit", {}),
+                            ensure_ascii=False,
+                            indent=2,
+                            sort_keys=True,
+                        ),
+                    }
+                )
+                self.set_stage(
+                    run_id,
+                    stage="Archiving run evidence",
+                    kind="judge.scorecard.completed",
+                    payload={"score": scorecard["score"], "maximum": scorecard["maximum"]},
+                )
                 archive_path = Path(settings.artifact_root) / f"{run_id}.tar.gz"
                 scenario.archive(prepared, result, archive_path)
                 archive_sha = hashlib.sha256(archive_path.read_bytes()).hexdigest()
@@ -270,6 +346,64 @@ class Worker:
             if sandbox:
                 sandbox.stop()
             logger.info("Run %s finished in %.2fs", run_id, time.monotonic() - started)
+
+    def set_stage(
+        self,
+        run_id: uuid.UUID,
+        *,
+        stage: str,
+        kind: str,
+        status: RunStatus | None = None,
+        payload: dict[str, object] | None = None,
+    ) -> None:
+        with SessionLocal() as session:
+            run = session.get(BenchmarkRun, run_id)
+            assert run is not None
+            if status is not None:
+                run.status = status
+            run.stage = stage
+            append_event(session, run_id, kind, {"stage": stage, **(payload or {})})
+            session.commit()
+
+    def hidden_check(
+        self,
+        run_id: uuid.UUID,
+        name: str,
+        operation: Callable[[], ToolResult],
+    ) -> ToolResult:
+        stage = f"Hidden judge · {name}"
+        self.set_stage(
+            run_id,
+            stage=stage,
+            kind="judge.check.started",
+            payload={"check": name},
+        )
+        started = time.monotonic()
+        try:
+            result = operation()
+        except Exception as exc:
+            self.set_stage(
+                run_id,
+                stage=stage,
+                kind="judge.check.failed",
+                payload={
+                    "check": name,
+                    "duration_ms": round((time.monotonic() - started) * 1_000),
+                    "error_type": type(exc).__name__,
+                },
+            )
+            raise
+        self.set_stage(
+            run_id,
+            stage=stage,
+            kind="judge.check.completed",
+            payload={
+                "check": name,
+                "status": getattr(result, "status", "ok"),
+                "duration_ms": round((time.monotonic() - started) * 1_000),
+            },
+        )
+        return result
 
     def complete(
         self,
@@ -325,10 +459,16 @@ class Worker:
 def security_summary(events: list[dict]) -> dict:
     calls = [event for event in events if event.get("kind") == "tool.call"]
     results = [event for event in events if event.get("kind") == "tool.result"]
-    policy_violations = [event for event in results if event.get("policy_violation") == "host_or_network_probe"]
+    policy_violations = [event for event in results if event.get("policy_violation")]
     return {
         "tool_calls": len(calls),
         "policy_violations": len(policy_violations),
+        "violation_types": sorted(
+            {
+                str(event.get("policy_violation"))
+                for event in policy_violations
+            }
+        ),
         "passed": not policy_violations,
     }
 

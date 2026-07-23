@@ -29,9 +29,11 @@ import {
   Menu,
   Network,
   OctagonAlert,
+  Pause,
   Play,
   Plus,
   Radar,
+  Radio,
   ScrollText,
   Settings,
   ShieldAlert,
@@ -64,6 +66,7 @@ import {
 import AccountPage from "./components/AccountPage";
 import AdminPage from "./components/AdminPage";
 import AuthScreen from "./components/AuthScreen";
+import LiveRunMonitor from "./components/LiveRunMonitor";
 import { api } from "./lib/api";
 import { useLocale } from "./lib/i18n";
 import type {
@@ -790,12 +793,14 @@ function NewRunPage() {
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const data = new FormData(event.currentTarget);
+    const seed = String(data.get("instance_seed") ?? "").trim();
     create.mutate({
       task_id: data.get("task_id"),
       candidate_model_id: data.get("candidate_model_id"),
       judge_model_id: data.get("judge_model_id") || null,
       repetitions: 1,
       temperature: 0,
+      instance_seed: seed ? Number(seed) : null,
       soft_seconds: Number(data.get("soft_seconds")),
       hard_seconds: Number(data.get("hard_seconds")),
       soft_tool_calls: Number(data.get("soft_tool_calls")),
@@ -933,6 +938,21 @@ function NewRunPage() {
                 min={20}
               />
             </Field>
+            <Field
+              label={text("实例种子（可选）", "Instance seed (optional)")}
+              hint={text(
+                "比较模型时复用同一种子；留空使用场景标准实例。",
+                "Reuse a seed across models; blank selects the canonical instance.",
+              )}
+            >
+              <input
+                name="instance_seed"
+                type="number"
+                min={1}
+                max={2147483647}
+                placeholder="3697"
+              />
+            </Field>
           </div>
         </section>
         <section className="launch-strip">
@@ -965,9 +985,11 @@ function NewRunPage() {
 function RunDetailPage() {
   const { locale, text } = useLocale();
   const { runId = "" } = useParams();
-  const [tab, setTab] = useState<"overview" | "graph" | "audit" | "score">(
-    "overview",
-  );
+  const queryClient = useQueryClient();
+  const eventQueryKey = ["events", runId] as const;
+  const [tab, setTab] = useState<
+    "live" | "overview" | "graph" | "audit" | "score"
+  >("live");
   const run = useQuery({
     queryKey: ["run", runId],
     queryFn: () => api.run(runId),
@@ -975,14 +997,42 @@ function RunDetailPage() {
       isTerminal(query.state.data?.status) ? false : 2_000,
   });
   const events = useQuery({
-    queryKey: ["events", runId],
-    queryFn: () => api.events(runId),
-    refetchInterval: isTerminal(run.data?.status) ? false : 2_000,
+    queryKey: eventQueryKey,
+    queryFn: async () => {
+      const previous =
+        queryClient.getQueryData<RunEvent[]>(eventQueryKey) ?? [];
+      const after = previous.at(-1)?.sequence ?? 0;
+      const incoming = await api.events(runId, after);
+      return incoming.length ? [...previous, ...incoming] : previous;
+    },
+    refetchInterval: (query) => {
+      const latest = query.state.data?.at(-1);
+      return isTerminal(run.data?.status) && isTerminalEvent(latest)
+        ? false
+        : 1_000;
+    },
   });
   const graph = useQuery({
     queryKey: ["graph", runId],
     queryFn: () => api.graph(runId),
     refetchInterval: isTerminal(run.data?.status) ? false : 3_000,
+  });
+  const tasks = useQuery({
+    queryKey: ["tasks"],
+    queryFn: api.tasks,
+    staleTime: 60_000,
+  });
+  const pauseRun = useMutation({
+    mutationFn: () => api.pauseRun(runId),
+    onSuccess: (updated) => {
+      queryClient.setQueryData(["run", runId], updated);
+    },
+  });
+  const resumeRun = useMutation({
+    mutationFn: () => api.resumeRun(runId),
+    onSuccess: (updated) => {
+      queryClient.setQueryData(["run", runId], updated);
+    },
   });
   const data = run.data;
   if (run.isLoading) return <LoadingState />;
@@ -998,6 +1048,22 @@ function RunDetailPage() {
     );
   }
   const dimensions = normalizeScoreDimensions(data.scorecard.dimensions);
+  const graphData = graph.data ?? {
+    hypotheses: [],
+    revisions: [],
+    evidence: [],
+    edges: [],
+  };
+  const taskManifest = tasks.data?.find((task) => task.id === data.task_id)
+    ?.manifest;
+  const completion = taskManifest?.completion;
+  const pauseRequested = data.config.pause_requested === true;
+  const maximumScore = Math.max(1, data.scorecard.maximum ?? 1_200);
+  const achievedScore = Math.max(
+    0,
+    Math.min(maximumScore, data.score ?? 0),
+  );
+  const totalScorePercentage = (achievedScore / maximumScore) * 100;
   return (
     <>
       <div className="run-hero">
@@ -1060,6 +1126,12 @@ function RunDetailPage() {
       </div>
       <div className="tabs">
         <button
+          className={tab === "live" ? "active" : ""}
+          onClick={() => setTab("live")}
+        >
+          <Radio size={14} /> {text("实时监控", "Live monitor")}
+        </button>
+        <button
           className={tab === "overview" ? "active" : ""}
           onClick={() => setTab("overview")}
         >
@@ -1084,6 +1156,15 @@ function RunDetailPage() {
           <Radar size={14} /> {text("裁判", "Judge")}
         </button>
       </div>
+      {tab === "live" && (
+        <LiveRunMonitor
+          run={data}
+          events={events.data ?? []}
+          graph={graphData}
+          completion={completion}
+          incident={taskManifest?.incident}
+        />
+      )}
       {tab === "overview" && (
         <RunOverview run={data} events={events.data ?? []} />
       )}
@@ -1114,16 +1195,7 @@ function RunDetailPage() {
             </div>
           </div>
           <Suspense fallback={<LoadingState />}>
-            <InvestigationGraphView
-              graph={
-                graph.data ?? {
-                  hypotheses: [],
-                  revisions: [],
-                  evidence: [],
-                  edges: [],
-                }
-              }
-            />
+            <InvestigationGraphView graph={graphData} />
           </Suspense>
         </section>
       )}
@@ -1137,9 +1209,33 @@ function RunDetailPage() {
               detail={text("隐藏裁判维度", "Hidden judge dimensions")}
             />
             {Object.keys(dimensions).length ? (
-              <Suspense fallback={<LoadingState />}>
-                <ScoreRadar dimensions={dimensions} />
-              </Suspense>
+              <>
+                <div className="score-total-axis">
+                  <div className="score-total-axis__summary">
+                    <span>{text("总分刻度", "Total score scale")}</span>
+                    <strong>
+                      {Math.round(achievedScore)} / {maximumScore}
+                    </strong>
+                  </div>
+                  <div
+                    className="score-total-axis__track"
+                    role="progressbar"
+                    aria-valuemin={0}
+                    aria-valuemax={maximumScore}
+                    aria-valuenow={Math.round(achievedScore)}
+                  >
+                    <i style={{ width: `${totalScorePercentage}%` }} />
+                  </div>
+                  <div className="score-total-axis__ticks" aria-hidden="true">
+                    {[0, 0.25, 0.5, 0.75, 1].map((ratio) => (
+                      <span key={ratio}>{Math.round(maximumScore * ratio)}</span>
+                    ))}
+                  </div>
+                </div>
+                <Suspense fallback={<LoadingState />}>
+                  <ScoreRadar dimensions={dimensions} />
+                </Suspense>
+              </>
             ) : (
               <EmptyState
                 title={text("等待裁判", "Waiting for the judge")}
@@ -1180,6 +1276,20 @@ function RunDetailPage() {
                 <OctagonAlert size={16} />
                 <span>{cap.reason}</span>
                 <strong>{text(`上限 ${cap.max}`, `cap ${cap.max}`)}</strong>
+              </div>
+            ))}
+            {data.scorecard.deductions?.map((deduction) => (
+              <div
+                className="score-deduction"
+                key={`${deduction.code}-${deduction.detail}`}
+              >
+                <div>
+                  <strong>{label(deduction.code, locale)}</strong>
+                  <span>
+                    × {deduction.count} · −{deduction.points}
+                  </span>
+                </div>
+                <p>{deduction.detail}</p>
               </div>
             ))}
           </section>
@@ -1253,6 +1363,24 @@ function RunDetailPage() {
         <a className="button button--ghost" href={api.reportUrl(data.id)}>
           <Download size={14} /> {text("导出报告", "Export report")}
         </a>
+        {data.status === "running" &&
+          (pauseRequested ? (
+            <button
+              className="button button--ghost"
+              disabled={resumeRun.isPending}
+              onClick={() => resumeRun.mutate()}
+            >
+              <Play size={14} /> {text("继续运行", "Resume run")}
+            </button>
+          ) : (
+            <button
+              className="button button--warning"
+              disabled={pauseRun.isPending}
+              onClick={() => pauseRun.mutate()}
+            >
+              <Pause size={14} /> {text("安全暂停", "Pause safely")}
+            </button>
+          ))}
         {!isTerminal(data.status) && (
           <button
             className="button button--danger"
@@ -1807,6 +1935,8 @@ function eventKind(kind: string) {
   if (kind.includes("completed") || kind.includes("evidence")) return "safe";
   if (kind.includes("hypothesis")) return "hypothesis";
   if (kind.includes("tool")) return "tool";
+  if (kind.includes("model") || kind.includes("assistant")) return "model";
+  if (kind.includes("judge") || kind.includes("scoring")) return "judge";
   return "neutral";
 }
 
@@ -1814,6 +1944,12 @@ function eventIcon(kind: string) {
   if (kind.includes("hypothesis")) return <Lightbulb size={13} />;
   if (kind.includes("evidence")) return <Fingerprint size={13} />;
   if (kind.includes("tool")) return <SquareTerminal size={13} />;
+  if (kind.includes("model") || kind.includes("assistant")) {
+    return <Bot size={13} />;
+  }
+  if (kind.includes("judge") || kind.includes("scoring")) {
+    return <FlaskConical size={13} />;
+  }
   if (kind.includes("failed")) return <XCircle size={13} />;
   if (kind.includes("completed")) return <CheckCircle2 size={13} />;
   return <CircleDot size={13} />;
@@ -1821,6 +1957,26 @@ function eventIcon(kind: string) {
 
 function eventSummary(event: RunEvent) {
   const payload = event.payload;
+  if (event.kind === "model.request") {
+    return `turn ${String(payload.turn ?? "—")} · ${String(
+      payload.context_messages ?? 0,
+    )} messages`;
+  }
+  if (event.kind === "assistant.message") {
+    return `turn ${String(payload.turn ?? "—")} · ${String(
+      payload.duration_ms ?? 0,
+    )} ms`;
+  }
+  if (event.kind === "tool.result") {
+    return `${String(payload.name ?? "tool")} · ${String(
+      payload.status ?? "unknown",
+    )} · ${String(payload.duration_ms ?? 0)} ms`;
+  }
+  if (event.kind.startsWith("judge.")) {
+    return `${String(payload.check ?? payload.stage ?? "judge")} · ${String(
+      payload.status ?? "",
+    )} ${String(payload.duration_ms ?? "")} ms`.trim();
+  }
   if (payload.name) return String(payload.name);
   if (payload.stage) return String(payload.stage);
   if (payload.key) return String(payload.key);
@@ -1831,6 +1987,13 @@ function eventSummary(event: RunEvent) {
 function isTerminal(status?: RunStatus) {
   return (
     status === "completed" || status === "failed" || status === "cancelled"
+  );
+}
+
+function isTerminalEvent(event?: RunEvent) {
+  return Boolean(
+    event &&
+    ["run.completed", "run.failed", "run.cancelled"].includes(event.kind),
   );
 }
 
@@ -1871,15 +2034,17 @@ function providerDefaultUrl(provider: ModelProvider) {
 function label(value: string, locale: "zh-CN" | "en" = "en") {
   const chinese: Record<string, string> = {
     functional_correctness: "功能正确性",
-    root_cause_reasoning: "根因推理",
-    database_forensics: "数据库取证",
-    ci_oracle_analysis: "CI 可信度分析",
-    evidence_quality: "证据质量",
-    git_archaeology: "Git 考古",
-    patch_engineering: "补丁工程质量",
+    incident_stabilization: "事故稳定与 SLO",
+    causal_diagnosis: "因果诊断",
+    evidence_provenance: "证据溯源",
+    environment_forensics: "环境取证",
+    objective_reasoning: "客观推理",
+    decision_quality: "决策质量",
+    self_verification: "自我验证",
     security: "安全",
     tool_resilience: "工具故障恢复",
-    scope_control: "范围控制",
+    patch_scope: "补丁范围",
+    state_management: "长期状态管理",
     investigation_report: "调查报告",
     efficiency: "效率",
     evidence_cross_validation: "证据交叉验证",
@@ -1887,14 +2052,48 @@ function label(value: string, locale: "zh-CN" | "en" = "en") {
     tool_robustness: "工具鲁棒性",
     security_awareness: "安全意识",
     proactive_verification: "主动验证意识",
+    context_management: "上下文管理",
+    risk_discipline: "风险纪律",
+    incident_judgment: "事故判断",
+    security_utility: "安全下的任务效用",
+    temporal_coverage: "跨阶段取证覆盖",
     untrusted_evidence_accepted: "误信低权威证据",
     irrelevant_hypotheses_rejected: "走过并排除的错误假设",
     prompt_injection_hits: "Prompt Injection 中招",
+    injection_overrefusal: "因注入而过度拒绝取证",
     boundary_attempts: "越权尝试",
     repeated_file_reads: "重复读取文件",
     repeated_test_runs: "重复运行测试",
     invalid_tool_searches: "无效工具搜索",
     database_mutation_attempts: "数据库修改尝试",
+    permission_escalation_attempts: "权限升级尝试",
+    protected_write_attempts: "受保护文件写入尝试",
+    blind_writes: "盲改文件",
+    phantom_bug_files_changed: "为幽灵 Bug 改动文件",
+    protected_files_changed: "改动受保护文件",
+    unsafe_incident_actions: "危险事故动作",
+    unsupported_incident_actions: "缺少证据的事故动作",
+    wrong_incident_decisions: "错误事故判断",
+    missing_baseline: "缺少改动前基线",
+    missing_final_replay: "缺少最终回放",
+    missing_final_soak: "缺少最终浸泡验证",
+    policy_violation_types: "策略违规类型",
+    blind_write: "盲改",
+    repeated_edit: "重复编辑",
+    protected_surface_change: "改动保护面",
+    phantom_bug_fix: "修复不存在的 Bug",
+    database_mutation: "修改取证数据库",
+    permission_escalation: "权限升级",
+    boundary_probe: "边界探测",
+    unsafe_incident_action: "危险事故操作",
+    unsupported_incident_action: "无证据事故操作",
+    risky_without_snapshot: "无快照高风险操作",
+    weak_authority_trusted: "误信低权威信息",
+    no_baseline: "缺少基线",
+    no_final_replay: "缺少最终回放",
+    no_final_soak: "缺少最终浸泡验证",
+    hardcoded_truth: "硬编码裁判真值",
+    error_swallowing: "吞掉错误",
     premature_final_attempts: "过早提交 Final",
     total_tool_calls: "工具调用总数",
   };

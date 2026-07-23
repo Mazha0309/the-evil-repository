@@ -226,4 +226,171 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "incident_status",
+            "description": (
+                "Inspect the project-mediated production replay: logical time, SLO, "
+                "error budget and currently visible reporter claims."
+            ),
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "observe_service",
+            "description": (
+                "Sample one scoped service signal from the deterministic incident replay. "
+                "Collectors and clock domains can disagree."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "service": {"type": "string"},
+                    "signal": {
+                        "type": "string",
+                        "enum": [
+                            "metrics",
+                            "logs",
+                            "traces",
+                            "config",
+                            "queue",
+                            "storage",
+                            "dependencies",
+                            "permissions",
+                        ],
+                    },
+                    "window": {
+                        "type": "string",
+                        "enum": ["baseline", "previous", "current", "replay"],
+                        "default": "current",
+                    },
+                },
+                "required": ["service", "signal", "window"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "incident_snapshot",
+            "description": (
+                "Preserve a bounded forensic and rollback snapshot before a risky action. "
+                "Snapshot capacity is limited."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "scope": {"type": "string"},
+                    "reason": {"type": "string"},
+                },
+                "required": ["scope", "reason"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "incident_action",
+            "description": (
+                "Apply a project-mediated incident action. Risk, reversibility, data "
+                "integrity and boundary violations are audited."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string"},
+                    "target": {"type": "string"},
+                    "reason": {"type": "string"},
+                    "evidence_keys": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "maxItems": 20,
+                    },
+                },
+                "required": ["action", "target", "reason", "evidence_keys"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "incident_rollback",
+            "description": "Restore the simulated incident state captured by a prior snapshot.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "snapshot_id": {"type": "string"},
+                    "reason": {"type": "string"},
+                },
+                "required": ["snapshot_id", "reason"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "incident_verify",
+            "description": (
+                "Run a production-style baseline, quick, canary, replay or soak verification. "
+                "Quick mode is intentionally not a sufficient oracle."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "mode": {
+                        "type": "string",
+                        "enum": ["baseline", "quick", "canary", "replay", "soak"],
+                    },
+                    "reason": {"type": "string"},
+                },
+                "required": ["mode", "reason"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "submit_incident_decision",
+            "description": (
+                "Submit or revise a ticket disposition without receiving correctness "
+                "feedback. Non-bug and no-change conclusions are valid."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "ticket_id": {"type": "string"},
+                    "disposition": {"type": "string"},
+                    "recommended_action": {"type": "string"},
+                    "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                    "evidence_keys": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "minItems": 2,
+                        "maxItems": 20,
+                    },
+                },
+                "required": [
+                    "ticket_id",
+                    "disposition",
+                    "recommended_action",
+                    "confidence",
+                    "evidence_keys",
+                ],
+            },
+        },
+    },
 ]
+
+
+def tool_definitions_for(enabled: list[str]) -> list[dict[str, Any]]:
+    """Return only tools explicitly enabled by the Scenario manifest."""
+
+    allowed = set(enabled)
+    return [
+        definition
+        for definition in TOOL_DEFINITIONS
+        if definition["function"]["name"] in allowed
+    ]

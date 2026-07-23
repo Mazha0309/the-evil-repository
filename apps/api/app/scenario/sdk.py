@@ -44,6 +44,27 @@ class CompletionRequirements(BaseModel):
     required_artifacts: dict[str, int] = Field(default_factory=dict)
 
 
+class IncidentRequirements(BaseModel):
+    """Public incident-simulation contract.
+
+    The schedule and correct dispositions stay in ``PreparedScenario.private_state``.
+    This model only tells a candidate which investigation coverage is required.
+    """
+
+    enabled: bool = False
+    logical_tick_seconds: int = 60
+    horizon_ticks: int = 180
+    min_logical_ticks: int = 0
+    min_unique_observations: int = 0
+    min_services_observed: int = 0
+    phase_observations: dict[str, int] = Field(default_factory=dict)
+    required_decisions: list[str] = Field(default_factory=list)
+    require_snapshot_before_risky_action: bool = True
+    required_verification_modes: list[str] = Field(default_factory=list)
+    required_successful_verification_modes: list[str] = Field(default_factory=list)
+    required_verification_sequence: list[str] = Field(default_factory=list)
+
+
 class ScenarioMetadata(BaseModel):
     slug: str
     version: str
@@ -59,6 +80,7 @@ class ScenarioMetadata(BaseModel):
     components: ScenarioComponents
     context_pressure: ContextPressure
     completion: CompletionRequirements = Field(default_factory=CompletionRequirements)
+    incident: IncidentRequirements = Field(default_factory=IncidentRequirements)
     scoring: dict[str, int]
     localizations: dict[str, dict[str, str]] = Field(default_factory=dict)
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -95,7 +117,13 @@ class Scenario(ABC):
         return load_scenario(root)
 
     @abstractmethod
-    def prepare(self, output: Path, *, scale: float = 1.0) -> PreparedScenario:
+    def prepare(
+        self,
+        output: Path,
+        *,
+        scale: float = 1.0,
+        instance_seed: int | None = None,
+    ) -> PreparedScenario:
         """Build an isolated, deterministic candidate workspace."""
 
     def run(
@@ -121,14 +149,31 @@ class Scenario(ABC):
         destination: Path,
     ) -> Path:
         destination.parent.mkdir(parents=True, exist_ok=True)
+        event_data = (
+            "\n".join(
+                json.dumps(event, ensure_ascii=False, sort_keys=True)
+                for event in result.events
+            )
+            + ("\n" if result.events else "")
+        ).encode()
+        artifact_payloads = {
+            name: value.encode() for name, value in result.artifacts.items()
+        }
         manifest = {
             "platform_version": VERSION,
-            "scenario": self.metadata.model_dump(mode="json"),
+            "scenario": prepared.metadata.model_dump(mode="json"),
             "result": {
                 "final_response": result.final_response,
                 "elapsed_seconds": result.elapsed_seconds,
                 "tool_calls": result.tool_calls,
                 "artifacts": result.artifacts,
+            },
+            "integrity": {
+                "events_sha256": hashlib.sha256(event_data).hexdigest(),
+                "artifact_sha256": {
+                    name: hashlib.sha256(payload).hexdigest()
+                    for name, payload in artifact_payloads.items()
+                },
             },
         }
         with tarfile.open(destination, "w:gz") as archive:
@@ -136,8 +181,10 @@ class Scenario(ABC):
             info = tarfile.TarInfo("run.json")
             info.size = len(data)
             archive.addfile(info, io.BytesIO(data))
-            for name, value in result.artifacts.items():
-                payload = value.encode()
+            event_info = tarfile.TarInfo("events.jsonl")
+            event_info.size = len(event_data)
+            archive.addfile(event_info, io.BytesIO(event_data))
+            for name, payload in artifact_payloads.items():
                 artifact_info = tarfile.TarInfo(f"artifacts/{safe_archive_name(name)}")
                 artifact_info.size = len(payload)
                 archive.addfile(artifact_info, io.BytesIO(payload))

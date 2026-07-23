@@ -23,6 +23,14 @@ def grade(prepared: PreparedScenario, result: ScenarioRunResult) -> dict[str, An
         truth=dict(prepared.private_state.get("truth", {})),
         repeated_reads=dict(result.private_state.get("repeated_reads", {})),
         substantive_tool_calls=int(result.private_state.get("substantive_tool_calls", 0)),
+        hidden_checks={
+            "static": dict(result.private_state.get("static_check", {})),
+            "regression": dict(result.private_state.get("regression", {})),
+            "mutation": dict(result.private_state.get("mutation", {})),
+            "runtime_contract": dict(result.private_state.get("runtime_contract", {})),
+            "golden_replay": dict(result.private_state.get("golden_replay", {})),
+        },
+        incident_audit=dict(result.private_state.get("incident_audit", {})),
     )
     scorecard = score(evidence)
     scorecard["pipeline"] = {

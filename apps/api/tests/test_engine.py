@@ -2,6 +2,8 @@ import uuid
 from pathlib import Path
 from types import SimpleNamespace
 
+import app.runner.engine as engine_module
+from app.models import RunStatus
 from app.runner.engine import (
     AgentEngine,
     completion_actions_from_events,
@@ -46,6 +48,7 @@ def test_scenario_run_passes_prepared_scenario_to_agent_engine(
         faults=FaultController([]),
     )
     monkeypatch.setattr(engine, "_cancelled", lambda: False)
+    monkeypatch.setattr(engine, "_wait_for_resume", lambda: True)
     monkeypatch.setattr(engine, "_completion_gaps", lambda: [])
     monkeypatch.setattr(
         engine,
@@ -58,6 +61,15 @@ def test_scenario_run_passes_prepared_scenario_to_agent_engine(
     assert result.final_response == "Investigation complete."
     assert result.private_state["input_tokens"] == 17
     assert result.private_state["output_tokens"] == 4
+    assert result.events[0] == {
+        "kind": "model.request",
+        "turn": 1,
+        "context_messages": 2,
+        "tool_calls": 0,
+    }
+    assert result.events[1]["kind"] == "assistant.message"
+    assert result.events[1]["turn"] == 1
+    assert result.events[1]["duration_ms"] >= 0
 
 
 def test_completion_actions_require_observed_investigation_tools() -> None:
@@ -115,3 +127,62 @@ def test_substantive_call_count_limits_identical_padding() -> None:
     )
 
     assert substantive_tool_call_count(events) == 3
+
+
+def test_pause_waits_at_safe_boundary_and_excludes_paused_time(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    scenario = load_scenario(SCENARIO_ROOT)
+    prepared = PreparedScenario(
+        scenario_root=SCENARIO_ROOT,
+        workspace=tmp_path,
+        metadata=scenario.metadata,
+    )
+    engine = AgentEngine(
+        run_id=uuid.uuid4(),
+        client=FinalAnswerClient(),
+        sandbox=SimpleNamespace(),
+        prepared=prepared,
+        faults=FaultController([]),
+    )
+    run = SimpleNamespace(
+        status=RunStatus.running,
+        config={"pause_requested": True},
+        stage="Candidate investigation",
+    )
+    emitted: list[tuple[str, dict]] = []
+    clock = [100.0]
+
+    class FakeSession:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def get(self, _model, _identifier):
+            return run
+
+        def commit(self):
+            return None
+
+    def release_pause(seconds: float) -> None:
+        clock[0] += seconds
+        run.config = {"pause_requested": False}
+
+    monkeypatch.setattr(engine_module, "SessionLocal", FakeSession)
+    monkeypatch.setattr(
+        engine_module,
+        "append_event",
+        lambda _session, _run_id, kind, payload: emitted.append((kind, payload)),
+    )
+    monkeypatch.setattr(engine_module.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(engine_module.time, "sleep", release_pause)
+    engine.started = 90.0
+
+    assert engine._wait_for_resume() is True
+    assert engine.paused_seconds == 0.5
+    assert engine._active_elapsed() == 10.0
+    assert run.stage == "Candidate investigation"
+    assert [kind for kind, _ in emitted] == ["run.paused", "run.resumed"]

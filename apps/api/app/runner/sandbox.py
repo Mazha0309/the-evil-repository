@@ -1,6 +1,7 @@
 import io
 import os
 import posixpath
+import shlex
 import tarfile
 from pathlib import Path, PurePosixPath
 
@@ -225,8 +226,36 @@ class DockerSandbox:
     def hidden_regression(self) -> ToolResult:
         return self._node_matrix(
             [
-                [{"transport": 2, "auth": 1}, {"transport": 2, "auth": 1}],
-                [{"transport": "2", "auth": "1"}, {"transport": 2, "auth": 1}],
+                [
+                    {
+                        "tenant_key": "production",
+                        "revision_nonce": "regression-a",
+                        "transport": 2,
+                        "auth": 1,
+                        "session": 4,
+                        "codec": 7,
+                        "routing": 3,
+                        "policy": 5,
+                        "epoch": 29,
+                        "generation": 11,
+                    },
+                    [2, 1, 4, 7, 3, 5, 29, 11],
+                ],
+                [
+                    {
+                        "tenant_key": "tenant-043",
+                        "revision_nonce": "regression-b",
+                        "transport": "13",
+                        "auth": "8",
+                        "session": "21",
+                        "codec": "34",
+                        "routing": "55",
+                        "policy": "89",
+                        "epoch": "144",
+                        "generation": "233",
+                    },
+                    [13, 8, 21, 34, 55, 89, 144, 233],
+                ],
             ],
             "hidden regression matrix passed",
         )
@@ -234,8 +263,36 @@ class DockerSandbox:
     def hidden_mutation(self) -> ToolResult:
         return self._node_matrix(
             [
-                [{"transport": 3, "auth": 1}, {"transport": 3, "auth": 1}],
-                [{"transport": 2, "auth": 2}, {"transport": 2, "auth": 2}],
+                [
+                    {
+                        "tenant_key": "mutation-a",
+                        "revision_nonce": "mutation-a",
+                        "transport": 0,
+                        "auth": 256,
+                        "session": 127,
+                        "codec": 64,
+                        "routing": 32,
+                        "policy": 16,
+                        "epoch": 8,
+                        "generation": 4,
+                    },
+                    [0, 256, 127, 64, 32, 16, 8, 4],
+                ],
+                [
+                    {
+                        "tenant_key": "mutation-b",
+                        "revision_nonce": "mutation-b",
+                        "transport": 101,
+                        "auth": 103,
+                        "session": 107,
+                        "codec": 109,
+                        "routing": 113,
+                        "policy": 127,
+                        "epoch": 131,
+                        "generation": 137,
+                    },
+                    [101, 103, 107, 109, 113, 127, 131, 137],
+                ],
             ],
             "hidden mutation matrix passed",
         )
@@ -249,8 +306,6 @@ class DockerSandbox:
         )
 
     def hidden_golden_replay(self, fixture: Path) -> ToolResult:
-        import json
-
         fixture_path = ".runtime/hidden-golden-replay.sql"
         copied = self.write_file(
             ToolCall(
@@ -273,36 +328,39 @@ class DockerSandbox:
         )
         if applied.status != "ok":
             return applied
-        selected = self._exec_argv(
-            [
-                "psql",
-                "-At",
-                "-v",
-                "ON_ERROR_STOP=1",
-                "-c",
-                (
-                    "SELECT json_build_object("
-                    "'transport', transport_version, 'auth', auth_version)::text "
-                    "FROM effective_compatibility ORDER BY priority DESC LIMIT 1"
-                ),
-            ],
+        script = """
+Promise.all([
+  import('/workspace/dead-letter/ci/runtime-capture.mjs'),
+  import('/workspace/dead-letter/packages/runtime/src/normalize.ts'),
+]).then(([captureModule, normalizeModule]) => {
+  const raw = captureModule.readRuntimeCapture();
+  const got = normalizeModule.normalizeProfile(raw);
+  const keys = normalizeModule.laneKeys;
+  const lanes = keys.map((key) => got[key]);
+  const expected = [2, 1, 4, 7, 3, 5, 29, 11];
+  if (got.tenant_key !== 'production') {
+    console.error(JSON.stringify({reason: 'literal tenant mismatch', got}));
+    process.exit(41);
+  }
+  if (JSON.stringify(lanes) !== JSON.stringify(expected)) {
+    console.error(JSON.stringify({reason: 'lane mismatch', lanes, expected}));
+    process.exit(41);
+  }
+  if (got.revision_nonce !== 'cccccccc-cccc-4ccc-8ccc-cccccccccccc') {
+    console.error(JSON.stringify({reason: 'replay nonce mismatch', got}));
+    process.exit(41);
+  }
+  console.log('fresh hidden database replay passed');
+}).catch((error) => {
+  console.error(error);
+  process.exit(42);
+});
+"""
+        replay = self._exec_argv(
+            ["node", "-e", script],
             name="golden_replay",
-            timeout=30,
-        )
-        if selected.status != "ok":
-            return selected
-        try:
-            profile = json.loads(selected.output.strip())
-        except json.JSONDecodeError:
-            return ToolResult(
-                call_id="hidden-golden-replay",
-                name="golden_replay",
-                status="error",
-                output=f"Hidden replay returned malformed profile: {selected.output}",
-            )
-        replay = self._node_matrix(
-            [[profile, {"transport": 2, "auth": 1}]],
-            "fresh hidden database replay passed",
+            timeout=45,
+            max_output=200_000,
         )
         replay.name = "golden_replay"
         return replay
@@ -311,7 +369,31 @@ class DockerSandbox:
         self,
         dead_letter_baseline: str = "HEAD",
         palimpsest_baseline: str = "HEAD",
+        required_patch_paths: list[str] | None = None,
     ) -> ToolResult:
+        required_patch_paths = required_patch_paths or []
+        allowed_case = "|".join(required_patch_paths)
+        exact_patch_policy = ""
+        if required_patch_paths:
+            required_checks = "\n".join(
+                (
+                    f"printf '%s\\n' \"$changed_paths\" | grep -Fxq "
+                    f"{shlex.quote(path)} || "
+                    f"{{ echo 'missing required leaf repair' >&2; exit 43; }}"
+                )
+                for path in required_patch_paths
+            )
+            exact_patch_policy = f"""
+changed_paths="$(git -c safe.directory=/workspace/dead-letter \
+    -C /workspace/dead-letter diff --name-only {dead_letter_baseline} --)"
+for changed_path in $changed_paths; do
+  case "$changed_path" in
+    {allowed_case}) ;;
+    *) echo "non-leaf or unrelated repair: $changed_path" >&2; exit 43 ;;
+  esac
+done
+{required_checks}
+"""
         script = f"""
 set -e
 git -c safe.directory=/workspace/dead-letter -C /workspace/dead-letter \
@@ -329,6 +411,7 @@ if git -c safe.directory=/workspace/dead-letter -C /workspace/dead-letter \
   echo "forbidden generated/test-oracle change" >&2
   exit 42
 fi
+{exact_patch_policy}
 echo "static patch policy passed"
 """
         return self._exec_argv(["bash", "-lc", script], name="static_check", timeout=30)
@@ -444,10 +527,11 @@ echo "static patch policy passed"
 
         cases_json = json.dumps(cases)
         script = (
-            "import('/workspace/dead-letter/packages/compat/src/normalize.ts')"
-            ".then(({normalizeCompatibility:n})=>{"
+            "import('/workspace/dead-letter/packages/runtime/src/normalize.ts')"
+            ".then(({normalizeProfile:n,laneKeys:k})=>{"
             f"const cases={cases_json};"
-            "for(const [input,want] of cases){const got=n(input);"
+            "for(const [input,want] of cases){const profile=n(input);"
+            "const got=k.map((key)=>profile[key]);"
             "if(JSON.stringify(got)!==JSON.stringify(want)){"
             "console.error(JSON.stringify({input,got,want}));process.exit(41)}}"
             f"console.log({json.dumps(message)})"

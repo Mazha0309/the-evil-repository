@@ -180,6 +180,53 @@ def cancel_run(
     return run
 
 
+@router.post("/{run_id}/pause", response_model=RunRead)
+def pause_run(
+    run_id: uuid.UUID,
+    session: Session = Depends(get_session),
+    user: UserAccount = Depends(csrf_protection),
+) -> BenchmarkRun:
+    run = session.get(BenchmarkRun, run_id)
+    if not can_access_run(session, user, run):
+        raise HTTPException(status_code=404, detail="Run not found")
+    if run.status != RunStatus.running:
+        raise HTTPException(
+            status_code=409,
+            detail="Only an active candidate investigation can be paused",
+        )
+    config = dict(run.config)
+    if config.get("pause_requested") is True:
+        return run
+    config["pause_requested"] = True
+    run.config = config
+    run.stage = "Pause requested"
+    append_event(session, run.id, "run.pause_requested", {"reason": "user"})
+    session.commit()
+    session.refresh(run)
+    return run
+
+
+@router.post("/{run_id}/resume", response_model=RunRead)
+def resume_run(
+    run_id: uuid.UUID,
+    session: Session = Depends(get_session),
+    user: UserAccount = Depends(csrf_protection),
+) -> BenchmarkRun:
+    run = session.get(BenchmarkRun, run_id)
+    if not can_access_run(session, user, run):
+        raise HTTPException(status_code=404, detail="Run not found")
+    config = dict(run.config)
+    if run.status != RunStatus.running or config.get("pause_requested") is not True:
+        raise HTTPException(status_code=409, detail="Run is not paused")
+    config["pause_requested"] = False
+    run.config = config
+    run.stage = "Resume requested"
+    append_event(session, run.id, "run.resume_requested", {"reason": "user"})
+    session.commit()
+    session.refresh(run)
+    return run
+
+
 def active_run_count(session: Session) -> int:
     return (
         session.scalar(

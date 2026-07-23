@@ -17,6 +17,7 @@ if [[ -f "$seed_file" ]]; then
       --username=sandbox \
       --auth-local=trust \
       --auth-host=reject \
+      --encoding=UTF8 \
       --no-locale >/dev/null
   fi
   "$postgres_bin/pg_ctl" \
