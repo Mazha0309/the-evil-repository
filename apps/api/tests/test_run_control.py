@@ -5,7 +5,7 @@ import pytest
 from fastapi import HTTPException
 
 import app.api.runs as runs_module
-from app.api.runs import cancel_run, pause_run, resume_run
+from app.api.runs import cancel_run, model_snapshot, pause_run, resume_run
 from app.models import RunStatus, UserRole
 from app.schemas import RunCreate
 
@@ -22,6 +22,28 @@ class FakeSession:
 
     def refresh(self, _value: object) -> None:
         return None
+
+
+def test_model_snapshot_freezes_only_non_secret_identity() -> None:
+    profile_id = uuid.uuid4()
+    snapshot = model_snapshot(
+        SimpleNamespace(
+            id=profile_id,
+            name="DeepSeek R1",
+            provider=SimpleNamespace(value="openai_compatible"),
+            model_id="deepseek-reasoner",
+            base_url="https://provider.invalid",
+            encrypted_api_key="secret",
+            parameters={"temperature": 0.2},
+        )
+    )
+
+    assert snapshot == {
+        "profile_id": str(profile_id),
+        "name": "DeepSeek R1",
+        "provider": "openai_compatible",
+        "model_id": "deepseek-reasoner",
+    }
 
 
 def test_run_budget_soft_limits_must_precede_hard_limits() -> None:

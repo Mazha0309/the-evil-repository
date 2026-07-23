@@ -39,6 +39,9 @@ Versioning while individual benchmark scenarios retain independent versions.
   leaderboard.
 - Candidate events now carry a stable `candidate/root` identity, and archives
   include derived Agent Graph and resource-ledger artifacts.
+- Run creation now freezes non-secret candidate and semantic-judge identity;
+  run tables and detail/result headers show the profile name and Provider model
+  ID without exposing credentials or endpoints.
 - Resource accounting deliberately does not estimate or rank dollar cost:
   cache reads/writes, hidden reasoning Tokens, batch/service tiers, discounts,
   and compatible-API usage semantics are not reliably comparable.

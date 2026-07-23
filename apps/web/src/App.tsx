@@ -81,6 +81,10 @@ import {
   serviceTierOptions,
   type ModelParameterDraft,
 } from "./lib/modelParameters";
+import {
+  resolveRunModel,
+  type RunModelIdentity,
+} from "./lib/runModels";
 import type {
   AuthConfig,
   AuthResponse,
@@ -312,6 +316,7 @@ function DashboardPage() {
     queryFn: api.runs,
     refetchInterval: 5_000,
   });
+  const models = useQuery({ queryKey: ["models"], queryFn: api.models });
   const tasks = useQuery({ queryKey: ["tasks"], queryFn: api.tasks });
   const data = summary.data;
   return (
@@ -373,7 +378,11 @@ function DashboardPage() {
             )}
             action={<Link to="/runs">{text("查看全部", "View all")}</Link>}
           />
-          <RunTable runs={runs.data ?? []} compact />
+          <RunTable
+            runs={runs.data ?? []}
+            models={models.data ?? []}
+            compact
+          />
         </section>
         <section className="panel">
           <PanelHeading
@@ -1103,6 +1112,7 @@ function RunsPage() {
     queryFn: api.runs,
     refetchInterval: 4_000,
   });
+  const models = useQuery({ queryKey: ["models"], queryFn: api.models });
   return (
     <>
       <PageHeader
@@ -1131,7 +1141,7 @@ function RunsPage() {
             )}
           </span>
         </div>
-        <RunTable runs={runs.data ?? []} />
+        <RunTable runs={runs.data ?? []} models={models.data ?? []} />
       </section>
     </>
   );
@@ -1458,6 +1468,11 @@ function RunDetailPage() {
     queryFn: api.tasks,
     staleTime: 60_000,
   });
+  const models = useQuery({
+    queryKey: ["models"],
+    queryFn: api.models,
+    staleTime: 60_000,
+  });
   const pauseRun = useMutation({
     mutationFn: () => api.pauseRun(runId),
     onSuccess: (updated) => {
@@ -1503,6 +1518,12 @@ function RunDetailPage() {
   const taskManifest = tasks.data?.find(
     (task) => task.id === data.task_id,
   )?.manifest;
+  const candidateModel = resolveRunModel(
+    data,
+    "candidate",
+    models.data ?? [],
+  );
+  const judgeModel = resolveRunModel(data, "judge", models.data ?? []);
   const completion = taskManifest?.completion;
   const pauseRequested = data.config.pause_requested === true;
   const maximumScore = Math.max(1, data.scorecard.maximum ?? 1_200);
@@ -1516,6 +1537,21 @@ function RunDetailPage() {
             <StatusPill status={data.status} />
             <span>{shortId(data.id)}</span>
             <span>{new Date(data.created_at).toLocaleString(locale)}</span>
+          </div>
+          <div className="run-model-strip">
+            <RunModelBadge
+              identity={candidateModel}
+              label={text("候选模型", "Candidate")}
+              unknown={text("未知模型", "Unknown model")}
+            />
+            {data.judge_model_id && (
+              <RunModelBadge
+                identity={judgeModel}
+                label={text("语义裁判", "Semantic judge")}
+                unknown={text("未知裁判", "Unknown judge")}
+                judge
+              />
+            )}
           </div>
           <h1>{stageLabel(data.stage, locale)}</h1>
           <p>
@@ -2297,9 +2333,11 @@ function SettingsPage() {
 
 function RunTable({
   runs,
+  models,
   compact = false,
 }: {
   runs: Run[];
+  models: ModelProfile[];
   compact?: boolean;
 }) {
   const { locale, text } = useLocale();
@@ -2320,6 +2358,7 @@ function RunTable({
         <thead>
           <tr>
             <th>{text("运行", "Run")}</th>
+            <th>{text("模型", "Model")}</th>
             <th>{text("状态", "Status")}</th>
             <th>{text("阶段", "Stage")}</th>
             <th>{text("工具", "Tools")}</th>
@@ -2329,37 +2368,73 @@ function RunTable({
           </tr>
         </thead>
         <tbody>
-          {runs.slice(0, compact ? 8 : 200).map((run) => (
-            <tr key={run.id}>
-              <td>
-                <code>{shortId(run.id)}</code>
-              </td>
-              <td>
-                <StatusPill status={run.status} />
-              </td>
-              <td>
-                <span className="table-primary">
-                  {stageLabel(run.stage, locale)}
-                </span>
-              </td>
-              <td>{run.tool_calls}</td>
-              <td>
-                <strong className={run.score != null ? "score-value" : ""}>
-                  {run.score == null ? "—" : Math.round(run.score)}
-                </strong>
-              </td>
-              {!compact && (
-                <td>{new Date(run.created_at).toLocaleString(locale)}</td>
-              )}
-              <td>
-                <Link className="row-link" to={`/runs/${run.id}`}>
-                  <ArrowRight size={14} />
-                </Link>
-              </td>
-            </tr>
-          ))}
+          {runs.slice(0, compact ? 8 : 200).map((run) => {
+            const model = resolveRunModel(run, "candidate", models);
+            return (
+              <tr key={run.id}>
+                <td>
+                  <code>{shortId(run.id)}</code>
+                </td>
+                <td>
+                  <span className="table-model">
+                    <strong>{model.name ?? text("未知模型", "Unknown model")}</strong>
+                    {model.modelId && model.modelId !== model.name && (
+                      <small>{model.modelId}</small>
+                    )}
+                  </span>
+                </td>
+                <td>
+                  <StatusPill status={run.status} />
+                </td>
+                <td>
+                  <span className="table-primary">
+                    {stageLabel(run.stage, locale)}
+                  </span>
+                </td>
+                <td>{run.tool_calls}</td>
+                <td>
+                  <strong className={run.score != null ? "score-value" : ""}>
+                    {run.score == null ? "—" : Math.round(run.score)}
+                  </strong>
+                </td>
+                {!compact && (
+                  <td>{new Date(run.created_at).toLocaleString(locale)}</td>
+                )}
+                <td>
+                  <Link className="row-link" to={`/runs/${run.id}`}>
+                    <ArrowRight size={14} />
+                  </Link>
+                </td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+function RunModelBadge({
+  identity,
+  label,
+  unknown,
+  judge = false,
+}: {
+  identity: RunModelIdentity;
+  label: string;
+  unknown: string;
+  judge?: boolean;
+}) {
+  return (
+    <div className={`run-model-badge${judge ? " run-model-badge--judge" : ""}`}>
+      {judge ? <Radar size={15} /> : <Bot size={15} />}
+      <span>
+        <small>{label}</small>
+        <strong>{identity.name ?? unknown}</strong>
+      </span>
+      {identity.modelId && identity.modelId !== identity.name && (
+        <code>{identity.modelId}</code>
+      )}
     </div>
   );
 }
