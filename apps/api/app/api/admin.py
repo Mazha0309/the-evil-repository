@@ -47,12 +47,17 @@ def admin_summary(
         users=count(session, UserAccount.id),
         enabled_users=count(session, UserAccount.id, UserAccount.enabled.is_(True)),
         admins=count(session, UserAccount.id, UserAccount.role == UserRole.admin),
-        models=count(session, ModelProfile.id),
-        total_runs=count(session, BenchmarkRun.id),
+        models=count(session, ModelProfile.id, ModelProfile.archived_at.is_(None)),
+        total_runs=count(
+            session,
+            BenchmarkRun.id,
+            BenchmarkRun.archived_at.is_(None),
+        ),
         active_runs=count(
             session,
             BenchmarkRun.id,
             BenchmarkRun.status.in_([RunStatus.queued, RunStatus.preparing, RunStatus.running, RunStatus.scoring]),
+            BenchmarkRun.archived_at.is_(None),
         ),
     )
 
@@ -180,7 +185,15 @@ def server_monitor(
     database_started = time.perf_counter()
     session.execute(text("SELECT 1"))
     database_latency_ms = round((time.perf_counter() - database_started) * 1_000, 2)
-    queue_counts = {item.value: count(session, BenchmarkRun.id, BenchmarkRun.status == item) for item in RunStatus}
+    queue_counts = {
+        item.value: count(
+            session,
+            BenchmarkRun.id,
+            BenchmarkRun.status == item,
+            BenchmarkRun.archived_at.is_(None),
+        )
+        for item in RunStatus
+    }
     return ServerMonitor(
         observed_at=now,
         api=api_metrics(),

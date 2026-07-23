@@ -1,13 +1,15 @@
 import uuid
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.crypto import SecretBox
 from app.database import get_session
-from app.models import ModelProfile, UserAccount, UserModelAccess, UserRole
+from app.model_identity import model_snapshot
+from app.models import BenchmarkRun, ModelProfile, RunStatus, UserAccount, UserModelAccess, UserRole
 from app.schemas import ModelCreate, ModelRead, ModelUpdate
 from app.security import can_access_model, csrf_protection, current_user
 
@@ -35,7 +37,7 @@ def list_models(
     session: Session = Depends(get_session),
     user: UserAccount = Depends(current_user),
 ) -> list[ModelRead]:
-    statement = select(ModelProfile)
+    statement = select(ModelProfile).where(ModelProfile.archived_at.is_(None))
     if user.role != UserRole.admin:
         statement = statement.join(
             UserModelAccess,
@@ -58,6 +60,7 @@ def create_model(
         .where(
             UserModelAccess.user_id == user.id,
             ModelProfile.name == payload.name,
+            ModelProfile.archived_at.is_(None),
         )
     )
     if duplicate:
@@ -91,8 +94,10 @@ def update_model(
     session: Session = Depends(get_session),
     user: UserAccount = Depends(csrf_protection),
 ) -> ModelRead:
-    profile = session.get(ModelProfile, model_id)
-    if not can_access_model(session, user, profile):
+    profile = session.scalar(
+        select(ModelProfile).where(ModelProfile.id == model_id).with_for_update()
+    )
+    if not can_access_model(session, user, profile) or profile.archived_at is not None:
         raise HTTPException(status_code=404, detail="Model profile not found")
     assert profile is not None
 
@@ -107,6 +112,7 @@ def update_model(
                 UserModelAccess.user_id == user.id,
                 ModelProfile.name == payload.name,
                 ModelProfile.id != profile.id,
+                ModelProfile.archived_at.is_(None),
             )
         )
         if duplicate:
@@ -143,8 +149,74 @@ def delete_model(
     session: Session = Depends(get_session),
     user: UserAccount = Depends(csrf_protection),
 ) -> None:
-    profile = session.get(ModelProfile, model_id)
-    if not can_access_model(session, user, profile):
+    profile = session.scalar(
+        select(ModelProfile).where(ModelProfile.id == model_id).with_for_update()
+    )
+    if not can_access_model(session, user, profile) or profile.archived_at is not None:
         raise HTTPException(status_code=404, detail="Model profile not found")
-    session.delete(profile)
+    assert profile is not None
+
+    active_statuses = (
+        RunStatus.queued,
+        RunStatus.preparing,
+        RunStatus.running,
+        RunStatus.scoring,
+    )
+    active_runs = (
+        session.scalar(
+            select(func.count(BenchmarkRun.id)).where(
+                or_(
+                    BenchmarkRun.candidate_model_id == model_id,
+                    BenchmarkRun.judge_model_id == model_id,
+                ),
+                BenchmarkRun.status.in_(active_statuses),
+            )
+        )
+        or 0
+    )
+    if active_runs:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Model profile is used by {active_runs} active run(s). "
+                "Cancel or finish them before deleting it."
+            ),
+        )
+
+    snapshot = model_snapshot(profile)
+    referenced_runs = session.scalars(
+        select(BenchmarkRun).where(
+            or_(
+                BenchmarkRun.candidate_model_id == model_id,
+                BenchmarkRun.judge_model_id == model_id,
+            )
+        )
+    ).all()
+    for run in referenced_runs:
+        config = dict(run.config or {})
+        if (
+            run.candidate_model_id == model_id
+            and not _valid_model_snapshot(config.get("candidate_model_snapshot"))
+        ):
+            config["candidate_model_snapshot"] = snapshot
+        if (
+            run.judge_model_id == model_id
+            and not _valid_model_snapshot(config.get("judge_model_snapshot"))
+        ):
+            config["judge_model_snapshot"] = snapshot
+        run.config = config
+
+    profile.enabled = False
+    profile.encrypted_api_key = None
+    profile.base_url = "https://archived.invalid"
+    profile.native_tools = False
+    profile.parameters = {}
+    profile.archived_at = datetime.now(UTC)
     session.commit()
+
+
+def _valid_model_snapshot(value: object) -> bool:
+    return isinstance(value, dict) and all(
+        isinstance(value.get(field), str) and bool(value[field])
+        for field in ("profile_id", "name", "provider", "model_id")
+    )

@@ -69,7 +69,7 @@ import AccountPage from "./components/AccountPage";
 import AdminPage from "./components/AdminPage";
 import AuthScreen from "./components/AuthScreen";
 import LiveRunMonitor from "./components/LiveRunMonitor";
-import { api } from "./lib/api";
+import { api, ApiError } from "./lib/api";
 import { useLocale } from "./lib/i18n";
 import {
   buildModelParameters,
@@ -610,7 +610,9 @@ function ModelsPage() {
   const models = useQuery({ queryKey: ["models"], queryFn: api.models });
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<ModelProfile | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<ModelProfile | null>(null);
   const [error, setError] = useState("");
+  const [deleteError, setDeleteError] = useState("");
   const [provider, setProvider] = useState<ModelProvider>("openai_responses");
   const [baseUrl, setBaseUrl] = useState("");
   const [parameterDraft, setParameterDraft] = useState<ModelParameterDraft>(
@@ -633,10 +635,25 @@ function ModelsPage() {
   });
   const remove = useMutation({
     mutationFn: api.deleteModel,
-    onSuccess: () =>
-      void queryClient.invalidateQueries({ queryKey: ["models"] }),
-    onError: (cause) =>
-      setError(cause instanceof Error ? cause.message : String(cause)),
+    onSuccess: () => {
+      setConfirmDelete(null);
+      setDeleteError("");
+      void queryClient.invalidateQueries({ queryKey: ["models"] });
+      void queryClient.invalidateQueries({ queryKey: ["summary"] });
+      void queryClient.invalidateQueries({ queryKey: ["admin-summary"] });
+    },
+    onError: (cause) => {
+      setDeleteError(
+        cause instanceof ApiError && cause.status === 409
+          ? text(
+              "仍有进行中的测试使用此模型。请先完成或取消这些测试，再删除模型配置。",
+              "Active runs still use this model. Finish or cancel them before deleting the profile.",
+            )
+          : cause instanceof Error
+            ? cause.message
+            : String(cause),
+      );
+    },
   });
   const openCreate = () => {
     setEditing(null);
@@ -660,6 +677,15 @@ function ModelsPage() {
     setOpen(false);
     setEditing(null);
     setError("");
+  };
+  const openDelete = (model: ModelProfile) => {
+    setDeleteError("");
+    setConfirmDelete(model);
+  };
+  const closeDelete = () => {
+    if (remove.isPending) return;
+    setConfirmDelete(null);
+    setDeleteError("");
   };
   const updateParameter = (key: keyof ModelParameterDraft, value: string) => {
     setParameterDraft((current) => ({ ...current, [key]: value }));
@@ -732,7 +758,8 @@ function ModelsPage() {
                 </button>
                 <button
                   className="icon-button icon-button--danger"
-                  onClick={() => remove.mutate(model.id)}
+                  disabled={remove.isPending}
+                  onClick={() => openDelete(model)}
                   title={text("删除模型配置", "Delete model profile")}
                 >
                   <Trash2 size={15} />
@@ -801,6 +828,64 @@ function ModelsPage() {
           </button>
         )}
       </div>
+      {confirmDelete && (
+        <Modal
+          title={text("删除这个模型配置？", "Delete this model profile?")}
+          onClose={closeDelete}
+        >
+          <div className="destructive-confirmation">
+            <div className="destructive-confirmation__warning">
+              <OctagonAlert size={22} />
+              <div>
+                <strong>
+                  {text(
+                    "配置将从模型注册表中移除。",
+                    "The profile will be removed from the model registry.",
+                  )}
+                </strong>
+                <p>
+                  {text(
+                    "API 密钥、BaseURL 与推理参数会被清除；历史运行及其冻结的模型身份会保留。若仍有进行中的测试使用该配置，删除会被阻止。",
+                    "The API key, Base URL, and inference parameters will be erased. Historical runs and their frozen model identity remain. Deletion is blocked while an active run uses this profile.",
+                  )}
+                </p>
+              </div>
+            </div>
+            <dl>
+              <div>
+                <dt>{text("配置名称", "Profile")}</dt>
+                <dd>{confirmDelete.name}</dd>
+              </div>
+              <div>
+                <dt>{text("模型", "Model")}</dt>
+                <dd>{confirmDelete.model_id}</dd>
+              </div>
+            </dl>
+            {deleteError && <div className="inline-error">{deleteError}</div>}
+            <div className="modal__actions">
+              <button
+                className="button button--ghost"
+                type="button"
+                disabled={remove.isPending}
+                onClick={closeDelete}
+              >
+                {text("返回", "Go back")}
+              </button>
+              <button
+                className="button button--danger"
+                type="button"
+                disabled={remove.isPending}
+                onClick={() => remove.mutate(confirmDelete.id)}
+              >
+                <Trash2 size={14} />
+                {remove.isPending
+                  ? text("正在删除…", "Deleting…")
+                  : text("确认删除配置", "Delete profile")}
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
       {open && (
         <Modal
           title={
@@ -1107,6 +1192,7 @@ function ModelsPage() {
 
 function RunsPage() {
   const { text } = useLocale();
+  const [archiveTarget, setArchiveTarget] = useState<Run | null>(null);
   const runs = useQuery({
     queryKey: ["runs"],
     queryFn: api.runs,
@@ -1141,8 +1227,19 @@ function RunsPage() {
             )}
           </span>
         </div>
-        <RunTable runs={runs.data ?? []} models={models.data ?? []} />
+        <RunTable
+          runs={runs.data ?? []}
+          models={models.data ?? []}
+          onArchive={setArchiveTarget}
+        />
       </section>
+      {archiveTarget && (
+        <ArchiveRunDialog
+          run={archiveTarget}
+          onClose={() => setArchiveTarget(null)}
+          onArchived={() => setArchiveTarget(null)}
+        />
+      )}
     </>
   );
 }
@@ -1429,12 +1526,14 @@ function NewRunPage() {
 function RunDetailPage() {
   const { locale, text } = useLocale();
   const { runId = "" } = useParams();
+  const navigate = useNavigate();
   const queryClient = useQueryClient();
   const eventQueryKey = ["events", runId] as const;
   const [tab, setTab] = useState<
     "live" | "overview" | "graph" | "audit" | "score"
   >("live");
   const [confirmCancel, setConfirmCancel] = useState(false);
+  const [confirmArchive, setConfirmArchive] = useState(false);
   const [cancelError, setCancelError] = useState("");
   const run = useQuery({
     queryKey: ["run", runId],
@@ -1870,6 +1969,14 @@ function RunDetailPage() {
             <X size={14} /> {text("取消运行", "Cancel run")}
           </button>
         )}
+        {isTerminal(data.status) && (
+          <button
+            className="button button--danger"
+            onClick={() => setConfirmArchive(true)}
+          >
+            <Trash2 size={14} /> {text("移除结果", "Remove result")}
+          </button>
+        )}
       </div>
       {confirmCancel && (
         <Modal
@@ -1928,7 +2035,120 @@ function RunDetailPage() {
           </div>
         </Modal>
       )}
+      {confirmArchive && (
+        <ArchiveRunDialog
+          run={data}
+          onClose={() => setConfirmArchive(false)}
+          onArchived={() => navigate("/runs")}
+        />
+      )}
     </>
+  );
+}
+
+function ArchiveRunDialog({
+  run,
+  onClose,
+  onArchived,
+}: {
+  run: Run;
+  onClose: () => void;
+  onArchived: () => void;
+}) {
+  const { locale, text } = useLocale();
+  const queryClient = useQueryClient();
+  const [error, setError] = useState("");
+  const archive = useMutation({
+    mutationFn: () => api.deleteRun(run.id),
+    onSuccess: () => {
+      queryClient.setQueryData<Run[]>(["runs"], (current = []) =>
+        current.filter((item) => item.id !== run.id),
+      );
+      queryClient.removeQueries({ queryKey: ["run", run.id] });
+      queryClient.removeQueries({ queryKey: ["events", run.id] });
+      queryClient.removeQueries({ queryKey: ["graph", run.id] });
+      void queryClient.invalidateQueries({ queryKey: ["runs"] });
+      void queryClient.invalidateQueries({ queryKey: ["summary"] });
+      void queryClient.invalidateQueries({ queryKey: ["admin-summary"] });
+      onArchived();
+    },
+    onError: (cause) => {
+      setError(
+        cause instanceof ApiError && cause.status === 409
+          ? text(
+              "运行仍在进行中。请先完成或取消运行，再移除结果。",
+              "The run is still active. Finish or cancel it before removing the result.",
+            )
+          : cause instanceof Error
+            ? cause.message
+            : String(cause),
+      );
+    },
+  });
+  const close = () => {
+    if (!archive.isPending) onClose();
+  };
+  return (
+    <Modal
+      title={text("从运行归档中移除？", "Remove this run result?")}
+      onClose={close}
+    >
+      <div className="destructive-confirmation">
+        <div className="destructive-confirmation__warning">
+          <OctagonAlert size={22} />
+          <div>
+            <strong>
+              {text(
+                "结果将从界面、统计和普通访问入口中隐藏。",
+                "The result will be hidden from the UI, statistics, and normal access paths.",
+              )}
+            </strong>
+            <p>
+              {text(
+                "评分、事件、证据图、报告数据与产物不会被物理删除，可从数据库恢复；当前版本尚未提供界面恢复入口。",
+                "Scores, events, evidence graphs, report data, and artifacts are not physically deleted and remain recoverable from the database. This version has no restore UI yet.",
+              )}
+            </p>
+          </div>
+        </div>
+        <dl>
+          <div>
+            <dt>{text("运行 ID", "Run ID")}</dt>
+            <dd>{run.id}</dd>
+          </div>
+          <div>
+            <dt>{text("最终状态", "Final status")}</dt>
+            <dd>{stageLabel(run.stage, locale)}</dd>
+          </div>
+          <div>
+            <dt>{text("得分", "Score")}</dt>
+            <dd>{run.score == null ? "—" : Math.round(run.score)}</dd>
+          </div>
+        </dl>
+        {error && <div className="inline-error">{error}</div>}
+        <div className="modal__actions">
+          <button
+            className="button button--ghost"
+            type="button"
+            disabled={archive.isPending}
+            onClick={close}
+          >
+            {text("返回", "Go back")}
+          </button>
+          <button
+            className="button button--danger"
+            type="button"
+            disabled={archive.isPending}
+            onClick={() => archive.mutate()}
+          >
+            <Trash2 size={14} />
+            {archive.isPending
+              ? text("正在移除…", "Removing…")
+              : text("确认软删除", "Soft-delete result")}
+          </button>
+        </div>
+      </div>
+    </Modal>
   );
 }
 
@@ -2326,10 +2546,12 @@ function RunTable({
   runs,
   models,
   compact = false,
+  onArchive,
 }: {
   runs: Run[];
   models: ModelProfile[];
   compact?: boolean;
+  onArchive?: (run: Run) => void;
 }) {
   const { locale, text } = useLocale();
   if (!runs.length) {
@@ -2389,9 +2611,25 @@ function RunTable({
                   <td>{new Date(run.created_at).toLocaleString(locale)}</td>
                 )}
                 <td>
-                  <Link className="row-link" to={`/runs/${run.id}`}>
-                    <ArrowRight size={14} />
-                  </Link>
+                  <div className="table-actions">
+                    <Link className="row-link" to={`/runs/${run.id}`}>
+                      <ArrowRight size={14} />
+                    </Link>
+                    {onArchive && isTerminal(run.status) && (
+                      <button
+                        className="row-link row-link--danger"
+                        type="button"
+                        title={text("软删除测试结果", "Soft-delete run result")}
+                        aria-label={text(
+                          "软删除测试结果",
+                          "Soft-delete run result",
+                        )}
+                        onClick={() => onArchive(run)}
+                      >
+                        <Trash2 size={13} />
+                      </button>
+                    )}
+                  </div>
                 </td>
               </tr>
             );

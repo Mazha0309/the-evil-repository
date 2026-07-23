@@ -56,6 +56,11 @@ Editable model profiles preserve encrypted keys when an update omits
 bounded advanced JSON cannot override credentials, prompts, messages, models,
 tools, or transport-owned fields.
 
+Deleting a profile archives its stable row instead of cascading through run
+history. The control plane blocks deletion while a run is active, freezes any
+missing historical model identity, erases credentials and connection
+parameters, and excludes the archived profile from future selection.
+
 Candidate events carry stable Agent identities. The built-in executor currently
 emits one `candidate/root` node; the derived Agent Graph schema also supports
 spawn, delegation, parent/child roles, terminal states, and per-Agent usage for
@@ -97,6 +102,12 @@ the model's tool surface. Only normalized outcomes become public run data.
 Run archives contain replay metadata, patch/report artifacts, event data, and
 hashes. They must never contain API keys, hidden fixtures, or control-plane
 credentials.
+
+A terminal run may be soft-deleted by setting `benchmark_runs.archived_at`.
+Normal list, detail, report, graph, event, dashboard, and administrator
+aggregate queries exclude archived runs, while ownership and all dependent
+evidence remain intact for administrative database recovery. Active runs must
+be cancelled or finish before archival.
 
 ## Data flow
 

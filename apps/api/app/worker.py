@@ -145,7 +145,10 @@ class Worker:
         with SessionLocal() as session:
             runs = session.scalars(
                 select(BenchmarkRun)
-                .where(BenchmarkRun.status.in_(interrupted_statuses))
+                .where(
+                    BenchmarkRun.status.in_(interrupted_statuses),
+                    BenchmarkRun.archived_at.is_(None),
+                )
                 .order_by(BenchmarkRun.created_at)
             ).all()
             for run in runs:
@@ -236,7 +239,10 @@ class Worker:
         with SessionLocal() as session:
             statement = (
                 select(BenchmarkRun)
-                .where(BenchmarkRun.status == RunStatus.queued)
+                .where(
+                    BenchmarkRun.status == RunStatus.queued,
+                    BenchmarkRun.archived_at.is_(None),
+                )
                 .order_by(BenchmarkRun.created_at)
                 .with_for_update(skip_locked=True)
                 .limit(1)
@@ -265,11 +271,13 @@ class Worker:
                 profile = session.get(ModelProfile, run.candidate_model_id)
                 if not task or not profile:
                     raise RuntimeError("Run references missing task/model")
-                if not profile.enabled:
-                    raise RuntimeError("Candidate model profile is disabled")
+                if not profile.enabled or profile.archived_at is not None:
+                    raise RuntimeError("Candidate model profile is unavailable")
                 judge_model_id = run.judge_model_id
                 judge_profile = session.get(ModelProfile, judge_model_id) if judge_model_id else None
-                if judge_profile is not None and not judge_profile.enabled:
+                if judge_profile is not None and (
+                    not judge_profile.enabled or judge_profile.archived_at is not None
+                ):
                     judge_profile = None
                 scenario_root = settings.scenarios_root / task.slug
                 encrypted_key = profile.encrypted_api_key

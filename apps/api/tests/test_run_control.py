@@ -5,7 +5,8 @@ import pytest
 from fastapi import HTTPException
 
 import app.api.runs as runs_module
-from app.api.runs import cancel_run, model_snapshot, pause_run, resume_run
+from app.api.runs import cancel_run, pause_run, resume_run
+from app.model_identity import model_snapshot
 from app.models import RunStatus, UserRole
 from app.schemas import RunCreate
 

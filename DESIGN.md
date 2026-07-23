@@ -126,6 +126,14 @@ updates protocol, endpoint, model ID, tool mode, enabled state, and inference
 parameters. Omitting `api_key` preserves the existing encrypted credential;
 supplying a value replaces it and explicit `null` clears it.
 
+`DELETE` is implemented as an irreversible archive operation. It takes a row
+lock, refuses profiles referenced by queued or active runs, backfills missing
+non-secret identity snapshots in terminal runs, clears the credential,
+endpoint and inference parameters, disables the profile, and hides it from
+registries and counts. The stable row and historical foreign keys remain so a
+profile deletion cannot destroy or misattribute benchmark evidence. Run
+creation locks the selected profiles to serialize against deletion.
+
 The WebUI provides protocol-aware structured controls:
 
 | Control | Responses API | Anthropic Messages | Compatible Chat | Ollama Chat |
@@ -946,9 +954,9 @@ The control plane validates exact rubric keys, criterion maxima, types,
 reference membership and injection-canary echoes. A malformed response receives
 one clean retry without replaying the candidate's previous output as an
 instruction. The normalized review reports citation reliability as high,
-medium or low. A Provider timeout, deleted model profile, invalid response or
-low-reliability review is visible and auditable but cannot fail an otherwise
-valid run.
+medium or low. A Provider timeout, archived or unavailable model profile,
+invalid response or low-reliability review is visible and auditable but cannot
+fail an otherwise valid run.
 
 The archive stores:
 
@@ -1265,6 +1273,14 @@ makes it non-resumable.
 Cancellation is destructive rather than a synonym for pause. The UI must name
 the run and current stage, explain workspace/conversation cleanup, and require
 a second explicit action before calling the cancel endpoint.
+
+Soft-deleting a result is a separate terminal-run lifecycle operation. It is
+forbidden for queued or active runs and requires its own confirmation. The
+control plane sets `benchmark_runs.archived_at`, records `run.archived`, keeps
+ownership and every dependent event, graph, score, artifact and replay record,
+and excludes the row from user-visible access and aggregates. This release
+does not expose a restore UI; database recovery remains possible because no
+result evidence is physically deleted.
 
 ## 18. Open-source governance
 

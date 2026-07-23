@@ -1401,6 +1401,24 @@ pre {
   color: var(--lime);
 }
 
+.table-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 5px;
+}
+
+.row-link--danger {
+  padding: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.row-link--danger:hover {
+  border-color: #693333;
+  color: var(--red);
+}
+
 .status-pill {
   display: inline-flex;
   min-height: 23px;
