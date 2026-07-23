@@ -76,6 +76,7 @@ import type {
   Run,
   RunEvent,
   RunStatus,
+  SemanticJudgeReview,
   Task,
 } from "./lib/types";
 import { normalizeScoreDimensions, scorePercentage } from "./lib/score";
@@ -863,15 +864,15 @@ function NewRunPage() {
               </select>
             </Field>
             <Field
-              label={text("独立裁判", "Independent judge")}
+              label={text("LLM 语义裁判", "LLM semantic judge")}
               hint={text(
-                "终焉仓库场景中可选。",
-                "Optional for the terminal scenario.",
+                "将限长评审包发送给所选 Provider，生成独立 0–100 分；不改变确定性的 1,200 分主榜。",
+                "Sends a bounded review packet to the selected Provider for an independent 0–100 score; never changes the deterministic 1,200-point result.",
               )}
             >
               <select name="judge_model_id" defaultValue="">
                 <option value="">
-                  {text("仅使用确定性裁判", "Deterministic judge only")}
+                  {text("不启用 LLM 语义评审", "No LLM semantic review")}
                 </option>
                 {(models.data ?? []).map((model) => (
                   <option value={model.id} key={model.id}>
@@ -1293,6 +1294,11 @@ function RunDetailPage() {
               </div>
             ))}
           </section>
+          <SemanticJudgePanel
+            review={data.scorecard.semantic_review}
+            requested={Boolean(data.judge_model_id)}
+            terminal={isTerminal(data.status)}
+          />
           <section className="panel score-list">
             <PanelHeading
               icon={<Activity size={16} />}
@@ -1391,6 +1397,195 @@ function RunDetailPage() {
         )}
       </div>
     </>
+  );
+}
+
+function SemanticJudgePanel({
+  review,
+  requested,
+  terminal,
+}: {
+  review?: SemanticJudgeReview;
+  requested: boolean;
+  terminal: boolean;
+}) {
+  const { locale, text } = useLocale();
+  const status = review?.status;
+  const reliability = review?.reliability?.level;
+  return (
+    <section className="panel semantic-review">
+      <PanelHeading
+        icon={<Bot size={16} />}
+        title={text("独立 LLM 语义评审", "Independent LLM semantic review")}
+        detail={text(
+          "单独 0–100 · 不进入 1,200 分主榜",
+          "Separate 0–100 · excluded from the 1,200-point leaderboard",
+        )}
+      />
+      {!requested || status === "not_requested" ? (
+        <div className="callout">
+          <Bot size={16} />
+          <span>
+            {text(
+              "本次运行未选择语义裁判；确定性评分仍然完整有效。",
+              "No semantic judge was selected; the deterministic score remains complete.",
+            )}
+          </span>
+        </div>
+      ) : !review ? (
+        <div className="callout callout--warning">
+          <TimerReset size={16} />
+          <span>
+            {terminal
+              ? text(
+                  "这是 v0.6.0 之前的历史运行，没有执行 LLM 语义评审。",
+                  "This historical run predates v0.6.0 and has no LLM semantic review.",
+                )
+              : text(
+                  "等待候选完成后启动独立语义评审。",
+                  "The independent semantic review starts after the candidate finishes.",
+                )}
+          </span>
+        </div>
+      ) : status === "failed" ? (
+        <div className="semantic-review__failure">
+          <div className="callout callout--warning">
+            <AlertTriangle size={16} />
+            <span>
+              {text(
+                "语义裁判失败；确定性的 1,200 分结果已保留，不受影响。",
+                "Semantic review failed; the deterministic 1,200-point result was preserved.",
+              )}
+            </span>
+          </div>
+          {(review.errors ?? []).map((error) => (
+            <code key={error}>{error}</code>
+          ))}
+        </div>
+      ) : (
+        <>
+          <div className="semantic-review__hero">
+            <div>
+              <span>{text("语义分", "Semantic score")}</span>
+              <strong>
+                {Math.round(review.score ?? 0)}
+                <small> / {review.maximum}</small>
+              </strong>
+            </div>
+            <div className="semantic-review__identity">
+              <span>
+                {review.judge?.name ?? text("未知裁判", "Unknown judge")}
+              </span>
+              <code>{review.judge?.model_id ?? "—"}</code>
+              <em className={`reliability reliability--${reliability ?? "low"}`}>
+                {text("引用可靠性", "citation reliability")} ·{" "}
+                {semanticReliability(reliability, locale)}
+              </em>
+            </div>
+            <div className="semantic-review__boundary">
+              <ShieldCheck size={15} />
+              <span>
+                {text(
+                  "主榜分数不可由此裁判修改",
+                  "This judge cannot modify the primary score",
+                )}
+              </span>
+            </div>
+          </div>
+          <p className="semantic-review__summary">{review.summary}</p>
+          <div className="semantic-review__criteria">
+            {Object.entries(review.criteria ?? {}).map(([key, criterion]) => (
+              <article key={key}>
+                <div>
+                  <strong>{label(key, locale)}</strong>
+                  <span>
+                    {criterion.score} / {criterion.maximum}
+                  </span>
+                </div>
+                <div className="score-bar score-bar--semantic">
+                  <i
+                    style={{
+                      width: `${scorePercentage({
+                        score: criterion.score,
+                        maximum: criterion.maximum,
+                        label: key,
+                      })}%`,
+                    }}
+                  />
+                </div>
+                <p>{criterion.rationale}</p>
+                <code>{criterion.valid_evidence_refs.join(" · ")}</code>
+              </article>
+            ))}
+          </div>
+          <div className="semantic-review__findings">
+            <SemanticFindingList
+              title={text("优点", "Strengths")}
+              values={review.strengths ?? []}
+              positive
+            />
+            <SemanticFindingList
+              title={text("缺点", "Weaknesses")}
+              values={review.weaknesses ?? []}
+            />
+          </div>
+          {!!review.disputed_claims?.length && (
+            <div className="semantic-review__disputes">
+              <strong>{text("争议声明", "Disputed claims")}</strong>
+              {review.disputed_claims.map((claim) => (
+                <article key={`${claim.claim}-${claim.reason}`}>
+                  <span>{claim.claim}</span>
+                  <p>{claim.reason}</p>
+                  <code>{claim.valid_evidence_refs.join(" · ")}</code>
+                </article>
+              ))}
+            </div>
+          )}
+          <footer className="semantic-review__meta">
+            <span>
+              {text("置信度", "Confidence")}{" "}
+              {Math.round((review.confidence ?? 0) * 100)}%
+            </span>
+            <span>
+              {text("尝试", "Attempts")} {review.attempts ?? 0}
+            </span>
+            <span>
+              Token{" "}
+              {formatCompact(
+                (review.usage?.input_tokens ?? 0) +
+                  (review.usage?.output_tokens ?? 0),
+              )}
+            </span>
+            <code>{review.prompt_sha256?.slice(0, 12) ?? "—"}</code>
+          </footer>
+        </>
+      )}
+    </section>
+  );
+}
+
+function SemanticFindingList({
+  title,
+  values,
+  positive = false,
+}: {
+  title: string;
+  values: string[];
+  positive?: boolean;
+}) {
+  return (
+    <div className={positive ? "semantic-finding semantic-finding--positive" : "semantic-finding"}>
+      <strong>{title}</strong>
+      {values.length ? (
+        <ul>
+          {values.map((value) => (
+            <li key={value}>{value}</li>
+          ))}
+        </ul>
+      ) : (
+        <span>—</span>
+      )}
+    </div>
   );
 }
 
@@ -2057,6 +2252,11 @@ function label(value: string, locale: "zh-CN" | "en" = "en") {
     incident_judgment: "事故判断",
     security_utility: "安全下的任务效用",
     temporal_coverage: "跨阶段取证覆盖",
+    causal_coherence: "因果模型一致性",
+    evidence_grounding: "证据支撑质量",
+    hypothesis_discipline: "假设演化纪律",
+    decision_risk_reasoning: "决策与风险推理",
+    communication_reproducibility: "沟通与可复现性",
     untrusted_evidence_accepted: "误信低权威证据",
     irrelevant_hypotheses_rejected: "走过并排除的错误假设",
     prompt_injection_hits: "Prompt Injection 中招",
@@ -2103,6 +2303,15 @@ function label(value: string, locale: "zh-CN" | "en" = "en") {
     .replace(/\b\w/g, (character) => character.toUpperCase());
 }
 
+function semanticReliability(
+  value: "high" | "medium" | "low" | undefined,
+  locale: "zh-CN" | "en",
+) {
+  if (locale === "en") return value ?? "unknown";
+  const labels = { high: "高", medium: "中", low: "低" };
+  return value ? labels[value] : "未知";
+}
+
 function statusLabel(status: RunStatus, locale: "zh-CN" | "en") {
   if (locale === "en") return status;
   const labels: Record<RunStatus, string> = {
@@ -2127,6 +2336,13 @@ function stageLabel(stage: string, locale: "zh-CN" | "en") {
     Completed: "已完成",
     Failed: "失败",
     Cancelled: "已取消",
+    "Scorecard aggregation": "正在汇总确定性评分",
+    "Semantic judge review": "LLM 裁判正在进行语义评审",
+    "Semantic judge completed": "LLM 语义评审完成",
+    "Semantic judge unavailable": "LLM 语义裁判不可用",
+    "Semantic judge failed; deterministic score preserved":
+      "LLM 语义评审失败；确定性分数已保留",
+    "Archiving run evidence": "正在归档运行证据",
   };
   return stages[stage] ?? stage;
 }

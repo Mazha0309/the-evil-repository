@@ -9,10 +9,24 @@ from app.runner.protocol import AssistantTurn, ToolCall
 
 
 class ModelClient:
-    def __init__(self, profile: ModelProfile, api_key: str | None) -> None:
+    def __init__(
+        self,
+        profile: ModelProfile,
+        api_key: str | None,
+        *,
+        timeout_seconds: float = 180,
+    ) -> None:
         self.profile = profile
         self.api_key = api_key
-        self.client = httpx.Client(timeout=httpx.Timeout(180, connect=30))
+        self.client = httpx.Client(
+            timeout=httpx.Timeout(
+                timeout_seconds,
+                connect=min(30, timeout_seconds),
+            )
+        )
+
+    def close(self) -> None:
+        self.client.close()
 
     def complete(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> AssistantTurn:
         if self.profile.provider == ModelProvider.openai_responses:
@@ -36,7 +50,7 @@ class ModelClient:
             "messages": messages,
             **self.profile.parameters,
         }
-        if self.profile.native_tools:
+        if self.profile.native_tools and tools:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
         response = self.client.post(
@@ -81,7 +95,7 @@ class ModelClient:
             "input": openai_responses_input(messages),
             **self.profile.parameters,
         }
-        if self.profile.native_tools:
+        if self.profile.native_tools and tools:
             payload["tools"] = [
                 {
                     "type": "function",
@@ -147,7 +161,7 @@ class ModelClient:
         }
         if system:
             payload["system"] = system
-        if self.profile.native_tools:
+        if self.profile.native_tools and tools:
             payload["tools"] = [
                 {
                     "name": item["function"]["name"],
@@ -195,7 +209,7 @@ class ModelClient:
             "stream": False,
             "options": self.profile.parameters,
         }
-        if self.profile.native_tools:
+        if self.profile.native_tools and tools:
             payload["tools"] = tools
         response = self.client.post(
             f"{self.profile.base_url.rstrip('/')}/api/chat",

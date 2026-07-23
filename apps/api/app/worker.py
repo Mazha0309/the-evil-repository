@@ -17,6 +17,12 @@ from app.config import get_settings
 from app.crypto import SecretBox
 from app.database import SessionLocal, create_schema
 from app.events import append_event
+from app.judging import (
+    SemanticJudge,
+    not_requested_review,
+    safe_error,
+    unavailable_review,
+)
 from app.models import (
     BenchmarkRun,
     ModelProfile,
@@ -127,6 +133,7 @@ class Worker:
 
     def execute(self, run_id: uuid.UUID) -> None:
         sandbox: DockerSandbox | None = None
+        candidate_client: ModelClient | None = None
         started = time.monotonic()
         try:
             with SessionLocal() as session:
@@ -136,8 +143,21 @@ class Worker:
                 profile = session.get(ModelProfile, run.candidate_model_id)
                 if not task or not profile:
                     raise RuntimeError("Run references missing task/model")
+                if not profile.enabled:
+                    raise RuntimeError("Candidate model profile is disabled")
+                judge_model_id = run.judge_model_id
+                judge_profile = (
+                    session.get(ModelProfile, judge_model_id)
+                    if judge_model_id
+                    else None
+                )
+                if judge_profile is not None and not judge_profile.enabled:
+                    judge_profile = None
                 scenario_root = settings.scenarios_root / task.slug
                 encrypted_key = profile.encrypted_api_key
+                judge_encrypted_key = (
+                    judge_profile.encrypted_api_key if judge_profile else None
+                )
                 run_config = dict(run.config)
                 append_event(
                     session,
@@ -199,11 +219,11 @@ class Worker:
                     kind="sandbox.started",
                 )
                 box = SecretBox(settings.app_secret)
-                client = ModelClient(profile, box.decrypt(encrypted_key))
+                candidate_client = ModelClient(profile, box.decrypt(encrypted_key))
                 faults = FaultController.load([Path(path) for path in prepared.private_state["fault_scripts"]])
                 engine = AgentEngine(
                     run_id=run_id,
-                    client=client,
+                    client=candidate_client,
                     sandbox=sandbox,
                     prepared=prepared,
                     faults=faults,
@@ -313,6 +333,16 @@ class Worker:
                     kind="judge.scorecard.started",
                 )
                 scorecard = scenario.grade(prepared, result)
+                semantic_review, semantic_artifacts = self.semantic_judge_review(
+                    run_id=run_id,
+                    judge_model_id=judge_model_id,
+                    candidate_profile=profile,
+                    judge_profile=judge_profile,
+                    encrypted_key=judge_encrypted_key,
+                    result=result,
+                    scorecard=scorecard,
+                )
+                scorecard["semantic_review"] = semantic_review
                 result.artifacts.update(
                     {
                         "scorecard.json": json.dumps(
@@ -327,6 +357,7 @@ class Worker:
                             indent=2,
                             sort_keys=True,
                         ),
+                        **semantic_artifacts,
                     }
                 )
                 self.set_stage(
@@ -335,6 +366,7 @@ class Worker:
                     kind="judge.scorecard.completed",
                     payload={"score": scorecard["score"], "maximum": scorecard["maximum"]},
                 )
+                result.events = self.run_events(run_id)
                 archive_path = Path(settings.artifact_root) / f"{run_id}.tar.gz"
                 scenario.archive(prepared, result, archive_path)
                 archive_sha = hashlib.sha256(archive_path.read_bytes()).hexdigest()
@@ -343,9 +375,167 @@ class Worker:
             logger.error("Run %s failed: %s\n%s", run_id, exc, traceback.format_exc())
             self.fail(run_id, str(exc))
         finally:
+            if candidate_client:
+                candidate_client.close()
             if sandbox:
                 sandbox.stop()
             logger.info("Run %s finished in %.2fs", run_id, time.monotonic() - started)
+
+    def semantic_judge_review(
+        self,
+        *,
+        run_id: uuid.UUID,
+        judge_model_id: uuid.UUID | None,
+        candidate_profile: ModelProfile,
+        judge_profile: ModelProfile | None,
+        encrypted_key: str | None,
+        result: ScenarioRunResult,
+        scorecard: dict[str, object],
+    ) -> tuple[dict[str, object], dict[str, str]]:
+        if judge_model_id is None:
+            self.set_stage(
+                run_id,
+                stage="Scorecard aggregation",
+                kind="judge.semantic.skipped",
+                payload={"reason": "not_requested"},
+            )
+            return not_requested_review(), {}
+        if judge_profile is None:
+            review = unavailable_review(
+                judge_model_id=str(judge_model_id),
+                error="Selected judge model profile is unavailable.",
+            )
+            self.set_stage(
+                run_id,
+                stage="Semantic judge unavailable",
+                kind="judge.semantic.failed",
+                payload={
+                    "judge_model_id": str(judge_model_id),
+                    "error": review["errors"][0],
+                },
+            )
+            return review, {
+                "semantic-review.json": json.dumps(
+                    review,
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                )
+            }
+
+        self.set_stage(
+            run_id,
+            stage="Semantic judge review",
+            kind="judge.semantic.started",
+            payload={
+                "judge_model_id": str(judge_profile.id),
+                "judge_name": judge_profile.name,
+                "provider": judge_profile.provider.value,
+                "model_id": judge_profile.model_id,
+                "affects_primary_score": False,
+            },
+        )
+        client: ModelClient | None = None
+        try:
+            box = SecretBox(settings.app_secret)
+            client = ModelClient(
+                judge_profile,
+                box.decrypt(encrypted_key),
+                timeout_seconds=settings.semantic_judge_timeout,
+            )
+            outcome = SemanticJudge(client).review(
+                result,
+                scorecard,
+                candidate_identity_tokens=[
+                    candidate_profile.name,
+                    candidate_profile.model_id,
+                ],
+            )
+            review = outcome.review
+            artifacts = {
+                "semantic-review.json": json.dumps(
+                    review,
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                ),
+                "semantic-judge-input.json": json.dumps(
+                    outcome.packet,
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                ),
+                "semantic-judge-raw.json": json.dumps(
+                    outcome.raw_outputs,
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+            }
+        except Exception as exc:
+            review = unavailable_review(
+                judge_model_id=str(judge_model_id),
+                error=safe_error(exc),
+            )
+            review["judge"] = {
+                "profile_id": str(judge_profile.id),
+                "name": judge_profile.name,
+                "provider": judge_profile.provider.value,
+                "model_id": judge_profile.model_id,
+            }
+            artifacts = {
+                "semantic-review.json": json.dumps(
+                    review,
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                )
+            }
+        finally:
+            if client:
+                client.close()
+
+        event_kind = (
+            "judge.semantic.completed"
+            if review["status"] == "completed"
+            else "judge.semantic.failed"
+        )
+        self.set_stage(
+            run_id,
+            stage=(
+                "Semantic judge completed"
+                if review["status"] == "completed"
+                else "Semantic judge failed; deterministic score preserved"
+            ),
+            kind=event_kind,
+            payload={
+                "judge_model_id": str(judge_model_id),
+                "status": review["status"],
+                "semantic_score": review.get("score"),
+                "maximum": review.get("maximum", 100),
+                "reliability": dict(review.get("reliability") or {}).get("level"),
+                "attempts": review.get("attempts", 0),
+                "usage": review.get("usage", {}),
+                "affects_primary_score": False,
+            },
+        )
+        return review, artifacts
+
+    @staticmethod
+    def run_events(run_id: uuid.UUID) -> list[dict[str, object]]:
+        with SessionLocal() as session:
+            recorded_events = session.scalars(
+                select(RunEvent)
+                .where(RunEvent.run_id == run_id)
+                .order_by(RunEvent.sequence)
+            ).all()
+            return [
+                {
+                    "kind": event.kind,
+                    "sequence": event.sequence,
+                    **event.payload,
+                }
+                for event in recorded_events
+            ]
 
     def set_stage(
         self,

@@ -129,3 +129,31 @@ def test_anthropic_adapter_normalizes_tool_blocks_and_usage() -> None:
     assert captured["messages"][-1]["content"][0]["type"] == "tool_result"
     assert turn.tool_calls[0].arguments == {"path": "src/protocol.ts"}
     assert (turn.input_tokens, turn.output_tokens) == (77, 19)
+
+
+def test_text_only_review_omits_empty_tool_configuration() -> None:
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.update(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": '{"score": 80}'}}],
+                "usage": {"prompt_tokens": 11, "completion_tokens": 5},
+            },
+        )
+
+    client = ModelClient(profile(ModelProvider.openai_compatible), "secret")
+    client.client = httpx.Client(transport=httpx.MockTransport(handler))
+    turn = client.complete(
+        [
+            {"role": "system", "content": "Return JSON."},
+            {"role": "user", "content": "Review this."},
+        ],
+        [],
+    )
+
+    assert "tools" not in captured
+    assert "tool_choice" not in captured
+    assert turn.content == '{"score": 80}'

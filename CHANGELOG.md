@@ -3,6 +3,33 @@
 All notable platform changes are recorded here. The project follows Semantic
 Versioning while individual benchmark scenarios retain independent versions.
 
+## [0.6.0] - 2026-07-23
+
+### Added
+
+- A real optional LLM semantic-judge pass using the selected model profile
+  after deterministic grading. It produces a separate 0–100 review across
+  causal coherence, evidence grounding, hypothesis discipline, decision/risk
+  reasoning and communication reproducibility.
+- Strict structured-output validation, exact rubric keys and per-criterion
+  maxima, audit-reference validation, one bounded repair attempt, candidate
+  identity blinding, prompt-injection canary detection and reliability labels.
+- Versioned semantic-judge input, raw output and normalized review artifacts,
+  plus prompt digests, Provider/model identity, latency, token usage, attempts
+  and append-only lifecycle events.
+- A bilingual semantic-review panel showing the independent score, criterion
+  rationales, cited evidence, strengths, weaknesses, disputed claims and
+  explicit separation from the primary leaderboard.
+
+### Changed
+
+- Provider adapters omit empty tool declarations for text-only judge calls.
+- A missing, disabled, unavailable or malformed semantic judge no longer fails
+  an otherwise valid benchmark run; the deterministic 1,200-point score is
+  archived unchanged with an explicit review failure.
+- The run form now describes the judge accurately instead of presenting an
+  inert or ambiguous “independent judge” option.
+
 ## [0.5.0] - 2026-07-23
 
 ### Added

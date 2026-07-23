@@ -25,7 +25,7 @@ provider credentials.
 
 ## Status
 
-The platform is currently **v0.5.0** and remains under active construction.
+The platform is currently **v0.6.0** and remains under active construction.
 See [`CHANGELOG.md`](CHANGELOG.md). This release includes the canonical
 “terminal repository” challenge, account isolation, administrator controls,
 server monitoring, a live Agent activity console, and the complete execution,
@@ -39,6 +39,19 @@ The control plane supports four explicit model protocols: OpenAI Responses,
 Anthropic Messages, OpenAI-compatible Chat Completions, and Ollama Chat.
 OpenAI-compatible and OpenAI Responses remain separate because their message,
 tool-call, and usage contracts are not interchangeable.
+
+An optional independent LLM semantic judge now performs a real second Provider
+call after deterministic grading. It assigns a separate 0–100 review for
+causal coherence, evidence grounding, hypothesis discipline, decision/risk
+reasoning, and reproducible communication. This review never changes the
+official 1,200-point score. The judge sees no candidate identity, must cite
+versioned audit references, receives candidate text as explicitly untrusted
+data, and may retry one malformed response. Provider or schema failure is
+recorded without failing the benchmark run.
+
+Selecting a semantic judge sends the bounded review packet to that model's
+configured Provider from the control plane. Do not select an external Provider
+for runs whose reports may contain data you are not permitted to disclose.
 
 ## Benchmark contract
 

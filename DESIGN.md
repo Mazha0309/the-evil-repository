@@ -65,7 +65,8 @@ flowchart LR
     UI[React data console] --> API[FastAPI control plane]
     API --> PDB[(Platform PostgreSQL)]
     API --> RUNNER[Runner worker]
-    RUNNER --> MODEL[Model provider API]
+    RUNNER --> MODEL[Candidate model Provider API]
+    RUNNER -. optional blinded packet .-> SEMJUDGE[Independent Judge Provider]
     RUNNER --> SDK[Scenario SDK]
     SDK --> SCENARIO[Versioned scenario directory]
     RUNNER --> DOCKER[Rootless Docker API]
@@ -74,6 +75,7 @@ flowchart LR
     SCENARIO --> JUDGE[Hidden judge pipeline]
     RUNNER --> EVENTS[Append-only event stream]
     JUDGE --> SCORE[Scorecard]
+    SEMJUDGE --> SEMANTIC[Semantic Review]
     EVENTS --> ANALYZER[Behavior analyzer]
     ANALYZER --> PROFILE[Profile / errors / replay]
     SANDBOX -. no network / no socket .-> VOID[No host capability]
@@ -102,6 +104,10 @@ directions and normalizes text, tool calls, and token usage into one
 because it must not be confused with the Responses API. Provider credentials
 remain encrypted in the control plane and are never copied into a candidate
 container or run archive.
+
+The same adapters serve optional semantic judges in text-only mode. Empty tool
+declarations are omitted because several Provider APIs reject an empty
+`tools` array. Candidate and Judge token usage remain separate.
 
 ### Identity, tenancy, and administration
 
@@ -235,6 +241,8 @@ load() → prepare() → run() → grade() → archive()
 
 - runs the host-side hidden judge pipeline;
 - constructs the leaderboard scorecard;
+- optionally calls the selected independent LLM judge for a separate,
+  non-leaderboard semantic review;
 - derives a separate behavior profile, error atlas, and investigation replay
   from the recorded event stream;
 - applies hard score caps for unsafe or invalid behavior;
@@ -243,8 +251,8 @@ load() → prepare() → run() → grade() → archive()
 ### `archive()`
 
 - stores the final response, patch, report, event stream, graph, scorecard,
-  behavior profile, error atlas, replay, resource data, database audit, and
-  reproducibility metadata;
+  optional semantic-judge packet/raw response/review, behavior profile, error
+  atlas, replay, resource data, database audit, and reproducibility metadata;
 - hashes each artifact;
 - never archives provider keys or control-plane secrets.
 
@@ -726,14 +734,58 @@ small number of behavior-derived facts in an existing score dimension, such as
 an explicit boundary violation or repeated-read efficiency penalty, but it must
 declare that dependency in its scoring manifest.
 
+### Independent LLM semantic review
+
+When a run selects a Judge Model, the Runner performs one additional Provider
+review after the deterministic Scorecard is complete. This is a real model
+call, but its result is a separate 0–100 measurement and cannot modify the
+official 1,200-point score, caps, deductions, pass/fail state, or leaderboard
+position.
+
+| Semantic criterion | Maximum |
+|---|---:|
+| Causal coherence | 25 |
+| Evidence grounding | 25 |
+| Hypothesis discipline | 20 |
+| Decision and risk reasoning | 20 |
+| Communication and reproducibility | 10 |
+
+The input packet contains the bounded investigation report, final response,
+selected trajectory events, deterministic dimension summaries, hidden-check
+statuses and incident audit. Candidate identity, Provider name and model name
+are excluded. Every candidate-controlled string is explicitly marked as
+untrusted data. The Judge must return one strict JSON object and cite only
+reference IDs present in `allowed_evidence_refs`.
+
+The control plane validates exact rubric keys, criterion maxima, types,
+reference membership and injection-canary echoes. A malformed response receives
+one clean retry without replaying the candidate's previous output as an
+instruction. The normalized review reports citation reliability as high,
+medium or low. A Provider timeout, deleted model profile, invalid response or
+low-reliability review is visible and auditable but cannot fail an otherwise
+valid run.
+
+The archive stores:
+
+- `semantic-judge-input.json`, the exact blinded and bounded review packet;
+- `semantic-judge-raw.json`, every raw attempt;
+- `semantic-review.json`, the validated review and reliability metadata;
+- Judge profile/model/provider identifiers, Prompt SHA-256, attempts, latency,
+  and separate input/output Token counts.
+
+Provider credentials are never written to events or archives. Keeping the
+input packet versioned allows a future re-judge operation to compare judges
+without rerunning the candidate, while preserving the original review.
+
 ## 14. Behavior analysis
 
-Every completed or partially completed run produces four parallel result
+Every completed or partially completed run produces five parallel result
 layers:
 
 ```text
 Run Result
 ├── Scorecard              objective task result, 0–1,200
+├── Semantic Review        optional independent LLM analysis, 0–100
 ├── Behavior Profile       normalized investigation traits
 ├── Error Atlas            discrete observed error counts
 └── Investigation Replay   evidence-backed state transitions

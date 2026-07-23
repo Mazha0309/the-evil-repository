@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     setup_token: str | None = None
     runner_enabled: bool = False
     runner_poll_seconds: float = 2.0
+    semantic_judge_timeout: int = 120
 
     docker_host: str = "unix:///var/run/docker.sock"
     sandbox_image: str = "evil-repository-sandbox:local"
