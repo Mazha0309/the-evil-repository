@@ -47,6 +47,7 @@ class ScenarioMetadata(BaseModel):
     components: ScenarioComponents
     context_pressure: ContextPressure
     scoring: dict[str, int]
+    localizations: dict[str, dict[str, str]] = Field(default_factory=dict)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 

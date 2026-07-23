@@ -1,5 +1,7 @@
 # The Evil Repository — Design
 
+[English](DESIGN.md) | [简体中文](DESIGN.zh-CN.md)
+
 **Status:** living specification
 **Benchmark engine:** EvilBench
 **License:** AGPL-3.0-only
@@ -79,6 +81,22 @@ or network interface beyond the Docker `none` network.
 Model inference happens in the trusted control plane. A candidate model asks
 for a tool; the Runner validates the request, executes it inside the candidate
 sandbox, records the result, and sends the bounded result back to the model.
+
+### Provider adapters
+
+The Runner normalizes four explicit provider protocols:
+
+- OpenAI Responses API;
+- Anthropic Messages API;
+- OpenAI-compatible Chat Completions;
+- Ollama Chat.
+
+Each adapter translates the canonical message and tool schema in both
+directions and normalizes text, tool calls, and token usage into one
+`AssistantTurn`. “OpenAI-compatible” is retained as a separate protocol
+because it must not be confused with the Responses API. Provider credentials
+remain encrypted in the control plane and are never copied into a candidate
+container or run archive.
 
 ## 4. Scenario SDK
 
@@ -655,6 +673,11 @@ Primary views:
 - patch and artifact diff;
 - score radar, model/task heatmap, cost/latency/score scatter, and run trends;
 - JSON/CSV/archive export.
+
+The console ships with Simplified Chinese and English interfaces. Language
+selection is local to the browser and does not change scenario execution,
+grading, or archived evidence. Scenario packages may provide localized display
+metadata; prompts and truth models remain versioned benchmark inputs.
 
 The UI receives normalized entities from `/api/v1`; it never imports scenario
 files or executes grading code.

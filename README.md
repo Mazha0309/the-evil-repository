@@ -1,5 +1,7 @@
 # The Evil Repository
 
+[English](README.md) | [简体中文](README.zh-CN.md)
+
 > An evidence-hostile, container-isolated benchmark for long-horizon AI software agents.
 
 The Evil Repository drops a model into a deliberately rotten software incident:
@@ -52,9 +54,10 @@ infra/sandbox/             Networkless candidate image
 docs/                      Architecture, threat model, and authoring docs
 ```
 
-The open design specification lives in [`DESIGN.md`](DESIGN.md). It is part of
-the project—not an internal planning artifact. Architecture changes are
-expected to update it in the same pull request.
+The open design specification lives in [`DESIGN.md`](DESIGN.md), with a
+[Simplified Chinese edition](DESIGN.zh-CN.md). It is part of the project—not
+an internal planning artifact. Architecture changes are expected to update
+both editions in the same pull request.
 
 Further reading:
 

@@ -20,6 +20,11 @@ def seed_canonical_task(session: Session) -> None:
             )
         )
         if existing:
+            existing.name = manifest.name
+            existing.description = manifest.description
+            existing.category = "terminal"
+            existing.kind = "scenario"
+            existing.manifest = manifest.model_dump(mode="json")
             continue
         session.add(
             TaskDefinition(

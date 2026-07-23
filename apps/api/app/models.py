@@ -26,6 +26,8 @@ def now_utc() -> datetime:
 
 
 class ModelProvider(StrEnum):
+    openai_responses = "openai_responses"
+    anthropic = "anthropic"
     openai_compatible = "openai_compatible"
     ollama = "ollama"
 

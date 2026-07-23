@@ -41,6 +41,13 @@ export interface Task {
     scoring?: Record<string, number>;
     repositories?: Array<Record<string, unknown>>;
     tools?: string[];
+    localizations?: Record<
+      string,
+      {
+        name?: string;
+        description?: string;
+      }
+    >;
   };
   enabled: boolean;
   created_at: string;
@@ -50,7 +57,7 @@ export interface Task {
 export interface ModelProfile {
   id: string;
   name: string;
-  provider: "openai_compatible" | "ollama";
+  provider: ModelProvider;
   base_url: string;
   model_id: string;
   has_api_key: boolean;
@@ -60,6 +67,9 @@ export interface ModelProfile {
   created_at: string;
   updated_at: string;
 }
+
+export type ModelProvider =
+  "openai_responses" | "anthropic" | "openai_compatible" | "ollama";
 
 export interface ScoreMetric {
   score: number;

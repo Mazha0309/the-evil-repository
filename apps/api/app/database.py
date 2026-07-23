@@ -1,6 +1,6 @@
 from collections.abc import Generator
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from app.config import get_settings
@@ -29,3 +29,10 @@ def create_schema() -> None:
     from app import models  # noqa: F401
 
     Base.metadata.create_all(bind=engine)
+    if engine.dialect.name == "postgresql":
+        connection = engine.connect().execution_options(isolation_level="AUTOCOMMIT")
+        try:
+            for value in ("openai_responses", "anthropic"):
+                connection.execute(text(f"ALTER TYPE modelprovider ADD VALUE IF NOT EXISTS '{value}'"))
+        finally:
+            connection.close()

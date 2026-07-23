@@ -1,6 +1,13 @@
 :root {
   color-scheme: dark;
-  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-family:
+    Inter,
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
   color: #e8eee4;
   background: #070907;
   font-synthesis: none;
@@ -37,11 +44,19 @@ body {
   min-height: 100vh;
   margin: 0;
   background:
-    radial-gradient(circle at 82% -10%, rgba(173, 255, 47, 0.055), transparent 32rem),
+    radial-gradient(
+      circle at 82% -10%,
+      rgba(173, 255, 47, 0.055),
+      transparent 32rem
+    ),
     linear-gradient(rgba(255, 255, 255, 0.012) 1px, transparent 1px),
     linear-gradient(90deg, rgba(255, 255, 255, 0.009) 1px, transparent 1px),
     var(--bg);
-  background-size: auto, 40px 40px, 40px 40px, auto;
+  background-size:
+    auto,
+    40px 40px,
+    40px 40px,
+    auto;
 }
 
 button,
@@ -159,7 +174,11 @@ pre {
 .nav a.active {
   border-color: #313a2c;
   color: var(--lime);
-  background: linear-gradient(90deg, rgba(173, 255, 47, 0.1), rgba(173, 255, 47, 0.025));
+  background: linear-gradient(
+    90deg,
+    rgba(173, 255, 47, 0.1),
+    rgba(173, 255, 47, 0.025)
+  );
   box-shadow: inset 3px 0 var(--lime);
 }
 
@@ -204,7 +223,9 @@ pre {
 
 .status-dot--safe {
   background: var(--lime);
-  box-shadow: 0 0 0 4px rgba(173, 255, 47, 0.09), 0 0 14px rgba(173, 255, 47, 0.45);
+  box-shadow:
+    0 0 0 4px rgba(173, 255, 47, 0.09),
+    0 0 14px rgba(173, 255, 47, 0.45);
 }
 
 .main {
@@ -261,6 +282,13 @@ pre {
   color: var(--muted);
   font-family: var(--mono);
   font-size: 10px;
+}
+
+.language-toggle {
+  border: 0;
+  padding: 4px;
+  background: transparent;
+  cursor: pointer;
 }
 
 .quiet-link:hover {
@@ -405,7 +433,11 @@ pre {
   border: 1px solid var(--line);
   border-radius: 8px;
   padding: 20px;
-  background: linear-gradient(145deg, rgba(20, 24, 19, 0.92), rgba(12, 15, 12, 0.96));
+  background: linear-gradient(
+    145deg,
+    rgba(20, 24, 19, 0.92),
+    rgba(12, 15, 12, 0.96)
+  );
 }
 
 .stat-card::after {
@@ -592,7 +624,11 @@ pre {
   padding: 25px;
   border-color: #303b29;
   background:
-    radial-gradient(circle at 10% 50%, rgba(173, 255, 47, 0.08), transparent 26rem),
+    radial-gradient(
+      circle at 10% 50%,
+      rgba(173, 255, 47, 0.08),
+      transparent 26rem
+    ),
     linear-gradient(110deg, #111710, #0c0f0c);
 }
 
@@ -1319,7 +1355,11 @@ pre {
   border: 1px solid #3b4933;
   border-radius: 8px;
   text-align: center;
-  background: radial-gradient(circle, rgba(173, 255, 47, 0.08), transparent 70%);
+  background: radial-gradient(
+    circle,
+    rgba(173, 255, 47, 0.08),
+    transparent 70%
+  );
 }
 
 .run-score span,
@@ -1883,11 +1923,15 @@ pre {
 }
 
 @keyframes spin {
-  to { transform: rotate(360deg); }
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 @keyframes pulse {
-  50% { opacity: 0.25; }
+  50% {
+    opacity: 0.25;
+  }
 }
 
 @media (max-width: 1180px) {
@@ -1970,7 +2014,7 @@ pre {
   .page-header .button {
     width: 100%;
   }
-  .topbar__actions .quiet-link {
+  .topbar__actions .quiet-link:not(.language-toggle) {
     display: none;
   }
   .stat-grid,
