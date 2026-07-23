@@ -866,6 +866,15 @@ function phaseDetail(
 ) {
   const elapsed = formatDuration(ageMs, locale);
   if (phase === "model") {
+    if (event?.kind === "provider.retry") {
+      const status = String(event.payload.status_code ?? "—");
+      const next = String(event.payload.next_attempt ?? "—");
+      const maximum = String(event.payload.maximum_attempts ?? "—");
+      const delay = Number(event.payload.delay_seconds ?? 0);
+      return locale === "zh-CN"
+        ? `Provider 返回 HTTP ${status}，将在 ${formatDuration(delay * 1_000, locale)} 后进行第 ${next}/${maximum} 次尝试。`
+        : `Provider returned HTTP ${status}; attempt ${next}/${maximum} follows after ${formatDuration(delay * 1_000, locale)}.`;
+    }
     const turn = event?.kind === "model.request" ? event.payload.turn : null;
     return locale === "zh-CN"
       ? `Provider 正在生成第 ${turn ?? "—"} 轮响应，已等待 ${elapsed}。`

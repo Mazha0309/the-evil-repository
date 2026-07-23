@@ -1,9 +1,10 @@
 import json
 
 import httpx
+import pytest
 
 from app.models import ModelProfile, ModelProvider
-from app.runner.providers import ModelClient
+from app.runner.providers import ModelClient, ProviderTransientError
 
 TOOLS = [
     {
@@ -157,6 +158,69 @@ def test_text_only_review_omits_empty_tool_configuration() -> None:
     assert "tools" not in captured
     assert "tool_choice" not in captured
     assert turn.content == '{"score": 80}'
+
+
+def test_transient_provider_responses_retry_with_bounded_backoff() -> None:
+    attempts = 0
+    retries: list[dict] = []
+    delays: list[float] = []
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            return httpx.Response(429, headers={"Retry-After": "0.5"})
+        if attempts == 2:
+            return httpx.Response(503)
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": "recovered"}}],
+                "usage": {},
+            },
+        )
+
+    client = ModelClient(
+        profile(ModelProvider.openai_compatible),
+        "secret",
+        max_retries=3,
+        on_retry=retries.append,
+    )
+    client.client = httpx.Client(transport=httpx.MockTransport(handler))
+    client._sleep = delays.append
+
+    turn = client.complete(MESSAGES, [])
+
+    assert turn.content == "recovered"
+    assert attempts == 3
+    assert delays == [0.5, 4.0]
+    assert [retry["status_code"] for retry in retries] == [429, 503]
+    assert retries[-1]["next_attempt"] == 3
+    assert retries[-1]["maximum_attempts"] == 4
+
+
+def test_persistent_provider_rate_limit_has_explicit_terminal_error() -> None:
+    attempts = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        return httpx.Response(429)
+
+    client = ModelClient(
+        profile(ModelProvider.openai_compatible),
+        "secret",
+        max_retries=2,
+    )
+    client.client = httpx.Client(transport=httpx.MockTransport(handler))
+    client._sleep = lambda _seconds: None
+
+    with pytest.raises(
+        ProviderTransientError,
+        match="HTTP 429.*after 3 attempts",
+    ):
+        client.complete(MESSAGES, [])
+    assert attempts == 3
 
 
 def test_profile_parameters_cannot_override_runner_owned_request_fields() -> None:

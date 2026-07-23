@@ -174,7 +174,9 @@ Then open `http://127.0.0.1:5173`.
 administrator console can change it later without a restart. Each active slot
 can consume the configured per-sandbox CPU, memory and workspace limits and
 can issue independent Provider requests, so reduce it on a small machine or
-under a low API rate limit.
+under a low API rate limit. HTTP 408/425/429 and common 5xx responses use
+bounded `Retry-After`-aware backoff; a Provider that remains unavailable after
+the retry budget still fails the run explicitly.
 
 Deployment and shutdown fail closed while any run is queued, preparing,
 running, or scoring. Wait for those runs to finish or cancel them in the WebUI.

@@ -11,6 +11,9 @@ Versioning while individual benchmark scenarios retain independent versions.
   disputed-claim cards instead of overflowing the result layout.
 - Soft tool/time budgets now emit a deterministic Runner warning instead of
   existing only as stored configuration.
+- Provider HTTP 408/425/429 and common 5xx responses now use bounded,
+  `Retry-After`-aware backoff with audited retry events instead of immediately
+  failing the benchmark run.
 
 ### Changed
 

@@ -338,7 +338,15 @@ class Worker:
                     kind="sandbox.started",
                 )
                 box = SecretBox(settings.app_secret)
-                candidate_client = ModelClient(profile, box.decrypt(encrypted_key))
+                candidate_client = ModelClient(
+                    profile,
+                    box.decrypt(encrypted_key),
+                    on_retry=lambda payload: self.record_provider_retry(
+                        run_id,
+                        "candidate",
+                        payload,
+                    ),
+                )
                 faults = FaultController.load([Path(path) for path in prepared.private_state["fault_scripts"]])
                 engine = AgentEngine(
                     run_id=run_id,
@@ -575,6 +583,11 @@ class Worker:
                 judge_profile,
                 box.decrypt(encrypted_key),
                 timeout_seconds=settings.semantic_judge_timeout,
+                on_retry=lambda payload: self.record_provider_retry(
+                    run_id,
+                    "semantic_judge",
+                    payload,
+                ),
             )
             outcome = SemanticJudge(client).review(
                 result,
@@ -682,6 +695,24 @@ class Worker:
                 run.status = status
             run.stage = stage
             append_event(session, run_id, kind, {"stage": stage, **(payload or {})})
+            session.commit()
+
+    @staticmethod
+    def record_provider_retry(
+        run_id: uuid.UUID,
+        phase: str,
+        payload: dict[str, object],
+    ) -> None:
+        with SessionLocal() as session:
+            run = session.get(BenchmarkRun, run_id)
+            if not run or run.status == RunStatus.cancelled:
+                return
+            append_event(
+                session,
+                run_id,
+                "provider.retry",
+                {"phase": phase, **payload},
+            )
             session.commit()
 
     @staticmethod
