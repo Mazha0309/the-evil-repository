@@ -210,7 +210,7 @@ export default function AdminPage({
             </label>
             <label className="field">
               <span>{text("初始密码", "Initial password")}</span>
-              <input name="password" type="password" minLength={12} required />
+              <input name="password" type="password" minLength={8} required />
             </label>
             <label className="field">
               <span>{text("角色", "Role")}</span>

@@ -25,13 +25,13 @@ class LoginCreate(BaseModel):
 
 class SetupCreate(BaseModel):
     username: str = Field(min_length=2, max_length=32)
-    password: str = Field(min_length=12, max_length=256)
+    password: str = Field(min_length=8, max_length=256)
     setup_token: str | None = Field(default=None, max_length=500)
 
 
 class RegisterCreate(BaseModel):
     username: str = Field(min_length=2, max_length=32)
-    password: str = Field(min_length=12, max_length=256)
+    password: str = Field(min_length=8, max_length=256)
 
 
 class UserRead(ORMModel):
@@ -53,7 +53,7 @@ class AuthRead(BaseModel):
 class AccountUpdate(BaseModel):
     username: str | None = Field(default=None, min_length=2, max_length=32)
     current_password: str | None = Field(default=None, max_length=256)
-    new_password: str | None = Field(default=None, min_length=12, max_length=256)
+    new_password: str | None = Field(default=None, min_length=8, max_length=256)
 
 
 class SessionRead(ORMModel):
@@ -75,7 +75,7 @@ class AdminUserUpdate(BaseModel):
     username: str | None = Field(default=None, min_length=2, max_length=32)
     role: UserRole | None = None
     enabled: bool | None = None
-    password: str | None = Field(default=None, min_length=12, max_length=256)
+    password: str | None = Field(default=None, min_length=8, max_length=256)
 
 
 class PlatformSettingsRead(ORMModel):

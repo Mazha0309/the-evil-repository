@@ -3,6 +3,13 @@
 All notable platform changes are recorded here. The project follows Semantic
 Versioning while individual benchmark scenarios retain independent versions.
 
+## [0.2.1] - 2026-07-23
+
+### Changed
+
+- Reduced the minimum account password length from 12 to 8 characters.
+  Passwords remain scrypt-hashed, and login attempts remain rate-limited.
+
 ## [0.2.0] - 2026-07-23
 
 ### Added

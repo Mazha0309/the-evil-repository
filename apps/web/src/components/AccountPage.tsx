@@ -99,7 +99,7 @@ export default function AccountPage({ user }: { user: UserAccount }) {
               <input
                 name="new_password"
                 type="password"
-                minLength={12}
+                minLength={8}
                 autoComplete="new-password"
               />
               <small>

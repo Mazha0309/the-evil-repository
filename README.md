@@ -18,7 +18,7 @@ provider credentials.
 
 ## Status
 
-The platform is currently **v0.2.0** and remains under active construction.
+The platform is currently **v0.2.1** and remains under active construction.
 See [`CHANGELOG.md`](CHANGELOG.md). This release includes the canonical
 “terminal repository” challenge, account isolation, administrator controls,
 server monitoring, and the complete execution, telemetry, scoring, and
@@ -59,6 +59,7 @@ proxy. It provides:
 - first-run administrator setup and optional public registration;
 - one unique account name for both sign-in and display, with no email-service
   dependency;
+- 8-character minimum passwords, scrypt hashing, and login rate limiting;
 - `admin` and `user` roles;
 - HttpOnly session cookies, CSRF-protected mutations, session listing and
   revocation;

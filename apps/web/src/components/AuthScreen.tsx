@@ -134,13 +134,13 @@ export default function AuthScreen({ config }: { config: AuthConfig }) {
               name="password"
               type="password"
               required
-              minLength={mode === "login" ? 1 : 12}
+              minLength={mode === "login" ? 1 : 8}
               autoComplete={
                 mode === "login" ? "current-password" : "new-password"
               }
             />
             {mode !== "login" && (
-              <small>{text("至少 12 个字符", "At least 12 characters")}</small>
+              <small>{text("至少 8 个字符", "At least 8 characters")}</small>
             )}
           </label>
           {mode !== "login" && (
@@ -150,7 +150,7 @@ export default function AuthScreen({ config }: { config: AuthConfig }) {
                 name="confirm_password"
                 type="password"
                 required
-                minLength={12}
+                minLength={8}
                 autoComplete="new-password"
               />
             </label>
