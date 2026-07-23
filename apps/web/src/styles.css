@@ -3143,6 +3143,18 @@ pre {
   line-height: 1.55;
 }
 
+.semantic-review__criteria code,
+.semantic-review__disputes code {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+  text-overflow: clip;
+  white-space: normal;
+  word-break: break-word;
+}
+
 .score-bar--semantic i {
   background: #73d8ff;
   box-shadow: 0 0 8px rgba(115, 216, 255, 0.4);

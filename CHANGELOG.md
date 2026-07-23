@@ -3,6 +3,23 @@
 All notable platform changes are recorded here. The project follows Semantic
 Versioning while individual benchmark scenarios retain independent versions.
 
+## [0.7.1] - 2026-07-23
+
+### Fixed
+
+- Long semantic-judge evidence references now wrap within criterion and
+  disputed-claim cards instead of overflowing the result layout.
+- Soft tool/time budgets now emit a deterministic Runner warning instead of
+  existing only as stored configuration.
+
+### Changed
+
+- Terminal Repository Scenario 3.0.2 recalibrates tool-call budgets from
+  1,200/2,200 to 250/650 using a 35-minute, 443-call full-scale run while
+  retaining the 40/80-minute time budgets.
+- Tool-efficiency points now decline between the configured soft and hard
+  call limits, and invalid soft/hard ordering is rejected.
+
 ## [0.7.0] - 2026-07-23
 
 ### Added

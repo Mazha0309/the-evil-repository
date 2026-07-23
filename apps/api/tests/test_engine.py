@@ -129,6 +129,47 @@ def test_substantive_call_count_limits_identical_padding() -> None:
     assert substantive_tool_call_count(events) == 3
 
 
+def test_soft_budget_warnings_fire_once_per_threshold(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    scenario = load_scenario(SCENARIO_ROOT)
+    prepared = PreparedScenario(
+        scenario_root=SCENARIO_ROOT,
+        workspace=tmp_path,
+        metadata=scenario.metadata,
+    )
+    clock = [100.0]
+    monkeypatch.setattr(engine_module.time, "monotonic", lambda: clock[0])
+    engine = AgentEngine(
+        run_id=uuid.uuid4(),
+        client=FinalAnswerClient(),
+        sandbox=SimpleNamespace(),
+        prepared=prepared,
+        faults=FaultController([]),
+    )
+    monkeypatch.setattr(
+        engine,
+        "_event",
+        lambda kind, payload: engine.events.append({"kind": kind, **payload}),
+    )
+
+    engine.tool_calls = 250
+    call_warning = engine._soft_budget_warning()
+    assert call_warning is not None
+    assert "250 tool calls" in call_warning
+    assert engine._soft_budget_warning() is None
+
+    clock[0] += 2_400
+    time_warning = engine._soft_budget_warning()
+    assert time_warning is not None
+    assert "2400 active seconds" in time_warning
+    assert [event["crossed"] for event in engine.events] == [
+        ["tool_calls"],
+        ["active_time"],
+    ]
+
+
 def test_pause_waits_at_safe_boundary_and_excludes_paused_time(
     tmp_path: Path,
     monkeypatch,

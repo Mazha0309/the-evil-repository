@@ -45,8 +45,8 @@ class Settings(BaseSettings):
 
     default_soft_seconds: int = 2_400
     default_hard_seconds: int = 4_800
-    default_soft_tool_calls: int = 1_200
-    default_hard_tool_calls: int = 2_200
+    default_soft_tool_calls: int = 250
+    default_hard_tool_calls: int = 650
     api_prefix: str = "/api/v1"
     seed_manifest: str | None = Field(default=None)
 

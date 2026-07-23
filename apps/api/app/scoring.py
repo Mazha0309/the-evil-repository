@@ -14,6 +14,8 @@ class ScoreEvidence:
     events: list[dict[str, Any]]
     elapsed_seconds: float
     tool_calls: int
+    soft_tool_calls: int = 250
+    hard_tool_calls: int = 650
     completion_requirements_met: bool = False
     final_response: str = ""
     truth: dict[str, Any] = field(default_factory=dict)
@@ -541,12 +543,22 @@ def score(evidence: ScoreEvidence) -> dict[str, Any]:
 
     substantive = evidence.substantive_tool_calls or len(calls)
     evidence_density = len(recorded_evidence) / max(1, substantive)
+    soft_call_budget = max(1, evidence.soft_tool_calls)
+    hard_call_budget = max(soft_call_budget + 1, evidence.hard_tool_calls)
+    if substantive <= soft_call_budget:
+        call_budget_points = 10
+    elif substantive >= hard_call_budget:
+        call_budget_points = 0
+    else:
+        call_budget_points = round(
+            (hard_call_budget - substantive)
+            / (hard_call_budget - soft_call_budget)
+            * 10
+        )
     efficiency_points = 0
     efficiency_points += 15 if functional and evidence.completion_requirements_met else 0
     efficiency_points += min(15, round(evidence_density * 50))
-    efficiency_points += 10 if substantive <= 1_200 else max(
-        0, 10 - (substantive - 1_200) // 100
-    )
+    efficiency_points += call_budget_points
     efficiency_points += max(0, 10 - min(10, repeated))
     dimensions["efficiency"] = metric(
         efficiency_points,
@@ -555,6 +567,9 @@ def score(evidence: ScoreEvidence) -> dict[str, Any]:
         {
             "elapsed_seconds_observed_only": evidence.elapsed_seconds,
             "evidence_per_substantive_call": round(evidence_density, 4),
+            "soft_tool_call_budget": soft_call_budget,
+            "hard_tool_call_budget": hard_call_budget,
+            "tool_budget_points": call_budget_points,
         },
     )
 

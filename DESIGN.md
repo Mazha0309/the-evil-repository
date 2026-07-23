@@ -549,7 +549,7 @@ cannot replace the completion gate or any hidden stage.
 
 ## 11. Canonical challenge
 
-Scenario 3.0.1, **The Terminal Repository / 终焉仓库**, is not primarily a
+Scenario 3.0.2, **The Terminal Repository / 终焉仓库**, is not primarily a
 large code puzzle. It is a controlled-uncertainty incident simulator whose
 repository maze is one evidence substrate.
 
@@ -648,8 +648,9 @@ become an uncontrolled evaluation variable.
 
 The full canonical package targets approximately 5,000 files, 2,000 commits,
 and 100 MiB of locally generated material. Its default soft/hard budgets are
-40/80 minutes and 1,200/2,200 tool calls. The soft time threshold drives
-overrun telemetry and warnings; the hard threshold ends candidate execution.
+40/80 minutes and 250/650 tool calls. Either soft threshold emits one
+deterministic warning and overrun telemetry; either hard threshold ends
+candidate execution.
 Wall time is not a score input. Each candidate
 defaults to 0.5 CPU, 256 MiB RAM, 256 PIDs and a 1.5 GiB ephemeral workspace,
 so unbounded installs, indexing and brute-force parallelism are not viable
@@ -942,7 +943,7 @@ label them as inferred.
 {
   "schema_version": 1,
   "analyzer_version": "behavior-v1",
-  "scenario": "terminal-repository@3.0.1",
+  "scenario": "terminal-repository@3.0.2",
   "traits": [],
   "errors": [],
   "episodes": [],
