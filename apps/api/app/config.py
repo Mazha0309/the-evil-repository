@@ -37,13 +37,13 @@ class Settings(BaseSettings):
     sandbox_nano_cpus: int = 500_000_000
     sandbox_pids_limit: int = 256
     sandbox_tool_timeout: int = 30
-    sandbox_hard_timeout: int = 14_400
+    sandbox_hard_timeout: int = 4_800
     sandbox_max_output: int = 65_536
     artifact_root: str = "/var/lib/evil-repository/artifacts"
     scenarios_root: Path = Field(default_factory=default_scenarios_root)
 
-    default_soft_seconds: int = 7_200
-    default_hard_seconds: int = 14_400
+    default_soft_seconds: int = 2_400
+    default_hard_seconds: int = 4_800
     default_soft_tool_calls: int = 1_200
     default_hard_tool_calls: int = 2_200
     api_prefix: str = "/api/v1"

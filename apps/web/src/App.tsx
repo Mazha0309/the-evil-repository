@@ -902,24 +902,30 @@ function NewRunPage() {
             icon={<Gauge size={16} />}
             title={text("预算", "Budgets")}
             detail={text(
-              "软性扣分曲线与硬停止",
-              "Soft score curve and hard stop",
+              "40 分钟软告警与 80 分钟硬停止",
+              "40-minute soft warning and 80-minute hard stop",
             )}
           />
           <div className="budget-grid">
-            <Field label={text("软时间限制（秒）", "Soft time (seconds)")}>
+            <Field
+              label={text("软时间限制（秒）", "Soft time (seconds)")}
+              hint={text("默认 40 分钟", "40-minute default")}
+            >
               <input
                 name="soft_seconds"
                 type="number"
-                defaultValue={7200}
+                defaultValue={2400}
                 min={60}
               />
             </Field>
-            <Field label={text("硬时间限制（秒）", "Hard time (seconds)")}>
+            <Field
+              label={text("硬时间限制（秒）", "Hard time (seconds)")}
+              hint={text("默认 80 分钟", "80-minute default")}
+            >
               <input
                 name="hard_seconds"
                 type="number"
-                defaultValue={14400}
+                defaultValue={4800}
                 min={300}
               />
             </Field>

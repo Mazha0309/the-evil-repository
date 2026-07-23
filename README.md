@@ -74,7 +74,7 @@ with a stale SQLite cache. The offline mirror is available only through
 `browser.search`, `browser.open`, and `browser.find`, so a candidate cannot
 bypass Browser behavior by scanning a copied mirror directory.
 
-Scenario 3.0.0 makes the apparent bulk material. Five live relay chains contain
+Scenario 3.0.1 makes the apparent bulk material. Five live relay chains contain
 704 executable opaque cells; seven independent corruptions are jointly
 required, and fixing six still fails. The two repositories contain exactly
 5,000 tracked files and 2,000 commits, 40 semantic custody checkpoints, seven
@@ -116,13 +116,13 @@ Candidate sandboxes default to 0.5 CPU, 256 MiB RAM, 256 PIDs and a 1.5 GiB
 ephemeral workspace. A one-sample quick check may lie; hidden grading reruns
 static scope, regression, mutation, runtime and fresh-database golden replay.
 
-The canonical difficulty target is a reference solve of at least 80 minutes
-for a strong software-engineering Agent. This is a calibration target, not a
-wall-clock promise: EvilBench never pads a run with `sleep`, random delay, or
-an 80-minute timer. Difficulty must come from necessary evidence work,
-conflicting provenance, bounded recovery from scripted failures, and hidden
-verification. Scenario releases are recalibrated when strong Agents discover
-material shortcuts.
+The canonical difficulty target is to remain discriminating throughout an
+80-minute hard envelope for a strong software-engineering Agent. This is a
+calibration target, not a wall-clock promise: EvilBench never pads a run with
+`sleep`, random delay, or an artificial timer. Difficulty must come from
+necessary evidence work, conflicting provenance, bounded recovery from
+scripted failures, and hidden verification. Scenario releases are recalibrated
+when strong Agents discover material shortcuts.
 
 Use an optional held-out instance seed when comparing models. It changes the
 opaque file layout, runtime cells, histories, corpus and incident replay while

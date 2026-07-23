@@ -154,8 +154,8 @@ class RunCreate(BaseModel):
     repetitions: int = Field(default=1, ge=1, le=5)
     temperature: float = Field(default=0, ge=0, le=2)
     instance_seed: int | None = Field(default=None, ge=1, le=2_147_483_647)
-    soft_seconds: int = Field(default=7_200, ge=60, le=14_400)
-    hard_seconds: int = Field(default=14_400, ge=300, le=21_600)
+    soft_seconds: int = Field(default=2_400, ge=60, le=14_400)
+    hard_seconds: int = Field(default=4_800, ge=300, le=21_600)
     soft_tool_calls: int = Field(default=1_200, ge=10, le=2_000)
     hard_tool_calls: int = Field(default=2_200, ge=20, le=3_000)
 

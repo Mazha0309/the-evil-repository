@@ -43,9 +43,9 @@ contradiction and failure belongs to a versioned, replayable truth model.
 - Distinguish leaderboard scoring from non-judgmental behavioral analysis.
 - Make an Agent's investigation strategy, recurring errors, and recovery
   patterns comparable without collecting private reasoning.
-- Calibrate the canonical scenario so a strong software-engineering Agent's
-  reference solve requires at least approximately 80 minutes of useful
-  investigation, without artificial waiting.
+- Calibrate the canonical scenario to remain discriminating throughout an
+  80-minute hard envelope for a strong software-engineering Agent, without
+  artificial waiting.
 - Remain local-first and safe to operate on a developer workstation.
 
 ### Non-goals
@@ -514,7 +514,7 @@ cannot replace the completion gate or any hidden stage.
 
 ## 11. Canonical challenge
 
-Scenario 3.0.0, **The Terminal Repository / 终焉仓库**, is not primarily a
+Scenario 3.0.1, **The Terminal Repository / 终焉仓库**, is not primarily a
 large code puzzle. It is a controlled-uncertainty incident simulator whose
 repository maze is one evidence substrate.
 
@@ -613,8 +613,9 @@ become an uncontrolled evaluation variable.
 
 The full canonical package targets approximately 5,000 files, 2,000 commits,
 and 100 MiB of locally generated material. Its default soft/hard budgets are
-two/four hours and 1,200/2,200 tool calls, leaving enough room for recovery
-without making brute-force enumeration the intended strategy. Each candidate
+40/80 minutes and 1,200/2,200 tool calls. The soft time threshold drives
+overrun telemetry and warnings; the hard threshold ends candidate execution.
+Wall time is not a score input. Each candidate
 defaults to 0.5 CPU, 256 MiB RAM, 256 PIDs and a 1.5 GiB ephemeral workspace,
 so unbounded installs, indexing and brute-force parallelism are not viable
 strategies. Scaled smoke fixtures exist for development only and must never be
@@ -622,10 +623,11 @@ reported as leaderboard runs.
 
 Before a scenario release, maintainers run a versioned reference procedure
 with a minimal golden patch and at least one strong software-engineering Agent.
-The canonical target is at least approximately 80 minutes of useful active
-investigation for the strong-Agent reference solve. Calibration reports record
-elapsed/active time, tool calls, token usage, evidence coverage, shortcut
-attempts, and the exact platform, scenario, provider, and model versions.
+The canonical target is a strong-Agent reference solve that uses a substantial
+portion of, but completes inside, the 80-minute hard envelope. Calibration
+reports record elapsed/active time, tool calls, token usage, evidence coverage,
+shortcut attempts, and the exact platform, scenario, provider, and model
+versions.
 
 This target is empirical, not a guaranteed minimum for every future model. No
 runtime is delayed merely to hit a number. If a strong Agent finishes
@@ -643,7 +645,7 @@ complexity:
 
 | Source | Mechanism adopted here |
 |---|---|
-| [METR Time Horizon 1.1](https://metr.org/time-horizons/) | Human-expert task duration and Agent wall time are separate measurements. The 80-minute strong-Agent target remains provisional until repeated human and Agent calibration; wall time is never rewarded. |
+| [METR Time Horizon 1.1](https://metr.org/time-horizons/) | Human-expert task duration and Agent wall time are separate measurements. The 80-minute strong-Agent envelope remains provisional until repeated human and Agent calibration; wall time is never rewarded. |
 | [Terminal-Bench 2.1](https://www.tbench.ai/news/terminal-bench-2-1) | Continuous task validation checks the broken baseline, near-miss failure, oracle repair, resource envelope, database initialization and offline isolation. Scenario smoke runs in CI because difficult-but-broken is not a valid benchmark. |
 | [OSWorld 2.0](https://arxiv.org/abs/2606.29537) | Dynamic information, implicit-state recovery, cross-source reasoning and separate safety telemetry become four logical incident phases, streaming alerts and an auditable risk/data ledger. |
 | [ITBench](https://research.ibm.com/publications/itbench-evaluating-ai-agents-across-diverse-real-world-it-automation-tasks) | Incident success is judged as correct, safe and fast: SLO, error budget, data integrity, action risk and diagnosis are independent signals. |
@@ -905,7 +907,7 @@ label them as inferred.
 {
   "schema_version": 1,
   "analyzer_version": "behavior-v1",
-  "scenario": "terminal-repository@3.0.0",
+  "scenario": "terminal-repository@3.0.1",
   "traits": [],
   "errors": [],
   "episodes": [],

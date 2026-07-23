@@ -32,6 +32,8 @@ Versioning while individual benchmark scenarios retain independent versions.
 - Deployment and shutdown commands now fail closed while runs are queued or
   active. A deliberately forced Runner restart marks interrupted in-memory
   runs as non-resumable failures instead of leaving false-live records.
+- Terminal Repository Scenario 3.0.1 aligns metadata, API, WebUI and Compose
+  on a 40-minute soft threshold and an 80-minute hard stop.
 
 ## [0.5.0] - 2026-07-23
 
