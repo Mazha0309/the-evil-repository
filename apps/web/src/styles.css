@@ -1645,26 +1645,28 @@ pre {
 .run-model-strip {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin-top: 13px;
+  flex-wrap: wrap;
+  gap: 18px;
+  margin-top: 15px;
 }
 
 .run-model-badge {
   display: inline-flex;
-  min-height: 43px;
+  min-height: 30px;
   align-items: center;
-  gap: 9px;
-  border: 1px solid #3d582f;
-  border-radius: 6px;
-  padding: 6px 10px;
+  gap: 8px;
+  border: 0;
+  border-left: 2px solid #6f9c45;
+  border-radius: 0;
+  padding: 0 0 0 9px;
   color: var(--lime);
-  background: rgba(173, 255, 47, 0.035);
+  background: transparent;
 }
 
 .run-model-badge--judge {
-  border-color: #5f4d2b;
+  border-left-color: #806531;
   color: var(--amber);
-  background: rgba(243, 182, 64, 0.035);
+  background: transparent;
 }
 
 .run-model-badge > span {
@@ -1684,14 +1686,13 @@ pre {
 
 .run-model-badge strong {
   color: #edf4e9;
-  font-size: 11px;
+  font-size: 10px;
 }
 
 .run-model-badge code {
   max-width: 220px;
   overflow: hidden;
-  border-left: 1px solid var(--line-bright);
-  padding-left: 9px;
+  padding-left: 2px;
   color: #7f897a;
   font-size: 8px;
   text-overflow: ellipsis;

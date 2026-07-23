@@ -1538,6 +1538,18 @@ function RunDetailPage() {
             <span>{shortId(data.id)}</span>
             <span>{new Date(data.created_at).toLocaleString(locale)}</span>
           </div>
+          <h1>{stageLabel(data.stage, locale)}</h1>
+          <p>
+            {data.status === "completed"
+              ? text(
+                  "隐藏裁判流水线已经归档本次调查。",
+                  "The hidden judge pipeline has archived this investigation.",
+                )
+              : text(
+                  "Runner 正在从隔离候选环境中流式传输可观察的调查状态。",
+                  "The Runner is streaming observable investigation state from the isolated candidate.",
+                )}
+          </p>
           <div className="run-model-strip">
             <RunModelBadge
               identity={candidateModel}
@@ -1553,18 +1565,6 @@ function RunDetailPage() {
               />
             )}
           </div>
-          <h1>{stageLabel(data.stage, locale)}</h1>
-          <p>
-            {data.status === "completed"
-              ? text(
-                  "隐藏裁判流水线已经归档本次调查。",
-                  "The hidden judge pipeline has archived this investigation.",
-                )
-              : text(
-                  "Runner 正在从隔离候选环境中流式传输可观察的调查状态。",
-                  "The Runner is streaming observable investigation state from the isolated candidate.",
-                )}
-          </p>
         </div>
         <div className="run-score">
           <span>{text("得分", "Score")}</span>
