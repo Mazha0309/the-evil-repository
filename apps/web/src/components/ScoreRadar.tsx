@@ -38,9 +38,9 @@ export default function ScoreRadar({
           radar: {
             radius: "68%",
             splitNumber: 4,
-            indicator: entries.map(([key, value]) => ({
+            indicator: entries.map(([key]) => ({
               name: label(key, isChinese),
-              max: value.maximum,
+              max: 100,
             })),
             axisName: { color: "#a8b0a1", fontSize: 10 },
             splitLine: { lineStyle: { color: ["#262d24"] } },
@@ -55,7 +55,14 @@ export default function ScoreRadar({
               data: [
                 {
                   name: text("得分", "Score"),
-                  value: entries.map(([, value]) => value.score),
+                  value: entries.map(([, value]) =>
+                    value.maximum > 0
+                      ? Math.max(
+                          0,
+                          Math.min(100, (value.score / value.maximum) * 100),
+                        )
+                      : 0,
+                  ),
                   symbolSize: 5,
                   lineStyle: { color: "#adff2f", width: 2 },
                   itemStyle: { color: "#adff2f" },
@@ -73,15 +80,17 @@ export default function ScoreRadar({
 function label(value: string, isChinese: boolean) {
   const chinese: Record<string, string> = {
     functional_correctness: "功能正确性",
-    root_cause_reasoning: "根因推理",
-    database_forensics: "数据库取证",
-    ci_oracle_analysis: "CI 可信度",
-    evidence_quality: "证据质量",
-    git_archaeology: "Git 考古",
-    patch_engineering: "补丁质量",
+    incident_stabilization: "事故稳定",
+    causal_diagnosis: "因果诊断",
+    evidence_provenance: "证据溯源",
+    environment_forensics: "环境取证",
+    objective_reasoning: "客观推理",
+    decision_quality: "决策质量",
+    self_verification: "自我验证",
     security: "安全",
     tool_resilience: "工具恢复",
-    scope_control: "范围控制",
+    patch_scope: "补丁范围",
+    state_management: "状态管理",
     investigation_report: "调查报告",
     efficiency: "效率",
   };

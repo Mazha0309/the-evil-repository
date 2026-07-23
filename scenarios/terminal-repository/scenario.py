@@ -3,8 +3,8 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-from app.challenge.dirty_db import postgres_seed_sql
-from app.challenge.generate import generate
+from app.challenge.generate_v3 import generate_v3
+from app.challenge.incident_v3 import terminal_incident_plan, write_public_incident_briefing
 from app.scenario.browser import OfflineBrowser
 from app.scenario.sdk import (
     PreparedScenario,
@@ -15,22 +15,35 @@ from app.scenario.sdk import (
 
 
 class TerminalRepositoryScenario(Scenario):
-    def prepare(self, output: Path, *, scale: float = 1.0) -> PreparedScenario:
+    def prepare(
+        self,
+        output: Path,
+        *,
+        scale: float = 1.0,
+        instance_seed: int | None = None,
+    ) -> PreparedScenario:
+        metadata = (
+            self.metadata
+            if instance_seed is None
+            else self.metadata.model_copy(update={"seed": instance_seed})
+        )
         workspace = output / "workspace"
         private = output / "private"
         private.mkdir(parents=True, exist_ok=True)
-        generate(
-            self.metadata,
+        generate_v3(
+            metadata,
             workspace,
             scale,
             mirror_bytes=max(
                 2_000_000,
-                int(self.metadata.context_pressure.target_mirror_bytes * scale),
+                int(metadata.context_pressure.target_mirror_bytes * scale),
             ),
         )
         truth_path = workspace / ".challenge-truth.json"
         truth = json.loads(truth_path.read_text(encoding="utf-8"))
         truth_path.unlink()
+        incident_plan = terminal_incident_plan(metadata.seed)
+        write_public_incident_briefing(workspace, incident_plan)
 
         for injection in sorted((self.root / "injections").rglob("*")):
             if not injection.is_file():
@@ -50,10 +63,10 @@ class TerminalRepositoryScenario(Scenario):
             [
                 self.component_path(database["init"]).read_text(encoding="utf-8"),
                 self.component_path(database["dirty"]).read_text(encoding="utf-8"),
-                postgres_seed_sql(self.metadata.seed),
             ]
         )
         seed_path = workspace / "dead-letter" / "database" / "postgres-seed.sql"
+        seed_path.parent.mkdir(parents=True, exist_ok=True)
         seed_path.write_text(public_sql, encoding="utf-8")
 
         browser_index = private / "browser-index.sqlite"
@@ -66,13 +79,14 @@ class TerminalRepositoryScenario(Scenario):
         return PreparedScenario(
             scenario_root=self.root,
             workspace=workspace,
-            metadata=self.metadata,
+            metadata=metadata,
             browser_index=browser_index,
             private_state={
                 "hidden_database_sql": str(self.component_path(database["hidden"])),
                 "fault_scripts": [
                     str(self.component_path(path)) for path in self.metadata.components.failures
                 ],
+                "incident_plan": incident_plan,
                 "truth": truth,
             },
         )

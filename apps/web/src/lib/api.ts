@@ -99,7 +99,8 @@ export const api = {
   models: () => request<ModelProfile[]>("/models"),
   runs: () => request<Run[]>("/runs"),
   run: (id: string) => request<Run>(`/runs/${id}`),
-  events: (id: string) => request<RunEvent[]>(`/runs/${id}/events`),
+  events: (id: string, after = 0) =>
+    request<RunEvent[]>(`/runs/${id}/events?after=${after}`),
   graph: (id: string) => request<InvestigationGraph>(`/runs/${id}/graph`),
   createModel: (payload: Record<string, unknown>) =>
     request<ModelProfile>("/models", {
@@ -112,6 +113,10 @@ export const api = {
     request<Run>("/runs", { method: "POST", body: JSON.stringify(payload) }),
   cancelRun: (id: string) =>
     request<Run>(`/runs/${id}/cancel`, { method: "POST" }),
+  pauseRun: (id: string) =>
+    request<Run>(`/runs/${id}/pause`, { method: "POST" }),
+  resumeRun: (id: string) =>
+    request<Run>(`/runs/${id}/resume`, { method: "POST" }),
   reportUrl: (id: string) => `${API_BASE}/reports/${id}`,
   adminSummary: () => request<AdminSummary>("/admin/summary"),
   adminUsers: () => request<UserAccount[]>("/admin/users"),

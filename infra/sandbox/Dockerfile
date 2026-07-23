@@ -4,6 +4,7 @@ ARG DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         bash \
+        binutils \
         ca-certificates \
         coreutils \
         file \
@@ -16,6 +17,7 @@ RUN apt-get update \
         python3-venv \
         ripgrep \
         sqlite3 \
+        strace \
     && rm -rf /var/lib/apt/lists/*
 
 RUN mkdir -p /workspace /opt/evil/bin \

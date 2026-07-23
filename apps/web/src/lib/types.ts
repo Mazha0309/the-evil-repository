@@ -103,6 +103,8 @@ export interface Task {
     scoring?: Record<string, number>;
     repositories?: Array<Record<string, unknown>>;
     tools?: string[];
+    completion?: CompletionSpec;
+    incident?: IncidentSpec;
     localizations?: Record<
       string,
       {
@@ -114,6 +116,31 @@ export interface Task {
   enabled: boolean;
   created_at: string;
   updated_at: string;
+}
+
+export interface CompletionSpec {
+  min_tool_calls?: number;
+  min_hypotheses?: number;
+  min_rejected_hypotheses?: number;
+  min_evidence?: number;
+  required_evidence_sources?: string[];
+  required_actions?: string[];
+  required_artifacts?: Record<string, number>;
+}
+
+export interface IncidentSpec {
+  enabled?: boolean;
+  logical_tick_seconds?: number;
+  horizon_ticks?: number;
+  min_logical_ticks?: number;
+  min_unique_observations?: number;
+  min_services_observed?: number;
+  phase_observations?: Record<string, number>;
+  required_decisions?: string[];
+  require_snapshot_before_risky_action?: boolean;
+  required_verification_modes?: string[];
+  required_successful_verification_modes?: string[];
+  required_verification_sequence?: string[];
 }
 
 export interface ModelProfile {
@@ -152,6 +179,12 @@ export interface Run {
     maximum?: number;
     dimensions?: Record<string, ScoreMetric>;
     caps?: Array<{ reason: string; max: number }>;
+    deductions?: Array<{
+      code: string;
+      points: number;
+      count: number;
+      detail: string;
+    }>;
     behavior_profile?: Record<string, number>;
     error_profile?: Record<string, number>;
     completion?: {

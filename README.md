@@ -4,12 +4,13 @@
 
 > An evidence-hostile, container-isolated benchmark for long-horizon AI software agents.
 
-The Evil Repository drops a model into a deliberately rotten software incident:
-two cross-referenced Git repositories, contradictory documentation, broken CI
-oracles, prompt injection, deterministic tool failures, a stale SQLite cache,
-and a production-style PostgreSQL snapshot full of dirty data. The model must
-find the real regression, make the smallest correct patch, and support it with
-an auditable evidence report.
+The Evil Repository drops a model into a deterministic but uncertain production
+incident: two cross-referenced Git repositories, contradictory documentation,
+broken CI oracles, intermittent service symptoms, phantom bugs, prompt
+injection, scripted tool failures, a stale SQLite cache, and a production-style
+PostgreSQL snapshot full of dirty data. The model must decide what is real,
+what must not be changed, how to contain risk, and only then make the smallest
+proven patch with an auditable evidence report.
 
 It is closer to an AI Agent CTF, incident-response benchmark, and behavior
 analysis platform than a conventional “fix this failing test” dataset. A run
@@ -24,11 +25,15 @@ provider credentials.
 
 ## Status
 
-The platform is currently **v0.3.0** and remains under active construction.
+The platform is currently **v0.5.0** and remains under active construction.
 See [`CHANGELOG.md`](CHANGELOG.md). This release includes the canonical
 “terminal repository” challenge, account isolation, administrator controls,
-server monitoring, and the complete execution, telemetry, scoring, and
-visualization path around it.
+server monitoring, a live Agent activity console, and the complete execution,
+telemetry, scoring, and visualization path around it.
+
+Long investigations can be paused at a safe Provider/tool boundary and resumed
+without discarding the candidate workspace or conversation. Paused time does
+not consume the configured hard execution budget.
 
 The control plane supports four explicit model protocols: OpenAI Responses,
 Anthropic Messages, OpenAI-compatible Chat Completions, and Ollama Chat.
@@ -55,11 +60,23 @@ with a stale SQLite cache. The offline mirror is available only through
 `browser.search`, `browser.open`, and `browser.find`, so a candidate cannot
 bypass Browser behavior by scanning a copied mirror directory.
 
-Scenario 2.0.0 makes the apparent bulk material: 192 compatibility-ledger
-shards and 48 query fragments execute on the live path, roughly 192 relevant
-history changes conflict with one another, and 224 cross-linked incident
-bundles contribute 1,344 CI/log/Issue/migration/runtime records across both
-repositories.
+Scenario 3.0.0 makes the apparent bulk material. Five live relay chains contain
+704 executable opaque cells; seven independent corruptions are jointly
+required, and fixing six still fails. The two repositories contain exactly
+5,000 tracked files and 2,000 commits, 40 semantic custody checkpoints, seven
+objective reasoning gates, conflicting dependency eras, a recovered unknown
+binary, damaged caches and approximately 100 MiB of offline material. Every
+critical transition changes active behavior, and the named branches are
+conflicting partial exports rather than golden snapshots.
+
+A trusted, deterministic Incident Director adds eight live tickets: one real
+intermittent regression, one correlated symptom, phantom performance and auth
+reports, historical-only dirty data, environment drift, a permission trap, and
+a genuine but out-of-incident 2038 risk. Production observations and actions
+go through project-mediated tools. They advance a logical replay clock and
+change SLO, error budget, data integrity, risk and rollback state without ever
+exposing Docker or the host. “No change,” “preserve,” “reject,” and “defer” can
+be correct answers.
 
 A candidate must build an observable investigation, not merely guess a patch.
 Before a normal final answer is accepted, the Scenario completion gate requires
@@ -70,10 +87,20 @@ validates the patch against fresh state, mutations, replay, security rules, and
 the scenario's private Truth Graph. Satisfying the gate proves coverage, not
 correctness.
 
-The canonical completion floor is 240 substantive tool calls, six hypotheses
-including three rejected hypotheses, 24 evidence records across Git, database,
-Browser, and runtime, all required investigation actions, and a 2,500-character
-report. Padding and repeated reads are audited and penalized.
+The canonical completion contract has no minimum call-count padding. It
+requires 14 hypotheses including six rejected hypotheses, 60 evidence records,
+Git/database/Browser/runtime/cross-repository/incident coverage, 40 distinct
+service-signal-window observations across triage, containment, repair and
+recovery, all eight services, dispositions for all eight tickets, at least 140
+logical ticks, ordered successful canary/replay/soak verification after a
+baseline, and a 6,500-character report. The judge separately deducts blind
+edits, repeated work, phantom fixes, unsafe actions, permission or boundary
+probes, database mutation, low-authority trust and missing post-change
+verification.
+
+Candidate sandboxes default to 0.5 CPU, 256 MiB RAM, 256 PIDs and a 1.5 GiB
+ephemeral workspace. A one-sample quick check may lie; hidden grading reruns
+static scope, regression, mutation, runtime and fresh-database golden replay.
 
 The canonical difficulty target is a reference solve of at least 80 minutes
 for a strong software-engineering Agent. This is a calibration target, not a
@@ -82,6 +109,18 @@ an 80-minute timer. Difficulty must come from necessary evidence work,
 conflicting provenance, bounded recovery from scripted failures, and hidden
 verification. Scenario releases are recalibrated when strong Agents discover
 material shortcuts.
+
+Use an optional held-out instance seed when comparing models. It changes the
+opaque file layout, runtime cells, histories, corpus and incident replay while
+remaining deterministic; the seed is archived for replay but is not copied
+into the candidate workspace. Reuse the same seed across compared models.
+
+Scenario maintainers can run the same oracle, near-miss, dirty-database,
+binary-forensics and resource-envelope checks used by CI:
+
+```bash
+make scenario-validate
+```
 
 ## Quick start
 

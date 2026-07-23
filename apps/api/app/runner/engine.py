@@ -12,11 +12,12 @@ from app.database import SessionLocal
 from app.events import append_event
 from app.investigation import link_evidence, record_evidence, record_hypothesis
 from app.models import BenchmarkRun, Evidence, Hypothesis, HypothesisRevision, HypothesisStatus
-from app.runner.faults import FaultController
-from app.runner.protocol import TOOL_DEFINITIONS, AssistantTurn, ToolCall, ToolResult
+from app.runner.faults import FaultController, synthetic_browser_document
+from app.runner.protocol import AssistantTurn, ToolCall, ToolResult, tool_definitions_for
 from app.runner.providers import ModelClient, tool_message
 from app.runner.sandbox import DockerSandbox
 from app.scenario.browser import OfflineBrowser
+from app.scenario.incident import IncidentDirector
 from app.scenario.sdk import PreparedScenario, ScenarioRunResult
 
 
@@ -36,7 +37,9 @@ class AgentEngine:
         self.prepared = prepared
         self.faults = faults
         self.browser = OfflineBrowser(prepared.browser_index) if prepared.browser_index else None
+        self.incident = IncidentDirector.from_prepared_state(prepared.private_state)
         self.read_counts: Counter[str] = Counter()
+        self.write_counts: Counter[str] = Counter()
         self.started = time.monotonic()
         self.input_tokens = 0
         self.output_tokens = 0
@@ -44,6 +47,7 @@ class AgentEngine:
         self.events: list[dict[str, Any]] = []
         self.final_rejections = 0
         self.completion_gaps: list[str] = []
+        self.paused_seconds = 0.0
 
     def run(self, prepared: PreparedScenario) -> ScenarioRunResult:
         if prepared is not self.prepared:
@@ -73,26 +77,44 @@ class AgentEngine:
             {"role": "user", "content": self.prepared.metadata.opening_prompt},
         ]
         final_response = ""
+        tool_definitions = tool_definitions_for(self.prepared.metadata.tools)
         hard_calls = self.prepared.metadata.budget.hard_tool_calls
         hard_seconds = self.prepared.metadata.budget.hard_seconds
+        turn_number = 0
 
-        while self.tool_calls < hard_calls and time.monotonic() - self.started < hard_seconds:
-            if self._cancelled():
+        while self.tool_calls < hard_calls and self._active_elapsed() < hard_seconds:
+            if not self._wait_for_resume():
                 final_response = "Run cancelled."
                 break
-            turn = self.client.complete(messages, TOOL_DEFINITIONS)
+            turn_number += 1
+            self._event(
+                "model.request",
+                {
+                    "turn": turn_number,
+                    "context_messages": len(messages),
+                    "tool_calls": self.tool_calls,
+                },
+            )
+            provider_started = time.monotonic()
+            turn = self.client.complete(messages, tool_definitions)
+            provider_duration_ms = round((time.monotonic() - provider_started) * 1_000)
             self.input_tokens += turn.input_tokens
             self.output_tokens += turn.output_tokens
             self._event(
                 "assistant.message",
                 {
+                    "turn": turn_number,
                     "content": turn.content,
                     "tool_calls": [call.model_dump(mode="json") for call in turn.tool_calls],
                     "input_tokens": turn.input_tokens,
                     "output_tokens": turn.output_tokens,
+                    "duration_ms": provider_duration_ms,
                 },
             )
             messages.append(self._assistant_message(turn, native))
+            if not self._wait_for_resume():
+                final_response = "Run cancelled."
+                break
             if not turn.tool_calls:
                 self.completion_gaps = self._completion_gaps()
                 if self.completion_gaps and self.final_rejections < 8:
@@ -123,15 +145,33 @@ class AgentEngine:
                         f"final attempts. Outstanding: {'; '.join(self.completion_gaps)}"
                     )
                 break
+            stop_requested = False
             for call in turn.tool_calls:
                 if self.tool_calls >= hard_calls:
+                    break
+                if not self._wait_for_resume():
+                    final_response = "Run cancelled."
+                    stop_requested = True
                     break
                 self.tool_calls += 1
                 self._event(
                     "tool.call",
                     {"name": call.name, "call_id": call.call_id, "arguments": call.arguments},
                 )
+                tool_started = time.monotonic()
                 result = self._execute(call)
+                if self.incident:
+                    checkpoint = self.incident.advance(call.name, result.status)
+                    result.metadata["incident_state"] = checkpoint
+                    if checkpoint["new_alerts"]:
+                        self._event(
+                            "incident.alert",
+                            {
+                                "tickets": checkpoint["new_alerts"],
+                                "logical_time": checkpoint["logical_time"],
+                            },
+                        )
+                tool_duration_ms = round((time.monotonic() - tool_started) * 1_000)
                 self._event(
                     "tool.result",
                     {
@@ -141,10 +181,13 @@ class AgentEngine:
                         "output": result.output,
                         "exit_code": result.exit_code,
                         "truncated": result.truncated,
+                        "duration_ms": tool_duration_ms,
                         **result.metadata,
                     },
                 )
                 messages.append(tool_message(call, result.model_dump_json(), native))
+            if stop_requested:
+                break
         else:
             final_response = "Hard scenario budget reached before a final response."
 
@@ -153,7 +196,7 @@ class AgentEngine:
         completion_actions = sorted(completion_actions_from_events(self.events))
         return ScenarioRunResult(
             final_response=final_response,
-            elapsed_seconds=time.monotonic() - self.started,
+            elapsed_seconds=self._active_elapsed(),
             tool_calls=self.tool_calls,
             events=self.events,
             private_state={
@@ -165,6 +208,8 @@ class AgentEngine:
                 "completion_actions": completion_actions,
                 "substantive_tool_calls": substantive_tool_call_count(self.events),
                 "final_rejections": self.final_rejections,
+                "paused_seconds": self.paused_seconds,
+                "incident_audit": self.incident.audit() if self.incident else {},
             },
         )
 
@@ -188,6 +233,48 @@ class AgentEngine:
             lines.append("- investigation actions: " + ", ".join(requirements.required_actions))
         for artifact, minimum in requirements.required_artifacts.items():
             lines.append(f"- artifact {artifact} with at least {minimum} characters")
+        incident = self.prepared.metadata.incident
+        if incident.enabled:
+            lines.extend(
+                [
+                    (
+                        "- incident replay coverage: at least "
+                        f"{incident.min_unique_observations} distinct service/signal/window observations"
+                    ),
+                    (
+                        "- incident logical progress: reach at least tick "
+                        f"{incident.min_logical_ticks}/{incident.horizon_ticks}"
+                    ),
+                    (
+                        "- incident service coverage: observe at least "
+                        f"{incident.min_services_observed} distinct services"
+                    ),
+                    "- submit dispositions for: " + ", ".join(incident.required_decisions),
+                    (
+                        "- incident verification modes: "
+                        + ", ".join(incident.required_verification_modes)
+                    ),
+                    "- preserve a snapshot before any risky incident action",
+                ]
+            )
+            if incident.phase_observations:
+                lines.append(
+                    "- phase observation coverage: "
+                    + ", ".join(
+                        f"{phase}>={minimum}"
+                        for phase, minimum in incident.phase_observations.items()
+                    )
+                )
+            if incident.required_successful_verification_modes:
+                lines.append(
+                    "- successful verification modes: "
+                    + ", ".join(incident.required_successful_verification_modes)
+                )
+            if incident.required_verification_sequence:
+                lines.append(
+                    "- verification order: "
+                    + " -> ".join(incident.required_verification_sequence)
+                )
         return "\n".join(lines)
 
     def _completion_gaps(self) -> list[str]:
@@ -243,6 +330,10 @@ class AgentEngine:
                     content = self.sandbox.collect_text(f"{patch_repo}/{artifact}")
             if len(content) < minimum:
                 gaps.append(f"artifact {artifact} length {len(content)}/{minimum}")
+        if self.incident:
+            gaps.extend(
+                self.incident.completion_gaps(self.prepared.metadata.incident)
+            )
         return gaps
 
     def _execute(self, call: ToolCall) -> ToolResult:
@@ -251,7 +342,42 @@ class AgentEngine:
             return scripted
         try:
             if call.name in {"list_files", "read_file", "write_file", "exec_command"}:
-                if call.name == "exec_command" and boundary_violation(str(call.arguments.get("command", ""))):
+                command = str(call.arguments.get("command", ""))
+                path = str(call.arguments.get("path", ""))
+                if call.name == "write_file" and protected_write_path(path):
+                    result = ToolResult(
+                        call_id=call.call_id,
+                        name=call.name,
+                        status="denied",
+                        output=(
+                            "Write denied: evidence, oracle, dependency, and "
+                            "recovered-environment artifacts are read-only"
+                        ),
+                        metadata={"policy_violation": "protected_artifact_write"},
+                    )
+                elif call.name == "exec_command" and permission_escalation(command):
+                    result = ToolResult(
+                        call_id=call.call_id,
+                        name=call.name,
+                        status="denied",
+                        output=(
+                            "Command denied: the candidate repair does not require "
+                            "privilege or recursive permission changes"
+                        ),
+                        metadata={"policy_violation": "permission_escalation"},
+                    )
+                elif call.name == "exec_command" and database_mutation(command):
+                    result = ToolResult(
+                        call_id=call.call_id,
+                        name=call.name,
+                        status="denied",
+                        output=(
+                            "Command denied: challenge databases are forensic evidence "
+                            "and are read-only to the candidate"
+                        ),
+                        metadata={"policy_violation": "database_mutation"},
+                    )
+                elif call.name == "exec_command" and boundary_violation(command):
                     result = ToolResult(
                         call_id=call.call_id,
                         name=call.name,
@@ -262,7 +388,11 @@ class AgentEngine:
                 else:
                     result = self.sandbox.execute(call)
                     if call.name == "read_file":
-                        self.read_counts[str(call.arguments.get("path", ""))] += 1
+                        self.read_counts[path] += 1
+                    elif call.name == "write_file":
+                        result.metadata["blind_write"] = not self._path_was_observed(path)
+                        self.write_counts[path] += 1
+                        result.metadata["write_ordinal"] = self.write_counts[path]
             elif call.name.startswith("browser_"):
                 result = self._browser(call)
             elif call.name == "record_hypothesis":
@@ -273,6 +403,34 @@ class AgentEngine:
                 result = self._link_evidence(call)
             elif call.name == "set_next_action":
                 result = self._set_next_action(call)
+            elif call.name.startswith("incident_") or call.name in {
+                "observe_service",
+                "submit_incident_decision",
+            }:
+                if self.incident is None:
+                    result = ToolResult(
+                        call_id=call.call_id,
+                        name=call.name,
+                        status="denied",
+                        output="This Scenario does not expose an incident replay.",
+                    )
+                else:
+                    patch_valid: bool | None = None
+                    scope_valid: bool | None = None
+                    if call.name == "incident_verify":
+                        patch_valid, scope_valid = self._incident_patch_state()
+                    known_evidence_keys = (
+                        self._known_evidence_keys()
+                        if call.name
+                        in {"incident_action", "submit_incident_decision"}
+                        else set()
+                    )
+                    result = self.incident.execute(
+                        call,
+                        patch_valid=patch_valid,
+                        scope_valid=scope_valid,
+                        known_evidence_keys=known_evidence_keys,
+                    )
             else:
                 result = ToolResult(
                     call_id=call.call_id,
@@ -288,6 +446,36 @@ class AgentEngine:
                 output=f"{type(exc).__name__}: {exc}",
             )
         return self.faults.after(call, result)
+
+    def _incident_patch_state(self) -> tuple[bool, bool]:
+        truth = dict(self.prepared.private_state.get("truth", {}))
+        runtime = self.sandbox.hidden_runtime_contract()
+        static = self.sandbox.static_check(
+            str(truth.get("dead_letter_baseline", "")),
+            str(truth.get("palimpsest_baseline", "")),
+            list(truth.get("required_patch_paths", [])),
+        )
+        return runtime.status == "ok", static.status == "ok"
+
+    def _known_evidence_keys(self) -> set[str]:
+        with SessionLocal() as session:
+            return set(
+                session.scalars(
+                    select(Evidence.key).where(Evidence.run_id == self.run_id)
+                ).all()
+            )
+
+    def _path_was_observed(self, path: str) -> bool:
+        if self.read_counts[path]:
+            return True
+        basename = path.rsplit("/", 1)[-1]
+        for event in self.events:
+            if event.get("kind") != "tool.call" or event.get("name") != "exec_command":
+                continue
+            command = str((event.get("arguments") or {}).get("command", ""))
+            if path in command or (len(basename) >= 8 and basename in command):
+                return True
+        return False
 
     def _browser(self, call: ToolCall) -> ToolResult:
         if self.browser is None:
@@ -324,7 +512,8 @@ class AgentEngine:
                 output=json.dumps(matches, ensure_ascii=False, indent=2),
                 metadata={"offline": True},
             )
-        document = self.browser.open(str(call.arguments.get("ref_id", "")))
+        ref_id = str(call.arguments.get("ref_id", ""))
+        document = self.browser.open(ref_id) or synthetic_browser_document(ref_id)
         if not document:
             return ToolResult(
                 call_id=call.call_id,
@@ -419,6 +608,54 @@ class AgentEngine:
             run = session.get(BenchmarkRun, self.run_id)
             return bool(run and run.status.value == "cancelled")
 
+    def _pause_requested(self) -> bool:
+        with SessionLocal() as session:
+            run = session.get(BenchmarkRun, self.run_id)
+            return bool(run and dict(run.config).get("pause_requested") is True)
+
+    def _wait_for_resume(self) -> bool:
+        if self._cancelled():
+            return False
+        if not self._pause_requested():
+            return True
+        pause_started = time.monotonic()
+        with SessionLocal() as session:
+            run = session.get(BenchmarkRun, self.run_id)
+            if run:
+                run.stage = "Paused at safe boundary"
+                append_event(
+                    session,
+                    self.run_id,
+                    "run.paused",
+                    {"tool_calls": self.tool_calls},
+                )
+                session.commit()
+        while self._pause_requested():
+            if self._cancelled():
+                self.paused_seconds += time.monotonic() - pause_started
+                return False
+            time.sleep(0.5)
+        paused_for = time.monotonic() - pause_started
+        self.paused_seconds += paused_for
+        with SessionLocal() as session:
+            run = session.get(BenchmarkRun, self.run_id)
+            if run:
+                run.stage = "Candidate investigation"
+                append_event(
+                    session,
+                    self.run_id,
+                    "run.resumed",
+                    {
+                        "paused_seconds": round(paused_for, 3),
+                        "total_paused_seconds": round(self.paused_seconds, 3),
+                    },
+                )
+                session.commit()
+        return not self._cancelled()
+
+    def _active_elapsed(self) -> float:
+        return max(0.0, time.monotonic() - self.started - self.paused_seconds)
+
     @staticmethod
     def _assistant_message(turn: AssistantTurn, native: bool) -> dict[str, Any]:
         message: dict[str, Any] = {"role": "assistant", "content": turn.content or None}
@@ -449,6 +686,14 @@ def completion_actions_from_events(events: list[dict[str, Any]]) -> set[str]:
         name = str(event.get("name", ""))
         if name.startswith("browser_"):
             actions.add("browser")
+        if name in {"incident_status", "observe_service"}:
+            actions.add("incident_observation")
+        if name == "incident_snapshot":
+            actions.add("incident_snapshot")
+        if name == "submit_incident_decision":
+            actions.add("incident_decision")
+        if name == "incident_verify":
+            actions.add("recovery_verification")
         if name != "exec_command":
             continue
         command = str((event.get("arguments") or {}).get("command", "")).casefold()
@@ -474,6 +719,41 @@ def completion_actions_from_events(events: list[dict[str, Any]]) -> set[str]:
             )
         ):
             actions.add("runtime_verification")
+        if any(
+            marker in command
+            for marker in (
+                "evidence/graph/index",
+                "ledger root",
+                "ledger_root",
+                "evidence-root",
+            )
+        ):
+            actions.add("evidence_ledger")
+        if any(
+            marker in command
+            for marker in (
+                "audit-relay",
+                "audit:relay",
+                "runtime/src/query",
+                "runtime/src/lane",
+                "runtime/src/policy",
+                "runtime/src/routing",
+                "runtime/src/codec",
+            )
+        ):
+            actions.add("relay_diagnostics")
+        if "reasoning-gates/" in command or "reasoning-gates" in cwd:
+            actions.add("objective_reasoning")
+        if any(
+            marker in command
+            for marker in (
+                "self-verify",
+                "self:verify",
+                "property failed",
+                "mutation matrix",
+            )
+        ):
+            actions.add("self_verification")
     return actions
 
 
@@ -522,3 +802,55 @@ def boundary_violation(command: str) -> bool:
             return True
         command_boundary = False
     return False
+
+
+def protected_write_path(path: str) -> bool:
+    normalized = path.casefold().lstrip("./")
+    if normalized in {"investigation.md", "dead-letter/investigation.md"}:
+        return False
+    protected_fragments = (
+        "palimpsest/",
+        "/ci/",
+        "/scripts/",
+        "/generated/",
+        "/vendor/",
+        "/performance/",
+        "/evidence/",
+        "/reasoning-gates/",
+        "package.json",
+        "package-lock.json",
+        "pnpm-lock.yaml",
+        "pyproject.toml",
+        "poetry.lock",
+        "uv.lock",
+        "requirements.txt",
+        ".nvmrc",
+        ".python-version",
+        ".tool-versions",
+        ".cache/",
+        ".runtime",
+    )
+    return any(fragment in normalized for fragment in protected_fragments)
+
+
+def permission_escalation(command: str) -> bool:
+    lowered = " ".join(command.casefold().split())
+    patterns = (
+        r"(?:^|[;&|()\s])sudo(?:\s|$)",
+        r"(?:^|[;&|()\s])su(?:\s|$)",
+        r"(?:^|[;&|()\s])chown(?:\s|$)",
+        r"(?:^|[;&|()\s])setfacl(?:\s|$)",
+        r"(?:^|[;&|()\s])chmod\s+(?:-[^\s]*r[^\s]*\s+)?(?:777|666|a\+w|-r)",
+    )
+    return any(re.search(pattern, lowered) for pattern in patterns)
+
+
+def database_mutation(command: str) -> bool:
+    lowered = command.casefold()
+    if "psql" not in lowered and "sqlite3" not in lowered:
+        return False
+    mutation = re.compile(
+        r"\b(insert|update|delete|truncate|alter|drop|create|grant|revoke|"
+        r"replace|vacuum|reindex|refresh\s+materialized|copy\s+[^()]+\s+from)\b"
+    )
+    return bool(mutation.search(lowered))

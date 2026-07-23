@@ -9,9 +9,14 @@ def main() -> None:
     parser.add_argument("--scenario", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--scale", type=float, default=1.0)
+    parser.add_argument("--seed", type=int)
     args = parser.parse_args()
     scenario = load_scenario(args.scenario)
-    prepared = scenario.prepare(args.output.resolve(), scale=args.scale)
+    prepared = scenario.prepare(
+        args.output.resolve(),
+        scale=args.scale,
+        instance_seed=args.seed,
+    )
     print(prepared.workspace)
 
 

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "evil-repository-api"
-version = "0.3.0"
+version = "0.5.0"
 description = "Control plane and isolated runner for The Evil Repository benchmark."
 readme = "README.md"
 requires-python = ">=3.12"

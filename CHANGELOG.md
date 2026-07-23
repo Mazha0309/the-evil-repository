@@ -3,6 +3,80 @@
 All notable platform changes are recorded here. The project follows Semantic
 Versioning while individual benchmark scenarios retain independent versions.
 
+## [0.5.0] - 2026-07-23
+
+### Added
+
+- Terminal Repository Scenario 3.0.0 with a deterministic 180-tick incident
+  director, intermittent failure replay, SLO/error-budget state, snapshots,
+  rollback, bounded production actions, eight independently judged ticket
+  dispositions, and valid no-change outcomes.
+- Seven jointly required opaque runtime-leaf regressions across 704 executable
+  cells, 40 semantic custody checkpoints, seven objective reasoning gates, an
+  inspect-only recovered binary, conflicting toolchains, damaged caches,
+  permission traps, phantom performance/auth reports, dirty databases, and
+  date/clock deception.
+- Project-mediated incident tools for service observations, snapshots,
+  mitigations, verification and decisions. Candidate containers still receive
+  no host, Docker socket or network access.
+- Live incident telemetry for logical time, SLO, error budget, risk, data
+  integrity, alerts, decisions, actions and the baseline/canary/replay/soak
+  verification sequence.
+- Four deterministic incident phases with 140-tick minimum progress,
+  cross-phase/service observation coverage, ordered verification intervals and
+  successful canary/replay/soak completion requirements. Incident alerts now
+  enter the replay over all four phases instead of appearing as one startup
+  dump, and temporal evidence coverage is exposed in the behavior profile.
+- Held-out per-run instance seeds for contamination-resistant comparisons.
+  Seeds alter opaque paths, runtime cells, histories, corpus and replay state,
+  remain reproducible in trusted archives, and are omitted from candidate
+  workspace metadata.
+- Explicit score deductions and error-atlas counters for blind writes,
+  repeated edits, protected or phantom fixes, database mutation, permission or
+  boundary probes, risky actions without snapshots, weak-authority trust,
+  hard-coded truth, error swallowing and missing self-verification.
+
+### Changed
+
+- Replaced result-heavy scoring with a 1,200-point incident and behavior judge:
+  functionality, stabilization, causal diagnosis, provenance, environment
+  forensics, objective reasoning, decision quality, self-verification,
+  security, resilience, patch scope, state management, report and efficiency.
+- Security credit now requires actual adversarial exposure; elapsed wall time
+  is observable but never rewarded. Mixed-use Browser documents now contain
+  both useful evidence and malicious instructions, so safe utility and
+  injection over-refusal are measurable. A correct patch without complete
+  incident decisions or post-change replay/soak is hard-capped.
+- Candidate defaults are constrained to 0.5 CPU and 256 MiB RAM. Faults remain
+  seeded and scripted so every run is reproducible. The sandbox includes
+  offline binary-forensics tools, and the full oracle/near-miss/database/binary
+  smoke path now runs in CI.
+- The score view now renders a concrete 0/300/600/900/1200 total scale and a
+  deduction ledger; radar axes are normalized percentages.
+
+## [0.4.0] - 2026-07-23
+
+### Added
+
+- A default live Agent monitor that distinguishes Provider wait, tool
+  execution, result analysis, Scenario preparation, and hidden judging.
+- Current tool arguments, bounded result previews, Provider/tool latency,
+  visible model output, active hypotheses, budget burn, completion progress,
+  source/action coverage, and stall warnings.
+- Adversarial-exposure telemetry for Browser searches and poisoned results,
+  Issue/README access, scripted faults, boundary attempts, and prompt-injection
+  canary echoes.
+- Cooperative pause and resume controls that stop at the next Provider/tool
+  boundary, preserve the candidate workspace and conversation, remain
+  cancellable, and exclude paused time from the hard execution budget.
+
+### Changed
+
+- Run events now record `model.request`, Provider latency, and per-tool
+  duration, without claiming access to private model chain-of-thought.
+- The Web console fetches append-only event deltas every second instead of
+  repeatedly downloading the complete audit stream.
+
 ## [0.3.0] - 2026-07-23
 
 ### Added

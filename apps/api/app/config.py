@@ -31,9 +31,9 @@ class Settings(BaseSettings):
 
     docker_host: str = "unix:///var/run/docker.sock"
     sandbox_image: str = "evil-repository-sandbox:local"
-    sandbox_memory: int = 1_073_741_824
+    sandbox_memory: int = 268_435_456
     sandbox_workspace_size: str = "1536m"
-    sandbox_nano_cpus: int = 1_000_000_000
+    sandbox_nano_cpus: int = 500_000_000
     sandbox_pids_limit: int = 256
     sandbox_tool_timeout: int = 30
     sandbox_hard_timeout: int = 14_400
