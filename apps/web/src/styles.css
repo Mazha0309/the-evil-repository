@@ -1381,15 +1381,6 @@ pre {
   white-space: nowrap;
 }
 
-.table-model small {
-  overflow: hidden;
-  color: #667061;
-  font-family: var(--mono);
-  font-size: 8px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .score-value {
   color: var(--lime);
   font-family: var(--mono);
@@ -1663,12 +1654,6 @@ pre {
   background: transparent;
 }
 
-.run-model-badge--judge {
-  border-left-color: #806531;
-  color: var(--amber);
-  background: transparent;
-}
-
 .run-model-badge > span {
   display: flex;
   min-width: 0;
@@ -1687,16 +1672,6 @@ pre {
 .run-model-badge strong {
   color: #edf4e9;
   font-size: 10px;
-}
-
-.run-model-badge code {
-  max-width: 220px;
-  overflow: hidden;
-  padding-left: 2px;
-  color: #7f897a;
-  font-size: 8px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .run-score {
@@ -4148,9 +4123,6 @@ pre {
   }
   .run-model-badge {
     width: 100%;
-  }
-  .run-model-badge code {
-    margin-left: auto;
   }
   .tabs {
     overflow-x: auto;

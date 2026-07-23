@@ -1523,7 +1523,6 @@ function RunDetailPage() {
     "candidate",
     models.data ?? [],
   );
-  const judgeModel = resolveRunModel(data, "judge", models.data ?? []);
   const completion = taskManifest?.completion;
   const pauseRequested = data.config.pause_requested === true;
   const maximumScore = Math.max(1, data.scorecard.maximum ?? 1_200);
@@ -1556,14 +1555,6 @@ function RunDetailPage() {
               label={text("候选模型", "Candidate")}
               unknown={text("未知模型", "Unknown model")}
             />
-            {data.judge_model_id && (
-              <RunModelBadge
-                identity={judgeModel}
-                label={text("语义裁判", "Semantic judge")}
-                unknown={text("未知裁判", "Unknown judge")}
-                judge
-              />
-            )}
           </div>
         </div>
         <div className="run-score">
@@ -2378,9 +2369,6 @@ function RunTable({
                 <td>
                   <span className="table-model">
                     <strong>{model.name ?? text("未知模型", "Unknown model")}</strong>
-                    {model.modelId && model.modelId !== model.name && (
-                      <small>{model.modelId}</small>
-                    )}
                   </span>
                 </td>
                 <td>
@@ -2418,23 +2406,18 @@ function RunModelBadge({
   identity,
   label,
   unknown,
-  judge = false,
 }: {
   identity: RunModelIdentity;
   label: string;
   unknown: string;
-  judge?: boolean;
 }) {
   return (
-    <div className={`run-model-badge${judge ? " run-model-badge--judge" : ""}`}>
-      {judge ? <Radar size={15} /> : <Bot size={15} />}
+    <div className="run-model-badge">
+      <Bot size={15} />
       <span>
         <small>{label}</small>
         <strong>{identity.name ?? unknown}</strong>
       </span>
-      {identity.modelId && identity.modelId !== identity.name && (
-        <code>{identity.modelId}</code>
-      )}
     </div>
   );
 }
