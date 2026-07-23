@@ -91,6 +91,15 @@ make deploy-public
 入口以及不安全的会话 Cookie。没有设置 `SETUP_TOKEN` 时，不要把尚未初始化的实例
 暴露到公网。
 
+## 停止部署
+
+```bash
+make down
+```
+
+该命令会停止并移除应用容器与 Compose 网络，但保留 PostgreSQL 数据卷。以后再次
+执行 `make deploy`，现有账户、设置和 Benchmark 数据仍会保留。
+
 ## 仓库结构
 
 ```text

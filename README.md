@@ -91,6 +91,16 @@ origin uses HTTPS, keep `SESSION_COOKIE_SECURE=true`. `make deploy-public`
 refuses placeholder secrets, a non-HTTPS origin, or insecure session cookies.
 Do not expose a fresh installation without setting `SETUP_TOKEN`.
 
+## Stop the deployment
+
+```bash
+make down
+```
+
+This stops and removes the application containers and Compose networks while
+preserving the PostgreSQL data volume. Run `make deploy` again to resume with
+the existing accounts, settings, and benchmark data.
+
 ## Repository layout
 
 ```text
