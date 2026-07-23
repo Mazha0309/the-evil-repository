@@ -54,8 +54,8 @@ a marketing judgment.
 - Distinguish leaderboard scoring from non-judgmental behavioral analysis.
 - Make an Agent's investigation strategy, recurring errors, and recovery
   patterns comparable without collecting private reasoning.
-- Calibrate the canonical scenario to remain discriminating throughout an
-  80-minute hard envelope for a strong software-engineering Agent, without
+- Calibrate the canonical scenario to remain discriminating throughout a
+  60-minute hard envelope for a strong software-engineering Agent, without
   artificial waiting.
 - Remain local-first and safe to operate on a developer workstation.
 
@@ -245,7 +245,7 @@ diversity. Planned families are not counted as active, and a missing private
 held-out set cannot be represented as complete.
 
 The bundled Production Incident Engineering Suite starts at version 0.1.0
-with one `development` reference to Terminal Repository 3.0.2. Its readiness
+with one `development` reference to Terminal Repository 3.0.3. Its readiness
 policy requires five active families, three held-out families, and 20 scenario
 references. Consequently it reports `leaderboard_eligible: false`. The API and
 React render these counts directly.
@@ -366,10 +366,11 @@ public scorecards expose only permitted IDs and aggregates. Every node and edge
 must reference a declared ID, path IDs must be unique, and an empty alternative
 group is invalid.
 
-Terminal Repository 3.0.2 remains immutable and retains its published
-acceptance semantics. The generalized multi-path evaluator is a platform
-contract for new scenario versions and families; it is not used to alter the
-canonical answer behind an unchanged version number.
+Terminal Repository 3.0.3 retains the 3.0.2 truth and generated incident
+structure while versioning a recalibrated execution envelope. The generalized
+multi-path evaluator is a platform contract for new scenario versions and
+families; it is not used to alter the canonical answer behind an unchanged
+version number.
 
 ### Completion gate
 
@@ -605,7 +606,7 @@ provenance like any other evidence.
 
 These are project tools, not passthrough commands. A candidate can never attach
 to a real process, inspect the host, or capture live traffic. Terminal
-Repository 3.0.2 does not enable this post-release tool pack; a new scenario
+Repository 3.0.3 does not enable this post-release tool pack; a new scenario
 version must opt in through metadata.
 
 ## 8. Database forensics
@@ -680,7 +681,7 @@ cannot replace the completion gate or any hidden stage.
 
 ## 11. Canonical challenge
 
-Scenario 3.0.2, **The Terminal Repository / 终焉仓库**, is not primarily a
+Scenario 3.0.3, **The Terminal Repository / 终焉仓库**, is not primarily a
 large code puzzle. It is a controlled-uncertainty incident simulator whose
 repository maze is one evidence substrate.
 
@@ -715,7 +716,7 @@ SLO, error-budget burn and outcomes are identical.
 
 The 180-tick replay horizon is a logical state-machine horizon, not a
 180-minute wall-clock requirement. The completion gate requires progress to
-tick 140 while the independent real execution budget remains 40/80 minutes.
+tick 140 while the independent real execution budget is 30/60 minutes.
 
 The public incident queue contains eight claims:
 
@@ -783,7 +784,7 @@ become an uncontrolled evaluation variable.
 
 The full canonical package targets approximately 5,000 files, 2,000 commits,
 and 100 MiB of locally generated material. Its default soft/hard budgets are
-40/80 minutes, 250/650 tool calls, and 180/360 raw Provider requests. Optional
+30/60 minutes, 250/650 tool calls, and 180/360 raw Provider requests. Optional
 Token limits may be configured as a matched soft/hard pair. Any soft threshold
 emits one deterministic warning and overrun telemetry; any hard threshold ends
 candidate execution. Wall time is not a score input. Each candidate
@@ -795,7 +796,7 @@ reported as leaderboard runs.
 Before a scenario release, maintainers run a versioned reference procedure
 with a minimal golden patch and at least one strong software-engineering Agent.
 The canonical target is a strong-Agent reference solve that uses a substantial
-portion of, but completes inside, the 80-minute hard envelope. Calibration
+portion of, but completes inside, the 60-minute hard envelope. Calibration
 reports record elapsed/active time, tool calls, token usage, evidence coverage,
 shortcut attempts, and the exact platform, scenario, provider, and model
 versions.
@@ -816,7 +817,7 @@ complexity:
 
 | Source | Mechanism adopted here |
 |---|---|
-| [METR Time Horizon 1.1](https://metr.org/time-horizons/) | Human-expert task duration and Agent wall time are separate measurements. The 80-minute strong-Agent envelope remains provisional until repeated human and Agent calibration; wall time is never rewarded. |
+| [METR Time Horizon 1.1](https://metr.org/time-horizons/) | Human-expert task duration and Agent wall time are separate measurements. The 60-minute strong-Agent envelope remains provisional until repeated human and Agent calibration; wall time is never rewarded. |
 | [Terminal-Bench 2.1](https://www.tbench.ai/news/terminal-bench-2-1) | Continuous task validation checks the broken baseline, near-miss failure, oracle repair, resource envelope, database initialization and offline isolation. Scenario smoke runs in CI because difficult-but-broken is not a valid benchmark. |
 | [OSWorld 2.0](https://arxiv.org/abs/2606.29537) | Dynamic information, implicit-state recovery, cross-source reasoning and separate safety telemetry become four logical incident phases, streaming alerts and an auditable risk/data ledger. |
 | [ITBench](https://research.ibm.com/publications/itbench-evaluating-ai-agents-across-diverse-real-world-it-automation-tasks) | Incident success is judged as correct, safe and fast: SLO, error budget, data integrity, action risk and diagnosis are independent signals. |
@@ -1081,7 +1082,7 @@ label them as inferred.
 {
   "schema_version": 1,
   "analyzer_version": "behavior-v1",
-  "scenario": "terminal-repository@3.0.2",
+  "scenario": "terminal-repository@3.0.3",
   "traits": [],
   "errors": [],
   "episodes": [],

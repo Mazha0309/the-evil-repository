@@ -182,10 +182,10 @@ def test_soft_budget_warnings_fire_once_per_threshold(
     assert "250 tool calls" in call_warning
     assert engine._soft_budget_warning() is None
 
-    clock[0] += 2_400
+    clock[0] += 1_800
     time_warning = engine._soft_budget_warning()
     assert time_warning is not None
-    assert "2400 active seconds" in time_warning
+    assert "1800 active seconds" in time_warning
     assert [event["crossed"] for event in engine.events] == [
         ["tool_calls"],
         ["active_time"],

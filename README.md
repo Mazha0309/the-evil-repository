@@ -98,10 +98,11 @@ Private truth is represented as a graph of causes, conditions, symptoms,
 constraints, invariants, and remediations. A scenario may declare multiple
 acceptable resolution paths—such as a verified forward fix or a safe
 rollback—plus objective hidden checks. The evaluator reports partial causal
-coverage without turning partial evidence into a false pass. The current
-Terminal Repository release remains frozen at 3.0.2; the multi-path contract
-is available to subsequent scenario families instead of silently changing the
-published truth under the same version.
+coverage without turning partial evidence into a false pass. Terminal
+Repository 3.0.3 retains the 3.0.2 truth and generated incident structure while
+versioning the recalibrated 30/60-minute execution envelope. The multi-path
+contract is available to subsequent scenario families instead of silently
+changing published truth under the same version.
 
 The canonical scenario deliberately prevents a one-file, one-test shortcut.
 Its relevant regression is buried beneath substantial later Git history;
@@ -112,7 +113,7 @@ with a stale SQLite cache. The offline mirror is available only through
 `browser.search`, `browser.open`, and `browser.find`, so a candidate cannot
 bypass Browser behavior by scanning a copied mirror directory.
 
-Scenario 3.0.2 makes the apparent bulk material. Five live relay chains contain
+Scenario 3.0.3 makes the apparent bulk material. Five live relay chains contain
 704 executable opaque cells; seven independent corruptions are jointly
 required, and fixing six still fails. The two repositories contain exactly
 5,000 tracked files and 2,000 commits, 40 semantic custody checkpoints, seven
@@ -135,7 +136,7 @@ equivalents of `ps`, `systemctl`, `journalctl`, `lsof`/socket inspection,
 `strace`, and `perf`. These tools observe only the simulated incident state;
 they never attach to a host process or expose live packets. Their collectors,
 clock domains, useful signals, and decoys remain replayable. Terminal
-Repository 3.0.2 stays frozen and does not retroactively enable this new tool
+Repository 3.0.3 stays frozen and does not retroactively enable this new tool
 pack.
 
 A candidate must build an observable investigation, not merely guess a patch.
@@ -162,8 +163,8 @@ Candidate sandboxes default to 0.5 CPU, 256 MiB RAM, 256 PIDs and a 1.5 GiB
 ephemeral workspace. A one-sample quick check may lie; hidden grading reruns
 static scope, regression, mutation, runtime and fresh-database golden replay.
 
-The canonical difficulty target is to remain discriminating throughout an
-80-minute hard envelope for a strong software-engineering Agent. This is a
+The canonical difficulty target is to remain discriminating throughout a
+60-minute hard envelope for a strong software-engineering Agent. This is a
 calibration target, not a wall-clock promise: EvilBench never pads a run with
 `sleep`, random delay, or an artificial timer. Difficulty must come from
 necessary evidence work, conflicting provenance, bounded recovery from
@@ -171,8 +172,8 @@ scripted failures, and hidden verification. Scenario releases are recalibrated
 when strong Agents discover material shortcuts.
 
 The incident's 180 ticks are deterministic logical replay steps, not 180
-wall-clock minutes. Real execution defaults remain a 40-minute soft warning
-and an 80-minute hard stop. EvilBench records logical model turns, raw Provider
+wall-clock minutes. Real execution defaults are a 30-minute soft warning and a
+60-minute hard stop. EvilBench records logical model turns, raw Provider
 HTTP requests (including retries), input/output Token counts, tool calls, and
 active time. Optional Token caps are supported, but dollar cost is deliberately
 not normalized: cache reads/writes, hidden reasoning tokens, batch/service

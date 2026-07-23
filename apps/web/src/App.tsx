@@ -443,7 +443,7 @@ function DashboardPage() {
             <Pressure value="5K" label={text("文件", "files")} />
             <Pressure value="2K" label={text("提交", "commits")} />
             <Pressure value="100MB" label={text("离线文档", "offline docs")} />
-            <Pressure value="80m" label={text("硬限制", "hard limit")} />
+            <Pressure value="60m" label={text("硬限制", "hard limit")} />
           </div>
           <Link className="button button--ghost" to="/scenarios">
             {text("查看场景", "Inspect scenario")} <ArrowRight size={15} />
@@ -1288,23 +1288,23 @@ function NewRunPage() {
           <div className="budget-grid">
             <Field
               label={text("软时间限制（秒）", "Soft time (seconds)")}
-              hint={text("默认 40 分钟", "40-minute default")}
+              hint={text("默认 30 分钟", "30-minute default")}
             >
               <input
                 name="soft_seconds"
                 type="number"
-                defaultValue={2400}
+                defaultValue={1800}
                 min={60}
               />
             </Field>
             <Field
               label={text("硬时间限制（秒）", "Hard time (seconds)")}
-              hint={text("默认 80 分钟", "80-minute default")}
+              hint={text("默认 60 分钟", "60-minute default")}
             >
               <input
                 name="hard_seconds"
                 type="number"
-                defaultValue={4800}
+                defaultValue={3600}
                 min={300}
               />
             </Field>

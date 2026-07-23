@@ -25,7 +25,7 @@ Versioning while individual benchmark scenarios retain independent versions.
 - Project-mediated deterministic observability tools for future scenarios:
   process listing, service status, journal queries, socket metadata, bounded
   process traces, and CPU profiles. They never inspect the host and are not
-  retroactively enabled in Terminal Repository 3.0.2.
+  retroactively enabled in Terminal Repository 3.0.3.
 - Raw Provider-request budgets and telemetry, including retry attempts, plus
   optional paired Token budgets and a versioned resource-ledger artifact.
 
@@ -46,13 +46,17 @@ Versioning while individual benchmark scenarios retain independent versions.
 - Resource accounting deliberately does not estimate or rank dollar cost:
   cache reads/writes, hidden reasoning Tokens, batch/service tiers, discounts,
   and compatible-API usage semantics are not reliably comparable.
+- Terminal Repository 3.0.3 recalibrates the active-time envelope from 40/80
+  to 30/60 minutes after completed 3.0.2 runs clustered around 35–37 minutes.
+  Wall time remains observed-only rather than a score input; `completed` means
+  execution and grading ended, not that the incident was solved.
 - Clarified that the 180-tick Incident Director horizon is logical replay time,
-  while real execution remains a 40-minute soft threshold and 80-minute hard
+  while real execution uses a 30-minute soft threshold and 60-minute hard
   stop.
 
 ### Fixed
 
-- Corrected the dashboard's stale `240m` hard-limit label to `80m`.
+- Corrected the dashboard's stale hard-limit label to the calibrated `60m`.
 
 ## [0.7.1] - 2026-07-23
 

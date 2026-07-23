@@ -123,7 +123,7 @@ def test_suite_is_honest_about_current_leaderboard_readiness() -> None:
         PROJECT_ROOT / "scenarios",
     )
 
-    assert suite.scenarios[0].version == "3.0.2"
+    assert suite.scenarios[0].version == "3.0.3"
     assert suite.readiness == {
         "active_families": 1,
         "held_out_families": 0,
