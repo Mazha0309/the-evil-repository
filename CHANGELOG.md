@@ -3,6 +3,13 @@
 All notable platform changes are recorded here. The project follows Semantic
 Versioning while individual benchmark scenarios retain independent versions.
 
+## [0.2.2] - 2026-07-23
+
+### Fixed
+
+- Aligned `AgentEngine.run()` with the Scenario SDK executor contract so a
+  benchmark run no longer fails immediately with an extra positional argument.
+
 ## [0.2.1] - 2026-07-23
 
 ### Changed

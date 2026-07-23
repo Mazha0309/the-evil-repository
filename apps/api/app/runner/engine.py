@@ -43,7 +43,9 @@ class AgentEngine:
         self.tool_calls = 0
         self.events: list[dict[str, Any]] = []
 
-    def run(self) -> ScenarioRunResult:
+    def run(self, prepared: PreparedScenario) -> ScenarioRunResult:
+        if prepared is not self.prepared:
+            raise ValueError("AgentEngine received a different prepared scenario")
         native = self.client.profile.native_tools
         fallback = (
             "\nThis model profile does not expose native function calling. To call a tool, "

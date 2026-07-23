@@ -18,7 +18,7 @@ provider credentials.
 
 ## Status
 
-The platform is currently **v0.2.1** and remains under active construction.
+The platform is currently **v0.2.2** and remains under active construction.
 See [`CHANGELOG.md`](CHANGELOG.md). This release includes the canonical
 “terminal repository” challenge, account isolation, administrator controls,
 server monitoring, and the complete execution, telemetry, scoring, and
