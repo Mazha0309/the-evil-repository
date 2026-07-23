@@ -107,6 +107,11 @@ export const api = {
       method: "POST",
       body: JSON.stringify(payload),
     }),
+  updateModel: (id: string, payload: Record<string, unknown>) =>
+    request<ModelProfile>(`/models/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    }),
   deleteModel: (id: string) =>
     request<void>(`/models/${id}`, { method: "DELETE" }),
   createRun: (payload: Record<string, unknown>) =>

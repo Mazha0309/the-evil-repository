@@ -1,4 +1,4 @@
-.PHONY: bootstrap dev test lint build up deploy deploy-public production-check down sandbox sandbox-smoke scenario-validate challenge preflight version-check
+.PHONY: bootstrap dev test lint build up deploy deploy-public deploy-safety-check production-check down sandbox sandbox-smoke scenario-validate challenge preflight version-check
 
 bootstrap:
 	pnpm install
@@ -41,10 +41,13 @@ challenge-smoke:
 preflight:
 	./scripts/rootless-preflight.sh
 
-up: sandbox
+deploy-safety-check:
+	./scripts/deploy-safety-check.sh
+
+up: deploy-safety-check sandbox
 	docker compose up --build -d
 
-deploy: preflight sandbox
+deploy: preflight deploy-safety-check sandbox
 	docker compose up --build -d
 	docker compose ps
 
@@ -54,9 +57,9 @@ production-check:
 	grep -Eq '^WEB_ORIGIN=https://' .env.production
 	grep -Eq '^SESSION_COOKIE_SECURE=true$$' .env.production
 
-deploy-public: preflight sandbox production-check
+deploy-public: preflight deploy-safety-check sandbox production-check
 	docker compose --env-file .env.production up --build -d
 	docker compose --env-file .env.production ps
 
-down:
+down: deploy-safety-check
 	docker compose down

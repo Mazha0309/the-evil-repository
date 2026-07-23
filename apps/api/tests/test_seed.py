@@ -9,7 +9,7 @@ from app.models import TaskDefinition
 from app.seed import seed_canonical_task
 
 
-def test_canonical_seed_enables_v3_and_retires_v1(monkeypatch) -> None:
+def test_canonical_seed_enables_v3_patch_and_retires_v1(monkeypatch) -> None:
     project_root = Path(__file__).resolve().parents[3]
     engine = create_engine("sqlite://")
     Base.metadata.create_all(engine)
@@ -46,7 +46,7 @@ def test_canonical_seed_enables_v3_and_retires_v1(monkeypatch) -> None:
 
     assert [(task.version, task.enabled) for task in tasks] == [
         ("1.0.0", False),
-        ("3.0.0", True),
+        ("3.0.1", True),
     ]
     assert tasks[1].manifest["completion"]["min_tool_calls"] == 0
     assert tasks[1].manifest["incident"]["enabled"] is True

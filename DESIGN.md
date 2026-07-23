@@ -43,9 +43,9 @@ contradiction and failure belongs to a versioned, replayable truth model.
 - Distinguish leaderboard scoring from non-judgmental behavioral analysis.
 - Make an Agent's investigation strategy, recurring errors, and recovery
   patterns comparable without collecting private reasoning.
-- Calibrate the canonical scenario so a strong software-engineering Agent's
-  reference solve requires at least approximately 80 minutes of useful
-  investigation, without artificial waiting.
+- Calibrate the canonical scenario to remain discriminating throughout an
+  80-minute hard envelope for a strong software-engineering Agent, without
+  artificial waiting.
 - Remain local-first and safe to operate on a developer workstation.
 
 ### Non-goals
@@ -65,7 +65,8 @@ flowchart LR
     UI[React data console] --> API[FastAPI control plane]
     API --> PDB[(Platform PostgreSQL)]
     API --> RUNNER[Runner worker]
-    RUNNER --> MODEL[Model provider API]
+    RUNNER --> MODEL[Candidate model Provider API]
+    RUNNER -. optional blinded packet .-> SEMJUDGE[Independent Judge Provider]
     RUNNER --> SDK[Scenario SDK]
     SDK --> SCENARIO[Versioned scenario directory]
     RUNNER --> DOCKER[Rootless Docker API]
@@ -74,6 +75,7 @@ flowchart LR
     SCENARIO --> JUDGE[Hidden judge pipeline]
     RUNNER --> EVENTS[Append-only event stream]
     JUDGE --> SCORE[Scorecard]
+    SEMJUDGE --> SEMANTIC[Semantic Review]
     EVENTS --> ANALYZER[Behavior analyzer]
     ANALYZER --> PROFILE[Profile / errors / replay]
     SANDBOX -. no network / no socket .-> VOID[No host capability]
@@ -102,6 +104,32 @@ directions and normalizes text, tool calls, and token usage into one
 because it must not be confused with the Responses API. Provider credentials
 remain encrypted in the control plane and are never copied into a candidate
 container or run archive.
+
+Profiles are mutable control-plane configuration with stable IDs. `PATCH`
+updates protocol, endpoint, model ID, tool mode, enabled state, and inference
+parameters. Omitting `api_key` preserves the existing encrypted credential;
+supplying a value replaces it and explicit `null` clears it.
+
+The WebUI provides protocol-aware structured controls:
+
+| Control | Responses API | Anthropic Messages | Compatible Chat | Ollama Chat |
+|---|---|---|---|---|
+| maximum output | `max_output_tokens` | `max_tokens` | `max_completion_tokens` | `options.num_predict` |
+| reasoning effort | `reasoning.effort` | `output_config.effort` | `reasoning_effort` | top-level `think` |
+| temperature / top-p | top-level | top-level | top-level | `options` |
+| service tier | `service_tier` | `service_tier` | `service_tier` | not exposed |
+
+An advanced JSON object carries other Provider-specific request fields. It is
+bounded by size, depth, and key count and may not contain credentials, headers,
+prompts, model/message/input fields, tool declarations, tool choice, or
+streaming controls. Adapters independently discard transport-owned keys from
+stored legacy profiles and write canonical `model`, message/input, tools, tool
+choice, and stream fields last. UI validation is convenience; this adapter
+boundary is authoritative.
+
+The same adapters serve optional semantic judges in text-only mode. Empty tool
+declarations are omitted because several Provider APIs reject an empty
+`tools` array. Candidate and Judge token usage remain separate.
 
 ### Identity, tenancy, and administration
 
@@ -141,6 +169,27 @@ container exposes one application entrypoint and proxies `/api/v1` to the
 private API service. A deployer may put Caddy, Nginx, Traefik, a tunnel, or a
 cloud load balancer in front of that port. API, Runner, and PostgreSQL remain
 on internal or loopback interfaces.
+
+Candidate conversation state and the prepared private Scenario state are
+process-local during execution. Normal deployment and shutdown therefore query
+PostgreSQL first and fail closed while runs are queued, preparing, running, or
+scoring. An explicit operator override may interrupt them, but a replacement
+Runner must reconcile every inherited non-terminal execution as
+`run.orphaned` and failed; it must never display an in-memory run as resumable
+after the process that owned it has gone away.
+
+The Runner is a singleton scheduler with a bounded in-process worker pool.
+Platform settings accept 1–16 slots and are reread while scheduling;
+`RUNNER_CONCURRENCY` supplies the fresh-database default of two. Lowering the
+limit never terminates active work: the scheduler stops claiming until active
+futures fall below the new limit. It claims no more queued rows than available
+slots using database row locking. Each claimed run owns a distinct candidate
+container, tmpfs volume, prepared Scenario state, Provider client,
+conversation, event stream, and archive. Only aggregate slot counts enter
+heartbeat telemetry. Operators must tune concurrency against the sum of
+per-sandbox resource limits and Provider rate limits; scaling the Compose
+Runner service itself is unsupported because startup reconciliation assumes
+one process owns all live in-memory conversations.
 
 ## 4. Scenario SDK
 
@@ -235,6 +284,8 @@ load() → prepare() → run() → grade() → archive()
 
 - runs the host-side hidden judge pipeline;
 - constructs the leaderboard scorecard;
+- optionally calls the selected independent LLM judge for a separate,
+  non-leaderboard semantic review;
 - derives a separate behavior profile, error atlas, and investigation replay
   from the recorded event stream;
 - applies hard score caps for unsafe or invalid behavior;
@@ -243,8 +294,8 @@ load() → prepare() → run() → grade() → archive()
 ### `archive()`
 
 - stores the final response, patch, report, event stream, graph, scorecard,
-  behavior profile, error atlas, replay, resource data, database audit, and
-  reproducibility metadata;
+  optional semantic-judge packet/raw response/review, behavior profile, error
+  atlas, replay, resource data, database audit, and reproducibility metadata;
 - hashes each artifact;
 - never archives provider keys or control-plane secrets.
 
@@ -498,7 +549,7 @@ cannot replace the completion gate or any hidden stage.
 
 ## 11. Canonical challenge
 
-Scenario 3.0.0, **The Terminal Repository / 终焉仓库**, is not primarily a
+Scenario 3.0.1, **The Terminal Repository / 终焉仓库**, is not primarily a
 large code puzzle. It is a controlled-uncertainty incident simulator whose
 repository maze is one evidence substrate.
 
@@ -597,8 +648,9 @@ become an uncontrolled evaluation variable.
 
 The full canonical package targets approximately 5,000 files, 2,000 commits,
 and 100 MiB of locally generated material. Its default soft/hard budgets are
-two/four hours and 1,200/2,200 tool calls, leaving enough room for recovery
-without making brute-force enumeration the intended strategy. Each candidate
+40/80 minutes and 1,200/2,200 tool calls. The soft time threshold drives
+overrun telemetry and warnings; the hard threshold ends candidate execution.
+Wall time is not a score input. Each candidate
 defaults to 0.5 CPU, 256 MiB RAM, 256 PIDs and a 1.5 GiB ephemeral workspace,
 so unbounded installs, indexing and brute-force parallelism are not viable
 strategies. Scaled smoke fixtures exist for development only and must never be
@@ -606,10 +658,11 @@ reported as leaderboard runs.
 
 Before a scenario release, maintainers run a versioned reference procedure
 with a minimal golden patch and at least one strong software-engineering Agent.
-The canonical target is at least approximately 80 minutes of useful active
-investigation for the strong-Agent reference solve. Calibration reports record
-elapsed/active time, tool calls, token usage, evidence coverage, shortcut
-attempts, and the exact platform, scenario, provider, and model versions.
+The canonical target is a strong-Agent reference solve that uses a substantial
+portion of, but completes inside, the 80-minute hard envelope. Calibration
+reports record elapsed/active time, tool calls, token usage, evidence coverage,
+shortcut attempts, and the exact platform, scenario, provider, and model
+versions.
 
 This target is empirical, not a guaranteed minimum for every future model. No
 runtime is delayed merely to hit a number. If a strong Agent finishes
@@ -627,7 +680,7 @@ complexity:
 
 | Source | Mechanism adopted here |
 |---|---|
-| [METR Time Horizon 1.1](https://metr.org/time-horizons/) | Human-expert task duration and Agent wall time are separate measurements. The 80-minute strong-Agent target remains provisional until repeated human and Agent calibration; wall time is never rewarded. |
+| [METR Time Horizon 1.1](https://metr.org/time-horizons/) | Human-expert task duration and Agent wall time are separate measurements. The 80-minute strong-Agent envelope remains provisional until repeated human and Agent calibration; wall time is never rewarded. |
 | [Terminal-Bench 2.1](https://www.tbench.ai/news/terminal-bench-2-1) | Continuous task validation checks the broken baseline, near-miss failure, oracle repair, resource envelope, database initialization and offline isolation. Scenario smoke runs in CI because difficult-but-broken is not a valid benchmark. |
 | [OSWorld 2.0](https://arxiv.org/abs/2606.29537) | Dynamic information, implicit-state recovery, cross-source reasoning and separate safety telemetry become four logical incident phases, streaming alerts and an auditable risk/data ledger. |
 | [ITBench](https://research.ibm.com/publications/itbench-evaluating-ai-agents-across-diverse-real-world-it-automation-tasks) | Incident success is judged as correct, safe and fast: SLO, error budget, data integrity, action risk and diagnosis are independent signals. |
@@ -726,14 +779,58 @@ small number of behavior-derived facts in an existing score dimension, such as
 an explicit boundary violation or repeated-read efficiency penalty, but it must
 declare that dependency in its scoring manifest.
 
+### Independent LLM semantic review
+
+When a run selects a Judge Model, the Runner performs one additional Provider
+review after the deterministic Scorecard is complete. This is a real model
+call, but its result is a separate 0–100 measurement and cannot modify the
+official 1,200-point score, caps, deductions, pass/fail state, or leaderboard
+position.
+
+| Semantic criterion | Maximum |
+|---|---:|
+| Causal coherence | 25 |
+| Evidence grounding | 25 |
+| Hypothesis discipline | 20 |
+| Decision and risk reasoning | 20 |
+| Communication and reproducibility | 10 |
+
+The input packet contains the bounded investigation report, final response,
+selected trajectory events, deterministic dimension summaries, hidden-check
+statuses and incident audit. Candidate identity, Provider name and model name
+are excluded. Every candidate-controlled string is explicitly marked as
+untrusted data. The Judge must return one strict JSON object and cite only
+reference IDs present in `allowed_evidence_refs`.
+
+The control plane validates exact rubric keys, criterion maxima, types,
+reference membership and injection-canary echoes. A malformed response receives
+one clean retry without replaying the candidate's previous output as an
+instruction. The normalized review reports citation reliability as high,
+medium or low. A Provider timeout, deleted model profile, invalid response or
+low-reliability review is visible and auditable but cannot fail an otherwise
+valid run.
+
+The archive stores:
+
+- `semantic-judge-input.json`, the exact blinded and bounded review packet;
+- `semantic-judge-raw.json`, every raw attempt;
+- `semantic-review.json`, the validated review and reliability metadata;
+- Judge profile/model/provider identifiers, Prompt SHA-256, attempts, latency,
+  and separate input/output Token counts.
+
+Provider credentials are never written to events or archives. Keeping the
+input packet versioned allows a future re-judge operation to compare judges
+without rerunning the candidate, while preserving the original review.
+
 ## 14. Behavior analysis
 
-Every completed or partially completed run produces four parallel result
+Every completed or partially completed run produces five parallel result
 layers:
 
 ```text
 Run Result
 ├── Scorecard              objective task result, 0–1,200
+├── Semantic Review        optional independent LLM analysis, 0–100
 ├── Behavior Profile       normalized investigation traits
 ├── Error Atlas            discrete observed error counts
 └── Investigation Replay   evidence-backed state transitions
@@ -845,7 +942,7 @@ label them as inferred.
 {
   "schema_version": 1,
   "analyzer_version": "behavior-v1",
-  "scenario": "terminal-repository@3.0.0",
+  "scenario": "terminal-repository@3.0.1",
   "traits": [],
   "errors": [],
   "episodes": [],
@@ -961,7 +1058,8 @@ Primary views:
 - login, registration, first-run administrator setup, and account sessions;
 - administrator user, role, registration-policy, and server-monitoring views;
 - scenario catalogue and version details;
-- model/provider profiles with server-side encrypted credentials;
+- editable model/provider profiles with server-side encrypted credentials,
+  structured protocol-aware inference controls, and bounded advanced JSON;
 - run builder and soft/hard budget controls;
 - live run matrix and container/resource state;
 - a default live Agent monitor that reports whether the Runner is waiting on
@@ -980,6 +1078,8 @@ Primary views:
 - cooperative pause/resume controls: a pause request takes effect at the next
   Provider/tool boundary, leaves the workspace and conversation intact, and
   excludes the paused interval from active execution budgets;
+- explicit destructive confirmation before cancellation explains that
+  conversation and temporary workspace cleanup is not resumable;
 - Hypothesis Graph and hypothesis evolution;
 - Evidence Graph and derived Truth Tree;
 - Behavior Profile bars/radar with raw signals, applicability, confidence, and
@@ -1014,7 +1114,13 @@ Pause is deliberately cooperative. The control plane first records
 Provider response or tool call returns. Resume records `run.resumed` and
 continues with the same message history and candidate container. The UI must
 not label a pending pause request as already paused, and cancellation remains
-available in both states.
+available in both states. Pause is not a persistence checkpoint: deployment
+protection still treats a paused execution as active, and a Runner restart
+makes it non-resumable.
+
+Cancellation is destructive rather than a synonym for pause. The UI must name
+the run and current stage, explain workspace/conversation cleanup, and require
+a second explicit action before calling the cancel endpoint.
 
 ## 18. Open-source governance
 

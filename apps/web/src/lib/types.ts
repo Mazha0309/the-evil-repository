@@ -44,6 +44,7 @@ export interface AccountSession {
 
 export interface PlatformSettings {
   registration_enabled: boolean;
+  runner_concurrency: number;
   updated_by: string | null;
   updated_at: string;
 }
@@ -167,6 +168,58 @@ export interface ScoreMetric {
   evidence?: Record<string, unknown>;
 }
 
+export interface SemanticJudgeCriterion {
+  score: number;
+  maximum: number;
+  rationale: string;
+  evidence_refs: string[];
+  valid_evidence_refs: string[];
+  invalid_evidence_refs: string[];
+}
+
+export interface SemanticJudgeReview {
+  status: "not_requested" | "completed" | "failed";
+  schema_version: string;
+  score: number | null;
+  maximum: number;
+  affects_primary_score: false;
+  rating?: "excellent" | "strong" | "mixed" | "weak";
+  confidence?: number;
+  summary?: string;
+  criteria?: Record<string, SemanticJudgeCriterion>;
+  strengths?: string[];
+  weaknesses?: string[];
+  disputed_claims?: Array<{
+    claim: string;
+    reason: string;
+    evidence_refs: string[];
+    valid_evidence_refs: string[];
+    invalid_evidence_refs: string[];
+  }>;
+  reliability?: {
+    level: "high" | "medium" | "low";
+    grounded_criteria: number;
+    required_criteria: number;
+    valid_reference_count: number;
+    invalid_references: string[];
+    injection_canaries: string[];
+  };
+  judge?: {
+    profile_id?: string | null;
+    name?: string;
+    provider?: ModelProvider;
+    model_id?: string;
+  };
+  prompt_sha256?: string;
+  attempts?: number;
+  usage?: {
+    input_tokens: number;
+    output_tokens: number;
+  };
+  duration_ms?: number;
+  errors?: string[];
+}
+
 export interface Run {
   id: string;
   task_id: string;
@@ -187,6 +240,7 @@ export interface Run {
     }>;
     behavior_profile?: Record<string, number>;
     error_profile?: Record<string, number>;
+    semantic_review?: SemanticJudgeReview;
     completion?: {
       met: boolean;
       tool_calls: number;

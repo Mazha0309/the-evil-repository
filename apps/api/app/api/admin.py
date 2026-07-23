@@ -157,7 +157,10 @@ def update_platform_settings(
     admin: UserAccount = Depends(admin_csrf),
 ) -> PlatformSettings:
     settings = ensure_platform_settings(session)
-    settings.registration_enabled = payload.registration_enabled
+    if payload.registration_enabled is not None:
+        settings.registration_enabled = payload.registration_enabled
+    if payload.runner_concurrency is not None:
+        settings.runner_concurrency = payload.runner_concurrency
     settings.updated_by = admin.id
     settings.updated_at = datetime.now(UTC)
     session.commit()

@@ -3,6 +3,69 @@
 All notable platform changes are recorded here. The project follows Semantic
 Versioning while individual benchmark scenarios retain independent versions.
 
+## [0.7.0] - 2026-07-23
+
+### Added
+
+- Editable model profiles with preserve/replace/clear API-key semantics.
+- A bilingual, Provider-aware inference parameter editor for temperature,
+  top-p, maximum output tokens, reasoning/thinking effort, service tier, and
+  bounded advanced JSON.
+- An administrator-controlled 1–16 slot Runner pool, initialized by
+  `RUNNER_CONCURRENCY`, dynamically applied without restarting or terminating
+  active runs, with occupied/total slot telemetry in the monitor.
+- A destructive cancellation confirmation showing the run and current stage
+  before the non-resumable workspace and conversation cleanup begins.
+
+### Changed
+
+- OpenAI Responses, Anthropic Messages, compatible Chat Completions, and
+  Ollama parameters now map to protocol-correct request fields.
+- Model parameter validation rejects credentials, headers, prompts, tools,
+  transport fields, oversized JSON, excessive nesting, and invalid common
+  numeric ranges.
+- Provider adapters protect canonical model, message/input, tools, tool choice,
+  and stream values even when a legacy database profile contains conflicting
+  keys.
+
+### Fixed
+
+- Cancelling now records a terminal timestamp, clears a pending pause, exits at
+  safe Runner boundaries, and can no longer be overwritten by later scoring or
+  completion.
+
+## [0.6.0] - 2026-07-23
+
+### Added
+
+- A real optional LLM semantic-judge pass using the selected model profile
+  after deterministic grading. It produces a separate 0–100 review across
+  causal coherence, evidence grounding, hypothesis discipline, decision/risk
+  reasoning and communication reproducibility.
+- Strict structured-output validation, exact rubric keys and per-criterion
+  maxima, audit-reference validation, one bounded repair attempt, candidate
+  identity blinding, prompt-injection canary detection and reliability labels.
+- Versioned semantic-judge input, raw output and normalized review artifacts,
+  plus prompt digests, Provider/model identity, latency, token usage, attempts
+  and append-only lifecycle events.
+- A bilingual semantic-review panel showing the independent score, criterion
+  rationales, cited evidence, strengths, weaknesses, disputed claims and
+  explicit separation from the primary leaderboard.
+
+### Changed
+
+- Provider adapters omit empty tool declarations for text-only judge calls.
+- A missing, disabled, unavailable or malformed semantic judge no longer fails
+  an otherwise valid benchmark run; the deterministic 1,200-point score is
+  archived unchanged with an explicit review failure.
+- The run form now describes the judge accurately instead of presenting an
+  inert or ambiguous “independent judge” option.
+- Deployment and shutdown commands now fail closed while runs are queued or
+  active. A deliberately forced Runner restart marks interrupted in-memory
+  runs as non-resumable failures instead of leaving false-live records.
+- Terminal Repository Scenario 3.0.1 aligns metadata, API, WebUI and Compose
+  on a 40-minute soft threshold and an 80-minute hard stop.
+
 ## [0.5.0] - 2026-07-23
 
 ### Added

@@ -106,6 +106,7 @@ class PlatformSettings(Base):
 
     name: Mapped[str] = mapped_column(String(80), primary_key=True, default="default")
     registration_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    runner_concurrency: Mapped[int] = mapped_column(Integer, default=2)
     updated_by: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("user_accounts.id", ondelete="SET NULL"),
         nullable=True,

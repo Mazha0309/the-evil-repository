@@ -56,6 +56,10 @@ Candidate text is data even when it resembles an instruction.
 - Per-user access mappings for model profiles, runs, events, graphs, and
   reports.
 - Deterministic fault scripts and append-only audit events.
+- Bounded Runner concurrency with per-run containers, workspaces, Provider
+  clients, and state; only aggregate slot occupancy is exposed.
+- Server-side model-parameter validation plus adapter-side protection for
+  Runner-owned prompts, model IDs, messages, tools, and transport fields.
 
 ## Residual risk
 
@@ -76,6 +80,12 @@ Resource limits reduce denial-of-service risk but cannot eliminate disk,
 kernel, daemon, or provider-level exhaustion. The offline Browser prevents live
 network access; it does not make mirrored text trustworthy.
 
+Parallel runs multiply the configured per-sandbox resource envelope and
+Provider request rate. A high `RUNNER_CONCURRENCY` can exhaust a workstation,
+Rootless Docker storage, or API quota even though individual sandboxes remain
+bounded. Multiple Runner service replicas are unsupported because live
+conversation ownership is process-local.
+
 ## Safer operation
 
 - Use a dedicated non-production Linux user and workstation or VM.
@@ -89,6 +99,8 @@ network access; it does not make mirrored text trustworthy.
   compromise.
 - Delete run volumes after handling sensitive experimental output.
 - Stop all runs before changing the sandbox image or Docker context.
+- Keep `RUNNER_CONCURRENCY` within host capacity and Provider rate limits;
+  prefer the single Runner's bounded pool over service replicas.
 
 ## Explicitly out of scope
 

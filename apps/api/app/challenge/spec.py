@@ -12,8 +12,8 @@ class RepositorySpec(BaseModel):
 
 
 class BudgetSpec(BaseModel):
-    soft_seconds: int = 7_200
-    hard_seconds: int = 14_400
+    soft_seconds: int = 2_400
+    hard_seconds: int = 4_800
     soft_tool_calls: int = 1_200
     hard_tool_calls: int = 2_200
 

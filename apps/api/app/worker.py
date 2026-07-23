@@ -7,6 +7,7 @@ import time
 import traceback
 import uuid
 from collections.abc import Callable
+from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -17,9 +18,16 @@ from app.config import get_settings
 from app.crypto import SecretBox
 from app.database import SessionLocal, create_schema
 from app.events import append_event
+from app.judging import (
+    SemanticJudge,
+    not_requested_review,
+    safe_error,
+    unavailable_review,
+)
 from app.models import (
     BenchmarkRun,
     ModelProfile,
+    PlatformSettings,
     RunArtifact,
     RunEvent,
     RunnerHeartbeat,
@@ -41,22 +49,131 @@ settings = get_settings()
 
 
 class Worker:
+    def __init__(self) -> None:
+        self._active_run_ids: set[uuid.UUID] = set()
+        self._active_lock = threading.Lock()
+
     def run_forever(self) -> None:
         create_schema()
         with SessionLocal() as session:
             seed_canonical_task(session)
+        orphaned = self.reconcile_orphaned_runs()
+        if orphaned:
+            logger.warning(
+                "Marked %d interrupted run(s) as orphaned after Runner startup",
+                orphaned,
+            )
         threading.Thread(
             target=self.heartbeat_forever,
             name="evil-runner-heartbeat",
             daemon=True,
         ).start()
-        logger.info("Runner started; scenarios=%s", settings.scenarios_root)
-        while True:
+        initial_concurrency = self.concurrency_limit()
+        logger.info(
+            "Runner started; scenarios=%s concurrency=%d",
+            settings.scenarios_root,
+            initial_concurrency,
+        )
+        futures: dict[Future[None], uuid.UUID] = {}
+        with ThreadPoolExecutor(
+            max_workers=16,
+            thread_name_prefix="evil-run",
+        ) as executor:
+            while True:
+                self.reap_finished(futures)
+                claimed = self.fill_available_slots(executor, futures)
+                if claimed == 0:
+                    time.sleep(settings.runner_poll_seconds)
+
+    def fill_available_slots(
+        self,
+        executor: ThreadPoolExecutor,
+        futures: dict[Future[None], uuid.UUID],
+    ) -> int:
+        claimed = 0
+        concurrency = self.concurrency_limit()
+        while len(futures) < concurrency:
             run_id = self.claim()
-            if run_id:
-                self.execute(run_id)
-            else:
-                time.sleep(settings.runner_poll_seconds)
+            if run_id is None:
+                break
+            future = executor.submit(self.execute_tracked, run_id)
+            futures[future] = run_id
+            claimed += 1
+        return claimed
+
+    @staticmethod
+    def concurrency_limit() -> int:
+        with SessionLocal() as session:
+            platform = session.get(PlatformSettings, "default")
+            if platform is None:
+                return settings.runner_concurrency
+            return max(1, min(16, int(platform.runner_concurrency)))
+
+    @staticmethod
+    def reap_finished(futures: dict[Future[None], uuid.UUID]) -> None:
+        for future, run_id in list(futures.items()):
+            if not future.done():
+                continue
+            futures.pop(future)
+            try:
+                future.result()
+            except Exception:
+                logger.exception("Run worker thread crashed unexpectedly: %s", run_id)
+
+    def execute_tracked(self, run_id: uuid.UUID) -> None:
+        with self._active_lock:
+            self._active_run_ids.add(run_id)
+        try:
+            self.execute(run_id)
+        finally:
+            with self._active_lock:
+                self._active_run_ids.discard(run_id)
+
+    def active_run_count(self) -> int:
+        with self._active_lock:
+            return len(self._active_run_ids)
+
+    @staticmethod
+    def reconcile_orphaned_runs() -> int:
+        interrupted_statuses = {
+            RunStatus.preparing,
+            RunStatus.running,
+            RunStatus.scoring,
+        }
+        reconciled = 0
+        with SessionLocal() as session:
+            runs = session.scalars(
+                select(BenchmarkRun)
+                .where(BenchmarkRun.status.in_(interrupted_statuses))
+                .order_by(BenchmarkRun.created_at)
+            ).all()
+            for run in runs:
+                previous_status = run.status.value
+                previous_stage = run.stage
+                config = dict(run.config)
+                config["pause_requested"] = False
+                run.config = config
+                run.status = RunStatus.failed
+                run.stage = "Interrupted by Runner restart"
+                run.error = (
+                    "Runner restarted before this run completed. The in-memory "
+                    "model conversation cannot be resumed safely."
+                )
+                run.completed_at = datetime.now(UTC)
+                append_event(
+                    session,
+                    run.id,
+                    "run.orphaned",
+                    {
+                        "reason": "runner_restart",
+                        "resumable": False,
+                        "previous_status": previous_status,
+                        "previous_stage": previous_stage,
+                    },
+                )
+                reconciled += 1
+            session.commit()
+        return reconciled
 
     def heartbeat_forever(self) -> None:
         while True:
@@ -69,6 +186,8 @@ class Worker:
                 client.ping()
                 info = client.info()
                 version = client.version()
+                concurrency = self.concurrency_limit()
+                workers_active = self.active_run_count()
                 metrics = {
                     "docker_version": version.get("Version"),
                     "storage_driver": info.get("Driver"),
@@ -77,6 +196,12 @@ class Worker:
                     "images": int(info.get("Images", 0)),
                     "cpu_count": int(info.get("NCPU", 0)),
                     "memory_total": int(info.get("MemTotal", 0)),
+                    "worker_concurrency": concurrency,
+                    "workers_active": workers_active,
+                    "workers_available": max(
+                        0,
+                        concurrency - workers_active,
+                    ),
                 }
                 ready = True
                 detail = "Rootless Docker daemon ready"
@@ -127,17 +252,27 @@ class Worker:
 
     def execute(self, run_id: uuid.UUID) -> None:
         sandbox: DockerSandbox | None = None
+        candidate_client: ModelClient | None = None
         started = time.monotonic()
         try:
             with SessionLocal() as session:
                 run = session.get(BenchmarkRun, run_id)
                 assert run is not None
+                if run.status == RunStatus.cancelled:
+                    return
                 task = session.get(TaskDefinition, run.task_id)
                 profile = session.get(ModelProfile, run.candidate_model_id)
                 if not task or not profile:
                     raise RuntimeError("Run references missing task/model")
+                if not profile.enabled:
+                    raise RuntimeError("Candidate model profile is disabled")
+                judge_model_id = run.judge_model_id
+                judge_profile = session.get(ModelProfile, judge_model_id) if judge_model_id else None
+                if judge_profile is not None and not judge_profile.enabled:
+                    judge_profile = None
                 scenario_root = settings.scenarios_root / task.slug
                 encrypted_key = profile.encrypted_api_key
+                judge_encrypted_key = judge_profile.encrypted_api_key if judge_profile else None
                 run_config = dict(run.config)
                 append_event(
                     session,
@@ -171,9 +306,13 @@ class Worker:
                         )
                     }
                 )
+                if self.is_cancelled(run_id):
+                    return
                 with SessionLocal() as session:
-                    run = session.get(BenchmarkRun, run_id)
+                    run = session.scalar(select(BenchmarkRun).where(BenchmarkRun.id == run_id).with_for_update())
                     assert run is not None
+                    if run.status == RunStatus.cancelled:
+                        return
                     run.status = RunStatus.preparing
                     run.stage = "Starting isolated sandbox"
                     append_event(
@@ -199,16 +338,18 @@ class Worker:
                     kind="sandbox.started",
                 )
                 box = SecretBox(settings.app_secret)
-                client = ModelClient(profile, box.decrypt(encrypted_key))
+                candidate_client = ModelClient(profile, box.decrypt(encrypted_key))
                 faults = FaultController.load([Path(path) for path in prepared.private_state["fault_scripts"]])
                 engine = AgentEngine(
                     run_id=run_id,
-                    client=client,
+                    client=candidate_client,
                     sandbox=sandbox,
                     prepared=prepared,
                     faults=faults,
                 )
                 result = scenario.run(prepared, engine.run)
+                if self.is_cancelled(run_id):
+                    return
                 self.set_stage(
                     run_id,
                     status=RunStatus.scoring,
@@ -220,13 +361,9 @@ class Worker:
                 palimpsest_baseline = str(truth["palimpsest_baseline"])
                 result.artifacts.update(
                     {
-                        "dead-letter.diff": sandbox.git_diff(
-                            "dead-letter", dead_letter_baseline
-                        ),
+                        "dead-letter.diff": sandbox.git_diff("dead-letter", dead_letter_baseline),
                         "dead-letter.status": sandbox.git_status("dead-letter"),
-                        "palimpsest.diff": sandbox.git_diff(
-                            "palimpsest", palimpsest_baseline
-                        ),
+                        "palimpsest.diff": sandbox.git_diff("palimpsest", palimpsest_baseline),
                         "palimpsest.status": sandbox.git_status("palimpsest"),
                         "INVESTIGATION.md": (
                             sandbox.collect_text("INVESTIGATION.md")
@@ -234,6 +371,8 @@ class Worker:
                         ),
                     }
                 )
+                if self.is_cancelled(run_id):
+                    return
                 static = self.hidden_check(
                     run_id,
                     "static",
@@ -248,28 +387,36 @@ class Worker:
                         ),
                     ),
                 )
+                if self.is_cancelled(run_id):
+                    return
                 regression = self.hidden_check(
                     run_id,
                     "regression",
                     sandbox.hidden_regression,
                 )
+                if self.is_cancelled(run_id):
+                    return
                 mutation = self.hidden_check(
                     run_id,
                     "mutation",
                     sandbox.hidden_mutation,
                 )
+                if self.is_cancelled(run_id):
+                    return
                 runtime_contract = self.hidden_check(
                     run_id,
                     "runtime contract",
                     sandbox.hidden_runtime_contract,
                 )
+                if self.is_cancelled(run_id):
+                    return
                 golden = self.hidden_check(
                     run_id,
                     "golden replay",
-                    lambda: sandbox.hidden_golden_replay(
-                        Path(prepared.private_state["hidden_database_sql"])
-                    ),
+                    lambda: sandbox.hidden_golden_replay(Path(prepared.private_state["hidden_database_sql"])),
                 )
+                if self.is_cancelled(run_id):
+                    return
                 self.set_stage(
                     run_id,
                     stage="Resource and security audit",
@@ -313,6 +460,20 @@ class Worker:
                     kind="judge.scorecard.started",
                 )
                 scorecard = scenario.grade(prepared, result)
+                if self.is_cancelled(run_id):
+                    return
+                semantic_review, semantic_artifacts = self.semantic_judge_review(
+                    run_id=run_id,
+                    judge_model_id=judge_model_id,
+                    candidate_profile=profile,
+                    judge_profile=judge_profile,
+                    encrypted_key=judge_encrypted_key,
+                    result=result,
+                    scorecard=scorecard,
+                )
+                if self.is_cancelled(run_id):
+                    return
+                scorecard["semantic_review"] = semantic_review
                 result.artifacts.update(
                     {
                         "scorecard.json": json.dumps(
@@ -327,6 +488,7 @@ class Worker:
                             indent=2,
                             sort_keys=True,
                         ),
+                        **semantic_artifacts,
                     }
                 )
                 self.set_stage(
@@ -335,6 +497,9 @@ class Worker:
                     kind="judge.scorecard.completed",
                     payload={"score": scorecard["score"], "maximum": scorecard["maximum"]},
                 )
+                result.events = self.run_events(run_id)
+                if self.is_cancelled(run_id):
+                    return
                 archive_path = Path(settings.artifact_root) / f"{run_id}.tar.gz"
                 scenario.archive(prepared, result, archive_path)
                 archive_sha = hashlib.sha256(archive_path.read_bytes()).hexdigest()
@@ -343,9 +508,161 @@ class Worker:
             logger.error("Run %s failed: %s\n%s", run_id, exc, traceback.format_exc())
             self.fail(run_id, str(exc))
         finally:
+            if candidate_client:
+                candidate_client.close()
             if sandbox:
                 sandbox.stop()
             logger.info("Run %s finished in %.2fs", run_id, time.monotonic() - started)
+
+    def semantic_judge_review(
+        self,
+        *,
+        run_id: uuid.UUID,
+        judge_model_id: uuid.UUID | None,
+        candidate_profile: ModelProfile,
+        judge_profile: ModelProfile | None,
+        encrypted_key: str | None,
+        result: ScenarioRunResult,
+        scorecard: dict[str, object],
+    ) -> tuple[dict[str, object], dict[str, str]]:
+        if judge_model_id is None:
+            self.set_stage(
+                run_id,
+                stage="Scorecard aggregation",
+                kind="judge.semantic.skipped",
+                payload={"reason": "not_requested"},
+            )
+            return not_requested_review(), {}
+        if judge_profile is None:
+            review = unavailable_review(
+                judge_model_id=str(judge_model_id),
+                error="Selected judge model profile is unavailable.",
+            )
+            self.set_stage(
+                run_id,
+                stage="Semantic judge unavailable",
+                kind="judge.semantic.failed",
+                payload={
+                    "judge_model_id": str(judge_model_id),
+                    "error": review["errors"][0],
+                },
+            )
+            return review, {
+                "semantic-review.json": json.dumps(
+                    review,
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                )
+            }
+
+        self.set_stage(
+            run_id,
+            stage="Semantic judge review",
+            kind="judge.semantic.started",
+            payload={
+                "judge_model_id": str(judge_profile.id),
+                "judge_name": judge_profile.name,
+                "provider": judge_profile.provider.value,
+                "model_id": judge_profile.model_id,
+                "affects_primary_score": False,
+            },
+        )
+        client: ModelClient | None = None
+        try:
+            box = SecretBox(settings.app_secret)
+            client = ModelClient(
+                judge_profile,
+                box.decrypt(encrypted_key),
+                timeout_seconds=settings.semantic_judge_timeout,
+            )
+            outcome = SemanticJudge(client).review(
+                result,
+                scorecard,
+                candidate_identity_tokens=[
+                    candidate_profile.name,
+                    candidate_profile.model_id,
+                ],
+            )
+            review = outcome.review
+            artifacts = {
+                "semantic-review.json": json.dumps(
+                    review,
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                ),
+                "semantic-judge-input.json": json.dumps(
+                    outcome.packet,
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                ),
+                "semantic-judge-raw.json": json.dumps(
+                    outcome.raw_outputs,
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+            }
+        except Exception as exc:
+            review = unavailable_review(
+                judge_model_id=str(judge_model_id),
+                error=safe_error(exc),
+            )
+            review["judge"] = {
+                "profile_id": str(judge_profile.id),
+                "name": judge_profile.name,
+                "provider": judge_profile.provider.value,
+                "model_id": judge_profile.model_id,
+            }
+            artifacts = {
+                "semantic-review.json": json.dumps(
+                    review,
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                )
+            }
+        finally:
+            if client:
+                client.close()
+
+        event_kind = "judge.semantic.completed" if review["status"] == "completed" else "judge.semantic.failed"
+        self.set_stage(
+            run_id,
+            stage=(
+                "Semantic judge completed"
+                if review["status"] == "completed"
+                else "Semantic judge failed; deterministic score preserved"
+            ),
+            kind=event_kind,
+            payload={
+                "judge_model_id": str(judge_model_id),
+                "status": review["status"],
+                "semantic_score": review.get("score"),
+                "maximum": review.get("maximum", 100),
+                "reliability": dict(review.get("reliability") or {}).get("level"),
+                "attempts": review.get("attempts", 0),
+                "usage": review.get("usage", {}),
+                "affects_primary_score": False,
+            },
+        )
+        return review, artifacts
+
+    @staticmethod
+    def run_events(run_id: uuid.UUID) -> list[dict[str, object]]:
+        with SessionLocal() as session:
+            recorded_events = session.scalars(
+                select(RunEvent).where(RunEvent.run_id == run_id).order_by(RunEvent.sequence)
+            ).all()
+            return [
+                {
+                    "kind": event.kind,
+                    "sequence": event.sequence,
+                    **event.payload,
+                }
+                for event in recorded_events
+            ]
 
     def set_stage(
         self,
@@ -357,13 +674,21 @@ class Worker:
         payload: dict[str, object] | None = None,
     ) -> None:
         with SessionLocal() as session:
-            run = session.get(BenchmarkRun, run_id)
+            run = session.scalar(select(BenchmarkRun).where(BenchmarkRun.id == run_id).with_for_update())
             assert run is not None
+            if run.status == RunStatus.cancelled:
+                return
             if status is not None:
                 run.status = status
             run.stage = stage
             append_event(session, run_id, kind, {"stage": stage, **(payload or {})})
             session.commit()
+
+    @staticmethod
+    def is_cancelled(run_id: uuid.UUID) -> bool:
+        with SessionLocal() as session:
+            run = session.get(BenchmarkRun, run_id)
+            return bool(run and run.status == RunStatus.cancelled)
 
     def hidden_check(
         self,
@@ -414,8 +739,10 @@ class Worker:
         archive_sha: str,
     ) -> None:
         with SessionLocal() as session:
-            run = session.get(BenchmarkRun, run_id)
+            run = session.scalar(select(BenchmarkRun).where(BenchmarkRun.id == run_id).with_for_update())
             assert run is not None
+            if run.status == RunStatus.cancelled:
+                return
             run.status = RunStatus.completed
             run.stage = "Completed"
             run.score = float(scorecard["score"])
@@ -445,8 +772,10 @@ class Worker:
 
     def fail(self, run_id: uuid.UUID, message: str) -> None:
         with SessionLocal() as session:
-            run = session.get(BenchmarkRun, run_id)
+            run = session.scalar(select(BenchmarkRun).where(BenchmarkRun.id == run_id).with_for_update())
             if not run:
+                return
+            if run.status == RunStatus.cancelled:
                 return
             run.status = RunStatus.failed
             run.stage = "Failed"
@@ -463,12 +792,7 @@ def security_summary(events: list[dict]) -> dict:
     return {
         "tool_calls": len(calls),
         "policy_violations": len(policy_violations),
-        "violation_types": sorted(
-            {
-                str(event.get("policy_violation"))
-                for event in policy_violations
-            }
-        ),
+        "violation_types": sorted({str(event.get("policy_violation")) for event in policy_violations}),
         "passed": not policy_violations,
     }
 

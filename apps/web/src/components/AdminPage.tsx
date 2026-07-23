@@ -4,6 +4,7 @@ import {
   Bot,
   Cpu,
   Database,
+  Gauge,
   HardDrive,
   MemoryStick,
   Plus,
@@ -13,7 +14,7 @@ import {
   UserCog,
   Users,
 } from "lucide-react";
-import { type FormEvent, useState } from "react";
+import { type FormEvent, useEffect, useState } from "react";
 import { api } from "../lib/api";
 import { useLocale } from "../lib/i18n";
 import type { ServerMonitor, UserAccount, UserRole } from "../lib/types";
@@ -27,6 +28,7 @@ export default function AdminPage({
   const queryClient = useQueryClient();
   const [showCreate, setShowCreate] = useState(false);
   const [error, setError] = useState("");
+  const [runnerConcurrency, setRunnerConcurrency] = useState(2);
   const summary = useQuery({
     queryKey: ["admin-summary"],
     queryFn: api.adminSummary,
@@ -44,12 +46,21 @@ export default function AdminPage({
     queryFn: api.serverMonitor,
     refetchInterval: 5_000,
   });
+  useEffect(() => {
+    if (settings.data) {
+      setRunnerConcurrency(settings.data.runner_concurrency);
+    }
+  }, [settings.data]);
   const updateSettings = useMutation({
     mutationFn: api.updatePlatformSettings,
-    onSuccess: () => {
+    onSuccess: (updated) => {
+      setRunnerConcurrency(updated.runner_concurrency);
+      setError("");
       void queryClient.invalidateQueries({ queryKey: ["platform-settings"] });
       void queryClient.invalidateQueries({ queryKey: ["auth-config"] });
     },
+    onError: (cause) =>
+      setError(cause instanceof Error ? cause.message : String(cause)),
   });
   const create = useMutation({
     mutationFn: api.createUser,
@@ -167,6 +178,68 @@ export default function AdminPage({
                 ? text("已开放", "Open")
                 : text("已关闭", "Closed")}
             </button>
+          </div>
+        </section>
+        <section className="panel">
+          <PanelTitle
+            icon={<Gauge size={16} />}
+            title={text("运行并发", "Run concurrency")}
+          />
+          <div className="concurrency-setting">
+            <div>
+              <strong>
+                {text("Runner 并发槽位", "Runner execution slots")}
+              </strong>
+              <span>
+                {text(
+                  "保存后立即影响新任务领取；降低数值不会中断正在运行的测试。",
+                  "Applies immediately to new claims; lowering it never interrupts active runs.",
+                )}
+              </span>
+            </div>
+            <div className="concurrency-setting__control">
+              <input
+                type="range"
+                min={1}
+                max={16}
+                step={1}
+                value={runnerConcurrency}
+                aria-label={text("Runner 并发槽位", "Runner execution slots")}
+                onChange={(event) =>
+                  setRunnerConcurrency(Number(event.target.value))
+                }
+              />
+              <input
+                type="number"
+                min={1}
+                max={16}
+                value={runnerConcurrency}
+                aria-label={text(
+                  "Runner 并发槽位数值",
+                  "Runner execution slot value",
+                )}
+                onChange={(event) =>
+                  setRunnerConcurrency(
+                    Math.max(1, Math.min(16, Number(event.target.value) || 1)),
+                  )
+                }
+              />
+              <button
+                className="button button--small"
+                disabled={
+                  settings.isLoading ||
+                  updateSettings.isPending ||
+                  runnerConcurrency === settings.data?.runner_concurrency
+                }
+                onClick={() =>
+                  updateSettings.mutate({
+                    runner_concurrency: runnerConcurrency,
+                  })
+                }
+              >
+                {text("保存", "Save")}
+              </button>
+            </div>
           </div>
         </section>
         <section className="panel">
@@ -375,6 +448,10 @@ function ServerPanel({
         </span>
         <span>
           {text("处理中", "Active")}: {monitor?.queue.active ?? "—"}
+        </span>
+        <span>
+          {text("并发槽位", "Run slots")}: {runner?.workers_active ?? "—"} /{" "}
+          {runner?.worker_concurrency ?? "—"}
         </span>
       </div>
     </section>

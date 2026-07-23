@@ -25,7 +25,7 @@ provider credentials.
 
 ## Status
 
-The platform is currently **v0.5.0** and remains under active construction.
+The platform is currently **v0.7.0** and remains under active construction.
 See [`CHANGELOG.md`](CHANGELOG.md). This release includes the canonical
 “terminal repository” challenge, account isolation, administrator controls,
 server monitoring, a live Agent activity console, and the complete execution,
@@ -33,12 +33,43 @@ telemetry, scoring, and visualization path around it.
 
 Long investigations can be paused at a safe Provider/tool boundary and resumed
 without discarding the candidate workspace or conversation. Paused time does
-not consume the configured hard execution budget.
+not consume the configured hard execution budget. Pause state is held by the
+live Runner process; it does not make a run safe to survive a Runner restart.
 
 The control plane supports four explicit model protocols: OpenAI Responses,
 Anthropic Messages, OpenAI-compatible Chat Completions, and Ollama Chat.
 OpenAI-compatible and OpenAI Responses remain separate because their message,
 tool-call, and usage contracts are not interchangeable.
+
+Model profiles can be edited after creation without re-entering a stored API
+key. The bilingual parameter editor exposes temperature, top-p, maximum output
+tokens, reasoning/thinking effort, and service tier using protocol-correct
+field names. Additional Provider fields can be supplied as bounded JSON.
+Credentials, headers, prompts, model IDs, tool declarations, and transport
+fields are rejected from that JSON, and the Runner enforces the same boundary
+again when constructing every request.
+
+The Runner executes multiple independent runs concurrently. Two slots are
+enabled by default; administrators can change the 1–16 slot limit live without
+restarting or terminating active runs. `RUNNER_CONCURRENCY` sets the initial
+value on a fresh database. Every slot still creates a separate UUID, container,
+tmpfs workspace, conversation, fault state, and archive. The administrator
+monitor reports occupied and total slots. Cancelling a run requires explicit
+confirmation because its conversation and temporary workspace cannot be
+resumed after cleanup.
+
+An optional independent LLM semantic judge now performs a real second Provider
+call after deterministic grading. It assigns a separate 0–100 review for
+causal coherence, evidence grounding, hypothesis discipline, decision/risk
+reasoning, and reproducible communication. This review never changes the
+official 1,200-point score. The judge sees no candidate identity, must cite
+versioned audit references, receives candidate text as explicitly untrusted
+data, and may retry one malformed response. Provider or schema failure is
+recorded without failing the benchmark run.
+
+Selecting a semantic judge sends the bounded review packet to that model's
+configured Provider from the control plane. Do not select an external Provider
+for runs whose reports may contain data you are not permitted to disclose.
 
 ## Benchmark contract
 
@@ -60,7 +91,7 @@ with a stale SQLite cache. The offline mirror is available only through
 `browser.search`, `browser.open`, and `browser.find`, so a candidate cannot
 bypass Browser behavior by scanning a copied mirror directory.
 
-Scenario 3.0.0 makes the apparent bulk material. Five live relay chains contain
+Scenario 3.0.1 makes the apparent bulk material. Five live relay chains contain
 704 executable opaque cells; seven independent corruptions are jointly
 required, and fixing six still fails. The two repositories contain exactly
 5,000 tracked files and 2,000 commits, 40 semantic custody checkpoints, seven
@@ -102,13 +133,13 @@ Candidate sandboxes default to 0.5 CPU, 256 MiB RAM, 256 PIDs and a 1.5 GiB
 ephemeral workspace. A one-sample quick check may lie; hidden grading reruns
 static scope, regression, mutation, runtime and fresh-database golden replay.
 
-The canonical difficulty target is a reference solve of at least 80 minutes
-for a strong software-engineering Agent. This is a calibration target, not a
-wall-clock promise: EvilBench never pads a run with `sleep`, random delay, or
-an 80-minute timer. Difficulty must come from necessary evidence work,
-conflicting provenance, bounded recovery from scripted failures, and hidden
-verification. Scenario releases are recalibrated when strong Agents discover
-material shortcuts.
+The canonical difficulty target is to remain discriminating throughout an
+80-minute hard envelope for a strong software-engineering Agent. This is a
+calibration target, not a wall-clock promise: EvilBench never pads a run with
+`sleep`, random delay, or an artificial timer. Difficulty must come from
+necessary evidence work, conflicting provenance, bounded recovery from
+scripted failures, and hidden verification. Scenario releases are recalibrated
+when strong Agents discover material shortcuts.
 
 Use an optional held-out instance seed when comparing models. It changes the
 opaque file layout, runtime cells, histories, corpus and incident replay while
@@ -138,6 +169,18 @@ make deploy
 `make deploy` runs the Rootless Docker preflight, builds the isolated candidate
 sandbox and application images, starts all services, and prints their status.
 Then open `http://127.0.0.1:5173`.
+
+`RUNNER_CONCURRENCY=2` initializes the setting on a fresh database. The
+administrator console can change it later without a restart. Each active slot
+can consume the configured per-sandbox CPU, memory and workspace limits and
+can issue independent Provider requests, so reduce it on a small machine or
+under a low API rate limit.
+
+Deployment and shutdown fail closed while any run is queued, preparing,
+running, or scoring. Wait for those runs to finish or cancel them in the WebUI.
+If interruption is intentional, `ALLOW_ACTIVE_RUN_DISRUPTION=1 make deploy`
+overrides the guard; interrupted runs are marked failed on Runner startup
+because their in-memory model conversations cannot be reconstructed.
 
 Node.js 22+, pnpm, Python 3.12+, and uv are only required for host-side
 development; the deployment command builds application dependencies inside
@@ -195,9 +238,12 @@ Do not expose a fresh installation without setting `SETUP_TOKEN`.
 make down
 ```
 
-This stops and removes the application containers and Compose networks while
-preserving the PostgreSQL data volume. Run `make deploy` again to resume with
-the existing accounts, settings, and benchmark data.
+This refuses to stop while runs are queued or active. Once safe, it stops and
+removes the application containers and Compose networks while preserving the
+PostgreSQL data volume. Run `make deploy` again to resume with the existing
+accounts, settings, and benchmark data. Use
+`ALLOW_ACTIVE_RUN_DISRUPTION=1 make down` only to abandon active runs
+deliberately.
 
 ## Repository layout
 

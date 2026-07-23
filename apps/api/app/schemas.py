@@ -2,8 +2,9 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, HttpUrl
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator
 
+from app.model_parameters import validate_model_parameters
 from app.models import EvidenceRelation, HypothesisStatus, ModelProvider, RunStatus, UserRole
 
 
@@ -80,12 +81,14 @@ class AdminUserUpdate(BaseModel):
 
 class PlatformSettingsRead(ORMModel):
     registration_enabled: bool
+    runner_concurrency: int
     updated_by: uuid.UUID | None
     updated_at: datetime
 
 
 class PlatformSettingsUpdate(BaseModel):
-    registration_enabled: bool
+    registration_enabled: bool | None = None
+    runner_concurrency: int | None = Field(default=None, ge=1, le=16)
 
 
 class AdminSummary(BaseModel):
@@ -123,14 +126,38 @@ class TaskRead(TaskCreate, ORMModel):
 
 
 class ModelCreate(BaseModel):
-    name: str
+    name: str = Field(min_length=1, max_length=120)
     provider: ModelProvider
     base_url: HttpUrl
-    model_id: str
-    api_key: str | None = None
+    model_id: str = Field(min_length=1, max_length=200)
+    api_key: str | None = Field(default=None, max_length=8_192)
     native_tools: bool = True
     parameters: dict[str, Any] = Field(default_factory=dict)
     enabled: bool = True
+
+    @field_validator("parameters")
+    @classmethod
+    def parameters_are_safe(cls, value: dict[str, Any]) -> dict[str, Any]:
+        return validate_model_parameters(value)
+
+
+class ModelUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    provider: ModelProvider | None = None
+    base_url: HttpUrl | None = None
+    model_id: str | None = Field(default=None, min_length=1, max_length=200)
+    api_key: str | None = Field(default=None, max_length=8_192)
+    native_tools: bool | None = None
+    parameters: dict[str, Any] | None = None
+    enabled: bool | None = None
+
+    @field_validator("parameters")
+    @classmethod
+    def parameters_are_safe(
+        cls,
+        value: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        return validate_model_parameters(value) if value is not None else None
 
 
 class ModelRead(ORMModel):
@@ -154,8 +181,8 @@ class RunCreate(BaseModel):
     repetitions: int = Field(default=1, ge=1, le=5)
     temperature: float = Field(default=0, ge=0, le=2)
     instance_seed: int | None = Field(default=None, ge=1, le=2_147_483_647)
-    soft_seconds: int = Field(default=7_200, ge=60, le=14_400)
-    hard_seconds: int = Field(default=14_400, ge=300, le=21_600)
+    soft_seconds: int = Field(default=2_400, ge=60, le=14_400)
+    hard_seconds: int = Field(default=4_800, ge=300, le=21_600)
     soft_tool_calls: int = Field(default=1_200, ge=10, le=2_000)
     hard_tool_calls: int = Field(default=2_200, ge=20, le=3_000)
 

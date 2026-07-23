@@ -8,7 +8,7 @@ from app.config import get_settings
 from app.crypto import SecretBox
 from app.database import get_session
 from app.models import ModelProfile, UserAccount, UserModelAccess, UserRole
-from app.schemas import ModelCreate, ModelRead
+from app.schemas import ModelCreate, ModelRead, ModelUpdate
 from app.security import can_access_model, csrf_protection, current_user
 
 router = APIRouter(prefix="/models", tags=["models"])
@@ -80,6 +80,59 @@ def create_model(
     except Exception as exc:
         session.rollback()
         raise HTTPException(status_code=409, detail="Could not create model profile") from exc
+    session.refresh(profile)
+    return to_read(profile)
+
+
+@router.patch("/{model_id}", response_model=ModelRead)
+def update_model(
+    model_id: uuid.UUID,
+    payload: ModelUpdate,
+    session: Session = Depends(get_session),
+    user: UserAccount = Depends(csrf_protection),
+) -> ModelRead:
+    profile = session.get(ModelProfile, model_id)
+    if not can_access_model(session, user, profile):
+        raise HTTPException(status_code=404, detail="Model profile not found")
+    assert profile is not None
+
+    if payload.name is not None and payload.name != profile.name:
+        duplicate = session.scalar(
+            select(ModelProfile.id)
+            .join(
+                UserModelAccess,
+                UserModelAccess.model_profile_id == ModelProfile.id,
+            )
+            .where(
+                UserModelAccess.user_id == user.id,
+                ModelProfile.name == payload.name,
+                ModelProfile.id != profile.id,
+            )
+        )
+        if duplicate:
+            raise HTTPException(
+                status_code=409,
+                detail="You already have a model profile with this name",
+            )
+
+    if payload.name is not None:
+        profile.name = payload.name
+    if payload.provider is not None:
+        profile.provider = payload.provider
+    if payload.base_url is not None:
+        profile.base_url = str(payload.base_url).rstrip("/")
+    if payload.model_id is not None:
+        profile.model_id = payload.model_id
+    if payload.native_tools is not None:
+        profile.native_tools = payload.native_tools
+    if payload.parameters is not None:
+        profile.parameters = payload.parameters
+    if payload.enabled is not None:
+        profile.enabled = payload.enabled
+    if "api_key" in payload.model_fields_set:
+        profile.encrypted_api_key = SecretBox(get_settings().app_secret).encrypt(payload.api_key)
+
+    session.commit()
     session.refresh(profile)
     return to_read(profile)
 
