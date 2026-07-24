@@ -3,6 +3,83 @@
 All notable platform changes are recorded here. The project follows Semantic
 Versioning while individual benchmark scenarios retain independent versions.
 
+## [0.11.0] - 2026-07-24
+
+### Added
+
+- A per-account Provider credential vault with reusable encrypted API keys,
+  status and expiry metadata, model-reference counts, explicit validation,
+  OAuth refresh, and destructive deletion that is blocked while a model
+  profile still references the credential.
+- Codex authentication through either an imported Codex CLI `auth.json` or the
+  OpenAI device-code flow. Codex subscription profiles use the native Responses
+  protocol, refresh once after an authentication rejection, and never send the
+  OAuth token to a user-supplied Base URL.
+- Native Google Gemini `generateContent` support with function calling,
+  system/tool history conversion, usage normalization, Gemini-specific
+  generation parameters, API-key authentication, and imported Gemini CLI
+  `oauth_creds.json` authentication through Code Assist.
+- A bilingual Authentication Vault in the WebUI for API keys, JSON imports,
+  Codex device sign-in, status/expiry inspection, validation, refresh, and
+  confirmed deletion. Model profiles can now select and replace existing
+  credentials independently of model parameters.
+- Credential normalization, refresh rotation, ownership, protocol
+  compatibility, Codex host pinning, Gemini host pinning, and native Provider
+  adapter regression tests.
+- A second-generation Agent telemetry stream with per-turn context size,
+  Provider attempt/retry/error latency, token throughput, per-tool lifecycle,
+  duplicate-call signatures, I/O size, truncation, blind-write and policy
+  outcomes, plus periodic resource snapshots.
+- Archive schema v2 with timestamped events and separate machine-readable
+  Provider-turn, tool-lifecycle, stage-timeline, resource-snapshot, error,
+  investigation-graph, and artifact-integrity files. The authenticated JSON
+  export exposes the same detail for active, completed, and failed runs.
+
+### Changed
+
+- Model profiles reference a reusable credential ID instead of owning the only
+  copy of an API key. Existing encrypted profile keys are migrated
+  idempotently to owner-scoped API-key credentials on startup.
+- Provider HTTP failures now preserve a short, credential-safe upstream error
+  code/message for diagnosis instead of collapsing common 4xx failures into an
+  opaque `HTTPStatusError`.
+- Codex profiles expose reasoning effort but omit temperature, Top P, and
+  output-token controls that the subscription backend does not accept. Gemini
+  profiles map thinking level and generation controls to native fields.
+- Reworked the administrator console into a responsive control center with
+  explicit service freshness, capacity warnings, searchable mobile account
+  cards, confirmed privilege/session actions, and visible mutation feedback.
+- The live run console now separates Provider, tool, context, and explicit
+  hypothesis/evidence telemetry. It reports latency distributions, wait time,
+  context growth, duplicate reads/calls, self-verification, and hypothesis
+  revision behavior without claiming access to hidden chain-of-thought.
+- Hypothesis graph nodes now keep their local drag positions across polling
+  updates, use controlled node state, virtualize large graphs, and avoid
+  continuously restarting edge animation on dense graphs.
+
+### Fixed
+
+- Mounted the shared artifact directory read-only into the API service. The
+  download controls could list successful archives and unexpected-failure
+  checkpoints from PostgreSQL while every download returned “file
+  unavailable,” because only the Runner could see the files.
+- Added explicit browser download filenames for JSON reports, normal run
+  archives, and failure checkpoints.
+- Fixed hypothesis nodes snapping or feeling sticky while a live graph poll
+  replaced the controlled node array during a pointer drag.
+
+### Security
+
+- Imported OAuth documents and API keys never appear in credential responses,
+  model responses, candidate environments, events, or run archives.
+- Gemini OAuth client credentials are deployment-only configuration; no
+  third-party Google OAuth client secret is embedded in the repository.
+- Codex OAuth egress is limited to OpenAI authentication and
+  `chatgpt.com/backend-api/codex`; Gemini OAuth egress is limited to Google
+  OAuth and `cloudcode-pa.googleapis.com`. Imported authentication files must
+  be treated as passwords and uploaded only to an operator-controlled
+  deployment.
+
 ## [0.10.0] - 2026-07-24
 
 ### Added

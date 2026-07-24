@@ -15,9 +15,11 @@ import docker
 from sqlalchemy import select
 
 from app.config import get_settings
-from app.crypto import SecretBox
+from app.credentials import CredentialResolver
+from app.crypto import SecretBox  # noqa: F401 - pre-0.11 test/plugin seam
 from app.database import SessionLocal, create_schema
 from app.events import append_event
+from app.investigation import graph_payload
 from app.judging import (
     SemanticJudge,
     not_requested_review,
@@ -42,7 +44,9 @@ from app.runner.providers import ModelClient
 from app.runner.sandbox import DockerSandbox
 from app.scenario import PreparedScenario, Scenario, ScenarioRunResult, load_scenario
 from app.scenario.agent_graph import derive_agent_graph
+from app.schemas import InvestigationGraph as InvestigationGraphSchema
 from app.seed import seed_canonical_task
+from app.telemetry import sanitize_for_export, serialize_run_event
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("evil-runner")
@@ -284,8 +288,6 @@ class Worker:
                 ):
                     judge_profile = None
                 scenario_root = settings.scenarios_root / task.slug
-                encrypted_key = profile.encrypted_api_key
-                judge_encrypted_key = judge_profile.encrypted_api_key if judge_profile else None
                 run_config = dict(run.config)
                 append_event(
                     session,
@@ -368,10 +370,10 @@ class Worker:
                     stage="Candidate investigation",
                     kind="sandbox.started",
                 )
-                box = SecretBox(settings.app_secret)
                 candidate_client = ModelClient(
                     profile,
-                    box.decrypt(encrypted_key),
+                    None,
+                    credential_resolver=CredentialResolver(profile.id),
                     on_retry=lambda payload: self.record_provider_retry(
                         run_id,
                         "candidate",
@@ -441,13 +443,7 @@ class Worker:
                     stage="Resource and security audit",
                     kind="judge.audit.completed",
                 )
-                with SessionLocal() as session:
-                    recorded_events = session.scalars(
-                        select(RunEvent).where(RunEvent.run_id == run_id).order_by(RunEvent.sequence)
-                    ).all()
-                    result.events = [
-                        {"kind": event.kind, "sequence": event.sequence, **event.payload} for event in recorded_events
-                    ]
+                result.events = self.run_events(run_id)
 
                 self.set_stage(
                     run_id,
@@ -474,7 +470,6 @@ class Worker:
                     judge_model_id=judge_model_id,
                     candidate_profile=profile,
                     judge_profile=judge_profile,
-                    encrypted_key=judge_encrypted_key,
                     result=result,
                     scorecard=scorecard,
                 )
@@ -523,6 +518,7 @@ class Worker:
                     payload={"score": scorecard["score"], "maximum": scorecard["maximum"]},
                 )
                 result.events = self.run_events(run_id)
+                self.prepare_export_context(run_id, result)
                 if self.is_cancelled(run_id):
                     return
                 archive_path = Path(settings.artifact_root) / f"{run_id}.tar.gz"
@@ -559,9 +555,9 @@ class Worker:
         judge_model_id: uuid.UUID | None,
         candidate_profile: ModelProfile,
         judge_profile: ModelProfile | None,
-        encrypted_key: str | None,
         result: ScenarioRunResult,
         scorecard: dict[str, object],
+        encrypted_key: str | None = None,
     ) -> tuple[dict[str, object], dict[str, str]]:
         if judge_model_id is None:
             self.set_stage(
@@ -608,10 +604,10 @@ class Worker:
         )
         client: ModelClient | None = None
         try:
-            box = SecretBox(settings.app_secret)
             client = ModelClient(
                 judge_profile,
-                box.decrypt(encrypted_key),
+                None,
+                credential_resolver=CredentialResolver(judge_profile.id),
                 timeout_seconds=settings.semantic_judge_timeout,
                 on_retry=lambda payload: self.record_provider_retry(
                     run_id,
@@ -698,14 +694,53 @@ class Worker:
             recorded_events = session.scalars(
                 select(RunEvent).where(RunEvent.run_id == run_id).order_by(RunEvent.sequence)
             ).all()
-            return [
+            return [serialize_run_event(event) for event in recorded_events]
+
+    @staticmethod
+    def prepare_export_context(
+        run_id: uuid.UUID,
+        result: ScenarioRunResult,
+    ) -> None:
+        with SessionLocal() as session:
+            run = session.get(BenchmarkRun, run_id)
+            if run is None:
+                return
+            task = session.get(TaskDefinition, run.task_id)
+            graph = InvestigationGraphSchema.model_validate(
+                graph_payload(session, run_id)
+            ).model_dump(mode="json")
+            result.private_state["investigation_graph"] = graph
+            result.private_state["run_export"] = sanitize_for_export(
                 {
-                    "kind": event.kind,
-                    "sequence": event.sequence,
-                    **event.payload,
+                    "id": str(run.id),
+                    "task_id": str(run.task_id),
+                    "candidate_model_id": str(run.candidate_model_id),
+                    "judge_model_id": (
+                        str(run.judge_model_id) if run.judge_model_id else None
+                    ),
+                    "status_at_export": run.status.value,
+                    "stage_at_export": run.stage,
+                    "config": dict(run.config),
+                    "scenario": (
+                        {
+                            "slug": task.slug,
+                            "version": task.version,
+                            "name": task.name,
+                        }
+                        if task
+                        else None
+                    ),
+                    "created_at": run.created_at.isoformat(),
+                    "started_at": (
+                        run.started_at.isoformat() if run.started_at else None
+                    ),
+                    "completed_at": (
+                        run.completed_at.isoformat()
+                        if run.completed_at
+                        else None
+                    ),
                 }
-                for event in recorded_events
-            ]
+            )
 
     def set_stage(
         self,
@@ -913,6 +948,7 @@ class Worker:
                     f"{type(collection_error).__name__}: {collection_error}"
                 )[:1_000]
         checkpoint_result.events = self.run_events(run_id)
+        self.prepare_export_context(run_id, checkpoint_result)
         failure_summary = {
             "kind": "unexpected-run-failure",
             "error_type": type(error).__name__,

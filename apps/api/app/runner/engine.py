@@ -1,3 +1,4 @@
+import hashlib
 import json
 import re
 import shlex
@@ -14,7 +15,12 @@ from app.investigation import link_evidence, record_evidence, record_hypothesis
 from app.models import BenchmarkRun, Evidence, Hypothesis, HypothesisRevision, HypothesisStatus
 from app.runner.faults import FaultController, synthetic_browser_document
 from app.runner.protocol import AssistantTurn, ToolCall, ToolResult, tool_definitions_for
-from app.runner.providers import ModelClient, tool_message
+from app.runner.providers import (
+    ModelClient,
+    ProviderResponseError,
+    ProviderTransientError,
+    tool_message,
+)
 from app.runner.sandbox import DockerSandbox
 from app.scenario.browser import OfflineBrowser
 from app.scenario.incident import IncidentDirector
@@ -56,6 +62,11 @@ class AgentEngine:
         self.output_tokens = 0
         self.provider_requests = 0
         self.tool_calls = 0
+        self.current_turn = 0
+        self.provider_durations_ms: list[int] = []
+        self.tool_durations_ms: list[int] = []
+        self.tool_status_counts: Counter[str] = Counter()
+        self.tool_signature_counts: Counter[str] = Counter()
         self.events: list[dict[str, Any]] = []
         self.final_rejections = 0
         self.invalid_tool_call_batches = 0
@@ -107,12 +118,25 @@ class AgentEngine:
             if soft_warning:
                 messages.append({"role": "user", "content": soft_warning})
             turn_number += 1
+            self.current_turn = turn_number
+            self.client.logical_turn = turn_number
+            context_role_counts = Counter(
+                str(message.get("role", "unknown")) for message in messages
+            )
             self._event(
                 "model.request",
                 {
                     "turn": turn_number,
                     "context_messages": len(messages),
+                    "context_characters": json_size(messages),
+                    "context_role_counts": dict(context_role_counts),
+                    "tool_definitions": len(tool_definitions),
+                    "tool_schema_characters": json_size(tool_definitions),
                     "tool_calls": self.tool_calls,
+                    "provider_requests_total": self.provider_requests,
+                    "input_tokens_total": self.input_tokens,
+                    "output_tokens_total": self.output_tokens,
+                    "active_seconds": round(self._active_elapsed(), 3),
                 },
             )
             provider_started = time.monotonic()
@@ -126,7 +150,29 @@ class AgentEngine:
                     "model turn could complete."
                 )
                 break
+            except Exception as exc:
+                provider_duration_ms = round(
+                    (time.monotonic() - provider_started) * 1_000
+                )
+                self.provider_durations_ms.append(provider_duration_ms)
+                self._event(
+                    "provider.error",
+                    {
+                        "turn": turn_number,
+                        "error_type": type(exc).__name__,
+                        "error": safe_provider_error(exc),
+                        "duration_ms": provider_duration_ms,
+                        "provider_requests_total": self.provider_requests,
+                        "active_seconds": round(self._active_elapsed(), 3),
+                    },
+                )
+                self._emit_telemetry_snapshot(
+                    trigger="provider_error",
+                    turn=turn_number,
+                )
+                raise
             provider_duration_ms = round((time.monotonic() - provider_started) * 1_000)
+            self.provider_durations_ms.append(provider_duration_ms)
             self.input_tokens += turn.input_tokens
             self.output_tokens += turn.output_tokens
             self._event(
@@ -141,9 +187,19 @@ class AgentEngine:
                     ],
                     "input_tokens": turn.input_tokens,
                     "output_tokens": turn.output_tokens,
+                    "input_tokens_total": self.input_tokens,
+                    "output_tokens_total": self.output_tokens,
+                    "response_characters": len(turn.content),
+                    "tool_call_count": len(turn.tool_calls),
+                    "invalid_tool_call_count": len(turn.invalid_tool_calls),
                     "provider_requests_total": self.provider_requests,
                     "duration_ms": provider_duration_ms,
+                    "active_seconds": round(self._active_elapsed(), 3),
                 },
+            )
+            self._emit_telemetry_snapshot(
+                trigger="provider_response",
+                turn=turn_number,
             )
             hard_resources = self._hard_resource_reasons()
             if hard_resources:
@@ -243,9 +299,23 @@ class AgentEngine:
                     stop_requested = True
                     break
                 self.tool_calls += 1
+                signature = tool_call_signature(call)
+                self.tool_signature_counts[signature] += 1
                 self._event(
                     "tool.call",
-                    {"name": call.name, "call_id": call.call_id, "arguments": call.arguments},
+                    {
+                        "name": call.name,
+                        "call_id": call.call_id,
+                        "arguments": call.arguments,
+                        "ordinal": self.tool_calls,
+                        "turn": turn_number,
+                        "argument_size_bytes": json_size(call.arguments),
+                        "call_signature_sha256": signature,
+                        "identical_call_ordinal": self.tool_signature_counts[
+                            signature
+                        ],
+                        "active_seconds": round(self._active_elapsed(), 3),
+                    },
                 )
                 tool_started = time.monotonic()
                 result = self._execute(call)
@@ -272,6 +342,8 @@ class AgentEngine:
                             },
                         )
                 tool_duration_ms = round((time.monotonic() - tool_started) * 1_000)
+                self.tool_durations_ms.append(tool_duration_ms)
+                self.tool_status_counts[result.status] += 1
                 self._event(
                     "tool.result",
                     {
@@ -282,9 +354,24 @@ class AgentEngine:
                         "exit_code": result.exit_code,
                         "truncated": result.truncated,
                         "duration_ms": tool_duration_ms,
+                        "output_size_bytes": len(result.output.encode()),
+                        "output_lines": result.output.count("\n")
+                        + bool(result.output),
+                        "turn": turn_number,
+                        "ordinal": self.tool_calls,
+                        "active_seconds": round(self._active_elapsed(), 3),
                         **result.metadata,
                     },
                 )
+                if (
+                    self.tool_calls % 10 == 0
+                    or result.status not in {"ok", "success"}
+                    or tool_duration_ms >= 30_000
+                ):
+                    self._emit_telemetry_snapshot(
+                        trigger="tool_checkpoint",
+                        turn=turn_number,
+                    )
                 messages.append(tool_message(call, result.model_dump_json(), native))
             if stop_requested:
                 break
@@ -303,6 +390,10 @@ class AgentEngine:
             self._soft_budget_warning()
         if not self.completion_gaps:
             self.completion_gaps = self._completion_gaps()
+        self._emit_telemetry_snapshot(
+            trigger="engine_complete",
+            turn=turn_number,
+        )
         completion_actions = sorted(completion_actions_from_events(self.events))
         return ScenarioRunResult(
             final_response=final_response,
@@ -825,10 +916,15 @@ class AgentEngine:
             "agent_role": "primary",
             **payload,
         }
-        event = {"kind": kind, **payload}
-        self.events.append(event)
         with SessionLocal() as session:
-            append_event(session, self.run_id, kind, payload)
+            stored = append_event(session, self.run_id, kind, payload)
+            event = {
+                "kind": kind,
+                "sequence": stored.sequence,
+                "created_at": stored.created_at.isoformat(),
+                **payload,
+            }
+            self.events.append(event)
             run = session.get(BenchmarkRun, self.run_id)
             if run:
                 run.tool_calls = self.tool_calls
@@ -973,7 +1069,64 @@ class AgentEngine:
             "provider.request",
             {
                 **request,
+                "turn": self.current_turn,
                 "provider_requests": self.provider_requests,
+                "active_seconds": round(self._active_elapsed(), 3),
+            },
+        )
+
+    def _emit_telemetry_snapshot(self, *, trigger: str, turn: int) -> None:
+        active_seconds = self._active_elapsed()
+        wall_seconds = max(0.0, time.monotonic() - self.started)
+        duplicate_calls = sum(
+            max(0, count - 1) for count in self.tool_signature_counts.values()
+        )
+        self._event(
+            "agent.telemetry.snapshot",
+            {
+                "trigger": trigger,
+                "turn": turn,
+                "active_seconds": round(active_seconds, 3),
+                "wall_seconds": round(wall_seconds, 3),
+                "paused_seconds": round(self.paused_seconds, 3),
+                "provider_requests": self.provider_requests,
+                "provider_wait_ms_total": sum(self.provider_durations_ms),
+                "provider_wait_ms_max": max(
+                    self.provider_durations_ms,
+                    default=0,
+                ),
+                "provider_wait_ms_last": (
+                    self.provider_durations_ms[-1]
+                    if self.provider_durations_ms
+                    else 0
+                ),
+                "tool_calls": self.tool_calls,
+                "tool_wait_ms_total": sum(self.tool_durations_ms),
+                "tool_wait_ms_max": max(self.tool_durations_ms, default=0),
+                "tool_status_counts": dict(self.tool_status_counts),
+                "unique_tool_signatures": len(self.tool_signature_counts),
+                "duplicate_tool_calls": duplicate_calls,
+                "input_tokens": self.input_tokens,
+                "output_tokens": self.output_tokens,
+                "total_tokens": self.input_tokens + self.output_tokens,
+                "unique_paths_read": len(self.read_counts),
+                "repeated_path_reads": sum(
+                    max(0, count - 1) for count in self.read_counts.values()
+                ),
+                "unique_paths_written": len(self.write_counts),
+                "writes": sum(self.write_counts.values()),
+                "final_rejections": self.final_rejections,
+                "invalid_tool_call_batches": self.invalid_tool_call_batches,
+                "tool_calls_per_active_minute": round(
+                    self.tool_calls * 60 / max(active_seconds, 1),
+                    3,
+                ),
+                "tokens_per_active_minute": round(
+                    (self.input_tokens + self.output_tokens)
+                    * 60
+                    / max(active_seconds, 1),
+                    3,
+                ),
             },
         )
 
@@ -1021,6 +1174,22 @@ class AgentEngine:
             "budgets": budget.model_dump(mode="json"),
             "soft_limits_crossed": sorted(self.soft_budget_warnings),
             "hard_limits_crossed": self.hard_budget_reasons,
+            "provider_wait_ms_total": sum(self.provider_durations_ms),
+            "provider_wait_ms_max": max(self.provider_durations_ms, default=0),
+            "tool_wait_ms_total": sum(self.tool_durations_ms),
+            "tool_wait_ms_max": max(self.tool_durations_ms, default=0),
+            "tool_status_counts": dict(self.tool_status_counts),
+            "unique_tool_signatures": len(self.tool_signature_counts),
+            "duplicate_tool_calls": sum(
+                max(0, count - 1)
+                for count in self.tool_signature_counts.values()
+            ),
+            "unique_paths_read": len(self.read_counts),
+            "repeated_path_reads": sum(
+                max(0, count - 1) for count in self.read_counts.values()
+            ),
+            "unique_paths_written": len(self.write_counts),
+            "writes": sum(self.write_counts.values()),
         }
 
     @staticmethod
@@ -1035,10 +1204,55 @@ class AgentEngine:
                         "name": call.name,
                         "arguments": json.dumps(call.arguments),
                     },
+                    **(
+                        {"provider_metadata": call.provider_metadata}
+                        if call.provider_metadata
+                        else {}
+                    ),
                 }
                 for call in turn.tool_calls
             ]
         return message
+
+
+def json_size(value: Any) -> int:
+    return len(
+        json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            default=str,
+        ).encode()
+    )
+
+
+def tool_call_signature(call: ToolCall) -> str:
+    arguments = dict(call.arguments)
+    if call.name == "exec_command" and "command" in arguments:
+        arguments["command"] = re.sub(
+            r"\s+",
+            " ",
+            str(arguments["command"]).strip(),
+        )
+    canonical = json.dumps(
+        {
+            "name": call.name,
+            "arguments": arguments,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        default=str,
+    ).encode()
+    return hashlib.sha256(canonical).hexdigest()
+
+
+def safe_provider_error(error: Exception) -> str:
+    if isinstance(error, (ProviderResponseError, ProviderTransientError)):
+        return str(error)[:1_000]
+    return (
+        f"{type(error).__name__}: Provider request failed before a valid "
+        "response was available"
+    )
 
 
 def ok(call: ToolCall, output: str) -> ToolResult:

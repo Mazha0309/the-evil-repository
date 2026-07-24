@@ -30,6 +30,22 @@ class ModelProvider(StrEnum):
     anthropic = "anthropic"
     openai_compatible = "openai_compatible"
     ollama = "ollama"
+    codex = "codex"
+    gemini = "gemini"
+
+
+class CredentialKind(StrEnum):
+    api_key = "api_key"
+    codex_oauth = "codex_oauth"
+    gemini_oauth = "gemini_oauth"
+
+
+class CredentialStatus(StrEnum):
+    unchecked = "unchecked"
+    ready = "ready"
+    expired = "expired"
+    needs_reauth = "needs_reauth"
+    error = "error"
 
 
 class UserRole(StrEnum):
@@ -158,9 +174,49 @@ class ModelProfile(Base):
     base_url: Mapped[str] = mapped_column(String(500))
     model_id: Mapped[str] = mapped_column(String(200))
     encrypted_api_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    credential_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("provider_credentials.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     native_tools: Mapped[bool] = mapped_column(Boolean, default=True)
     parameters: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    archived_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
+
+
+class ProviderCredential(Base):
+    __tablename__ = "provider_credentials"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    owner_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("user_accounts.id", ondelete="CASCADE"),
+        index=True,
+    )
+    name: Mapped[str] = mapped_column(String(120))
+    kind: Mapped[CredentialKind] = mapped_column(Enum(CredentialKind), index=True)
+    encrypted_payload: Mapped[str] = mapped_column(Text)
+    account_hint: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    status: Mapped[CredentialStatus] = mapped_column(
+        Enum(CredentialStatus),
+        default=CredentialStatus.unchecked,
+        index=True,
+    )
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_refreshed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    last_validated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    last_error_code: Mapped[str | None] = mapped_column(String(120), nullable=True)
     archived_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
         nullable=True,

@@ -219,6 +219,16 @@ Evidence claims do not become true merely because the Agent recorded them.
 Scenario graders reconcile claims with tool events, source references, private
 truth, and verification results.
 
+The event stream also records verifiable execution telemetry:
+`model.request` stores context size rather than private reasoning;
+`provider.request/retry/error` records physical HTTP attempts and backoff;
+`assistant.message` records Provider-visible text, tokens, and latency;
+`tool.call/result` records signatures, duration, I/O size, and policy outcome;
+and `agent.telemetry.snapshot` periodically summarizes resource use.
+`investigation.hypothesis/evidence/edge` records revision order, status, and
+confidence changes. Every derived percentile, repetition rate, and behavior
+metric remains traceable to these raw events.
+
 ## 8. Completion and budgets
 
 A scenario can require observable investigation coverage before accepting a
@@ -306,6 +316,8 @@ The control plane supports distinct adapters for:
 
 - OpenAI Responses API;
 - Anthropic Messages API;
+- Codex subscription Responses;
+- Google Gemini native `generateContent`;
 - OpenAI-compatible Chat Completions;
 - Ollama Chat.
 
@@ -314,10 +326,29 @@ differences. Profiles have stable IDs and editable protocol, base URL, model ID,
 tool mode, reasoning parameters, temperature, Top P, service tier, output
 limits, and bounded advanced JSON.
 
-Omitting an API key during edit preserves it; replacing it updates the encrypted
-secret; explicit clearing removes it. Deleting a model profile destroys
-credentials and archives the profile while preserving frozen, non-sensitive
-identity snapshots on historical runs.
+Authentication is a separate owner-scoped entity. A `ProviderCredential`
+contains an encrypted payload, kind, non-secret account hint, expiry and
+validation state; a model profile references it by ID. Supported kinds are
+static API key, Codex OAuth, and Gemini OAuth. API responses never serialize
+the encrypted payload. Existing profile-owned API keys migrate idempotently
+into owner-scoped credentials.
+
+Codex OAuth accepts the Codex CLI `auth.json` format or an owner-bound device
+flow. Gemini OAuth accepts Gemini CLI `oauth_creds.json`; API-key Gemini uses
+the standard Generative Language endpoint. The OAuth client pair required to
+refresh an imported Gemini token is deployment configuration and is never
+embedded in the source tree. Refresh-token rotation is persisted under a row
+lock, and one authentication rejection may trigger one forced refresh and
+retry. A Codex OAuth token can only leave the process for OpenAI authentication
+or the fixed `chatgpt.com/backend-api/codex` endpoint. A Gemini OAuth token can
+only leave for Google OAuth or the fixed Code Assist endpoint. The profile Base
+URL cannot redirect either OAuth token.
+
+Profiles can switch between compatible credentials. Deleting a profile
+detaches its credential and archives the profile while preserving frozen,
+non-sensitive identity snapshots on historical runs. Credential deletion is a
+separate destructive operation: it overwrites the encrypted payload, archives
+the row, and is blocked while a live profile references it.
 
 Malformed tool arguments never execute as `{}`. Retryable transport errors use
 bounded backoff, and every physical attempt consumes Provider-request budget.
@@ -336,14 +367,18 @@ and `user` roles, HttpOnly sessions, CSRF protection, memory-hard password
 hashing, account deactivation, and session revocation. Email is not required
 because the platform has no mail verification or recovery service.
 
-Users can access only their mapped model profiles and runs. Administrators can
-inspect global history, manage users and registration, set Runner concurrency,
-and view filtered CPU, memory, disk, PostgreSQL, queue, heartbeat, and Rootless
-Docker capacity telemetry.
+Users can access only their own credentials and their mapped model profiles and
+runs. Administrators can inspect global history, manage users and registration,
+set Runner concurrency, and view filtered CPU, memory, disk, PostgreSQL, queue,
+heartbeat, and Rootless Docker capacity telemetry. Global model visibility does
+not serialize another account's credential payload.
 
 The repository intentionally does not ship a public TLS reverse proxy. The Web
 container exposes the application and proxies `/api/v1` internally. Operators
 may place Caddy, Nginx, Traefik, a tunnel, or a cloud load balancer in front.
+The Runner writes archives to the deployment artifact directory; the API
+mounts the same directory read-only so authenticated downloads cannot mutate
+Runner output.
 
 Deployment must refuse a normal stop or replacement while queued, preparing,
 running, paused, or grading work exists. A forced replacement marks inherited
@@ -364,7 +399,9 @@ The bilingual React console uses normalized `/api/v1` entities for:
 - scores, deductions, caps, artifacts, semantic review, and model identity;
 - Hypothesis/Evidence graphs, behavior profile, Error Atlas, Agent Graph, and
   Investigation Replay;
-- authenticated JSON, CSV, artifact, and archive export.
+- authenticated schema-v2 JSON, artifact, and full archive export, split by
+  event stream, Provider turns, tool lifecycle, stages, resource snapshots,
+  errors, investigation graph, and artifact hashes.
 
 The UI must not claim access to private reasoning. `model.request` means the
 Runner is waiting for a Provider; `assistant.message` is only explicit text

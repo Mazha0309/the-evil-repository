@@ -9,6 +9,7 @@ import {
   type Edge,
   type Node,
   type NodeProps,
+  useNodesState,
 } from "@xyflow/react";
 import {
   Database,
@@ -16,7 +17,7 @@ import {
   Lightbulb,
   ScrollText,
 } from "lucide-react";
-import { useMemo } from "react";
+import { memo, useEffect, useMemo } from "react";
 import { useLocale } from "../lib/i18n";
 import type { InvestigationGraph as GraphData } from "../lib/types";
 
@@ -28,7 +29,9 @@ type GraphNodeData = {
   status?: string;
 };
 
-function GraphNode({ data }: NodeProps<Node<GraphNodeData>>) {
+const GraphNode = memo(function GraphNode({
+  data,
+}: NodeProps<Node<GraphNodeData>>) {
   const Icon =
     data.kind === "hypothesis"
       ? Lightbulb
@@ -52,7 +55,7 @@ function GraphNode({ data }: NodeProps<Node<GraphNodeData>>) {
       <Handle type="source" position={Position.Right} />
     </div>
   );
-}
+});
 
 const nodeTypes = { investigation: GraphNode };
 
@@ -62,7 +65,7 @@ export default function InvestigationGraphView({
   graph: GraphData;
 }) {
   const { isChinese, text } = useLocale();
-  const { nodes, edges } = useMemo(() => {
+  const layout = useMemo(() => {
     const evidenceNodes: Node<GraphNodeData>[] = graph.evidence.map(
       (item, index) => ({
         id: `evidence:${item.key}`,
@@ -102,7 +105,8 @@ export default function InvestigationGraphView({
       target: `${item.target_type}:${item.target_key}`,
       label: evidenceRelation(item.relation, isChinese),
       animated:
-        item.relation === "supports" || item.relation === "corroborates",
+        graph.edges.length <= 80 &&
+        (item.relation === "supports" || item.relation === "corroborates"),
       style: {
         stroke: item.relation === "contradicts" ? "#ff5d5d" : "#adff2f",
         strokeWidth: 1.5,
@@ -112,6 +116,11 @@ export default function InvestigationGraphView({
     }));
     return { nodes: [...evidenceNodes, ...hypothesisNodes], edges: graphEdges };
   }, [graph, isChinese, text]);
+  const [nodes, setNodes, onNodesChange] = useNodesState(layout.nodes);
+
+  useEffect(() => {
+    setNodes((current) => reconcileNodes(current, layout.nodes));
+  }, [layout.nodes, setNodes]);
 
   if (!nodes.length) {
     return (
@@ -132,10 +141,18 @@ export default function InvestigationGraphView({
     <div className="graph-canvas">
       <ReactFlow
         nodes={nodes}
-        edges={edges}
+        edges={layout.edges}
         nodeTypes={nodeTypes}
+        onNodesChange={onNodesChange}
         fitView
+        fitViewOptions={{ padding: 0.18, duration: 260 }}
         minZoom={0.2}
+        maxZoom={1.6}
+        nodeDragThreshold={2}
+        nodesConnectable={false}
+        elevateNodesOnSelect={false}
+        onlyRenderVisibleElements={nodes.length > 80}
+        zoomOnDoubleClick={false}
       >
         <Background color="#293124" gap={24} variant={BackgroundVariant.Dots} />
         <MiniMap
@@ -149,6 +166,40 @@ export default function InvestigationGraphView({
         <Controls />
       </ReactFlow>
     </div>
+  );
+}
+
+function reconcileNodes(
+  current: Node<GraphNodeData>[],
+  incoming: Node<GraphNodeData>[],
+) {
+  const currentById = new Map(current.map((node) => [node.id, node]));
+  let changed = current.length !== incoming.length;
+  const next = incoming.map((candidate) => {
+    const existing = currentById.get(candidate.id);
+    if (!existing) {
+      changed = true;
+      return candidate;
+    }
+    if (sameNodeData(existing.data, candidate.data)) return existing;
+    changed = true;
+    return {
+      ...candidate,
+      position: existing.position,
+      selected: existing.selected,
+      dragging: existing.dragging,
+    };
+  });
+  return changed ? next : current;
+}
+
+function sameNodeData(left: GraphNodeData, right: GraphNodeData) {
+  return (
+    left.title === right.title &&
+    left.body === right.body &&
+    left.meta === right.meta &&
+    left.kind === right.kind &&
+    left.status === right.status
   );
 }
 

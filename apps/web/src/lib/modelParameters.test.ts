@@ -69,6 +69,46 @@ describe("model parameter mapping", () => {
     });
   });
 
+  it("keeps Codex reasoning effort but drops unsupported sampling controls", () => {
+    expect(
+      buildModelParameters("codex", {
+        ...emptyModelParameterDraft(),
+        temperature: "0.7",
+        topP: "0.8",
+        maxOutputTokens: "32768",
+        reasoningEffort: "xhigh",
+        serviceTier: "priority",
+      }),
+    ).toEqual({
+      reasoning: { effort: "xhigh" },
+      service_tier: "priority",
+    });
+  });
+
+  it("maps Gemini thinking and generation limits to native fields", () => {
+    const parameters = buildModelParameters("gemini", {
+      ...emptyModelParameterDraft(),
+      temperature: "0.3",
+      topP: "0.95",
+      maxOutputTokens: "65536",
+      reasoningEffort: "high",
+    });
+
+    expect(parameters).toEqual({
+      temperature: 0.3,
+      top_p: 0.95,
+      max_output_tokens: 65536,
+      thinking_config: { thinkingLevel: "high" },
+    });
+    expect(decomposeModelParameters("gemini", parameters)).toMatchObject({
+      temperature: "0.3",
+      topP: "0.95",
+      maxOutputTokens: "65536",
+      reasoningEffort: "high",
+      serviceTier: "",
+    });
+  });
+
   it("rejects transport-owned fields in advanced JSON", () => {
     expect(() =>
       buildModelParameters("openai_compatible", {

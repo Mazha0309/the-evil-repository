@@ -127,15 +127,22 @@ def test_scenario_run_passes_prepared_scenario_to_agent_engine(
     assert result.final_response == "Investigation complete."
     assert result.private_state["input_tokens"] == 17
     assert result.private_state["output_tokens"] == 4
-    assert result.events[0] == {
-        "kind": "model.request",
-        "turn": 1,
-        "context_messages": 2,
-        "tool_calls": 0,
+    assert result.events[0]["kind"] == "model.request"
+    assert result.events[0]["turn"] == 1
+    assert result.events[0]["context_messages"] == 2
+    assert result.events[0]["context_role_counts"] == {
+        "system": 1,
+        "user": 1,
     }
+    assert result.events[0]["context_characters"] > 0
+    assert result.events[0]["tool_calls"] == 0
     assert result.events[1]["kind"] == "assistant.message"
     assert result.events[1]["turn"] == 1
     assert result.events[1]["duration_ms"] >= 0
+    assert any(
+        event["kind"] == "agent.telemetry.snapshot"
+        for event in result.events
+    )
 
 
 def test_invalid_tool_call_is_repaired_without_execution(

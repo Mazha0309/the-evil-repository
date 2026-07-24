@@ -3,8 +3,14 @@ import json
 import httpx
 import pytest
 
-from app.models import ModelProfile, ModelProvider
-from app.runner.providers import ModelClient, ProviderTransientError
+from app.credentials import ResolvedCredential
+from app.models import CredentialKind, ModelProfile, ModelProvider
+from app.runner.providers import (
+    ModelClient,
+    ProviderResponseError,
+    ProviderTransientError,
+    gemini_input,
+)
 
 TOOLS = [
     {
@@ -337,6 +343,7 @@ def test_provider_transport_error_retries_and_recovers() -> None:
         {
             "provider": "openai_compatible",
             "model_id": "test-model",
+            "logical_turn": 0,
             "status_code": None,
             "error_type": "ReadTimeout",
             "failed_attempt": 1,
@@ -446,3 +453,276 @@ def test_ollama_thinking_mode_is_sent_at_request_level() -> None:
         "num_predict": 4096,
         "num_ctx": 32768,
     }
+
+
+def test_codex_oauth_is_pinned_to_official_backend_and_strips_sampling() -> None:
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        captured["headers"] = dict(request.headers)
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [{"type": "output_text", "text": "checked"}],
+                    },
+                    {
+                        "type": "function_call",
+                        "call_id": "codex-call",
+                        "name": "read_file",
+                        "arguments": '{"path":"README.md"}',
+                    },
+                ],
+                "usage": {"input_tokens": 12, "output_tokens": 7},
+            },
+        )
+
+    model = profile(
+        ModelProvider.codex,
+        {
+            "temperature": 0.8,
+            "top_p": 0.7,
+            "max_output_tokens": 10_000,
+            "reasoning": {"effort": "high"},
+        },
+    )
+    def resolver(**_kwargs) -> ResolvedCredential:
+        return ResolvedCredential(
+            CredentialKind.codex_oauth,
+            "codex-token",
+            account_id="account-123",
+        )
+    client = ModelClient(model, None, credential_resolver=resolver)
+    client.client = httpx.Client(transport=httpx.MockTransport(handler))
+
+    turn = client.complete(MESSAGES, TOOLS)
+
+    assert captured["url"] == "https://chatgpt.com/backend-api/codex/responses"
+    assert captured["headers"]["authorization"] == "Bearer codex-token"
+    assert captured["headers"]["chatgpt-account-id"] == "account-123"
+    assert captured["headers"]["originator"] == "codex_cli_rs"
+    assert captured["body"]["instructions"] == "Investigate carefully."
+    assert captured["body"]["store"] is False
+    assert captured["body"]["reasoning"] == {"effort": "high"}
+    assert "temperature" not in captured["body"]
+    assert "top_p" not in captured["body"]
+    assert "max_output_tokens" not in captured["body"]
+    assert turn.content == "checked"
+    assert turn.tool_calls[0].arguments == {"path": "README.md"}
+    assert (turn.input_tokens, turn.output_tokens) == (12, 7)
+
+
+def test_gemini_api_key_uses_native_generate_content_and_function_calls() -> None:
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        captured["headers"] = dict(request.headers)
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={
+                "candidates": [
+                    {
+                        "content": {
+                            "parts": [
+                                {"text": "Need one more file."},
+                                {
+                                    "functionCall": {
+                                        "id": "gemini-call",
+                                        "name": "read_file",
+                                        "args": {"path": "CHANGELOG.md"},
+                                    },
+                                    "thoughtSignature": "opaque-signature",
+                                },
+                            ]
+                        }
+                    }
+                ],
+                "usageMetadata": {
+                    "promptTokenCount": 31,
+                    "candidatesTokenCount": 9,
+                },
+            },
+        )
+
+    model = profile(
+        ModelProvider.gemini,
+        {
+            "temperature": 0.2,
+            "top_p": 0.9,
+            "max_output_tokens": 8192,
+            "thinking_config": {"thinkingLevel": "high"},
+        },
+    )
+    def resolver(**_kwargs) -> ResolvedCredential:
+        return ResolvedCredential(
+            CredentialKind.api_key,
+            "gemini-key",
+        )
+    client = ModelClient(model, None, credential_resolver=resolver)
+    client.client = httpx.Client(transport=httpx.MockTransport(handler))
+
+    turn = client.complete(MESSAGES, TOOLS)
+
+    assert captured["url"].endswith(
+        "/v1/models/test-model:generateContent"
+    )
+    assert captured["headers"]["x-goog-api-key"] == "gemini-key"
+    assert captured["body"]["generationConfig"] == {
+        "temperature": 0.2,
+        "topP": 0.9,
+        "maxOutputTokens": 8192,
+        "thinkingConfig": {"thinkingLevel": "high"},
+    }
+    assert captured["body"]["tools"][0]["functionDeclarations"][0]["name"] == (
+        "read_file"
+    )
+    assert turn.content == "Need one more file."
+    assert turn.tool_calls[0].arguments == {"path": "CHANGELOG.md"}
+    assert turn.tool_calls[0].provider_metadata == {
+        "gemini_thought_signature": "opaque-signature"
+    }
+    assert "provider_metadata" not in turn.tool_calls[0].model_dump()
+    assert (turn.input_tokens, turn.output_tokens) == (31, 9)
+
+    _, continued = gemini_input(
+        [
+            {
+                "role": "assistant",
+                "content": turn.content,
+                "tool_calls": [
+                    {
+                        "id": turn.tool_calls[0].call_id,
+                        "function": {
+                            "name": turn.tool_calls[0].name,
+                            "arguments": json.dumps(
+                                turn.tool_calls[0].arguments
+                            ),
+                        },
+                        "provider_metadata": (
+                            turn.tool_calls[0].provider_metadata
+                        ),
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": turn.tool_calls[0].call_id,
+                "content": '{"status":"ok"}',
+            },
+        ]
+    )
+    assert continued[0]["parts"][1]["thoughtSignature"] == (
+        "opaque-signature"
+    )
+    assert continued[0]["parts"][1]["functionCall"]["id"] == "gemini-call"
+    assert continued[1]["parts"][0]["functionResponse"]["id"] == "gemini-call"
+
+
+def test_gemini_oauth_is_pinned_to_code_assist_and_refreshes_once() -> None:
+    requests: list[dict] = []
+    resolutions: list[bool] = []
+
+    def resolve(*, force_refresh: bool = False) -> ResolvedCredential:
+        resolutions.append(force_refresh)
+        return ResolvedCredential(
+            CredentialKind.gemini_oauth,
+            "fresh-token" if force_refresh else "stale-token",
+            project_id="project-123",
+        )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(
+            {
+                "url": str(request.url),
+                "authorization": request.headers.get("authorization"),
+                "body": json.loads(request.content),
+            }
+        )
+        if len(requests) == 1:
+            return httpx.Response(401, json={"error": {"message": "expired"}})
+        return httpx.Response(
+            200,
+            json={
+                "response": {
+                    "candidates": [
+                        {"content": {"parts": [{"text": "recovered"}]}}
+                    ],
+                    "usageMetadata": {},
+                }
+            },
+        )
+
+    client = ModelClient(
+        profile(ModelProvider.gemini),
+        None,
+        credential_resolver=resolve,
+    )
+    client.client = httpx.Client(transport=httpx.MockTransport(handler))
+
+    turn = client.complete(MESSAGES, [])
+
+    assert resolutions == [False, True]
+    assert len(requests) == 2
+    assert {
+        item["url"] for item in requests
+    } == {"https://cloudcode-pa.googleapis.com/v1internal:generateContent"}
+    assert requests[0]["authorization"] == "Bearer stale-token"
+    assert requests[1]["authorization"] == "Bearer fresh-token"
+    assert requests[1]["body"]["project"] == "project-123"
+    assert requests[1]["body"]["request"]["session_id"] == client.session_id
+    assert turn.content == "recovered"
+
+
+def test_provider_rejection_has_actionable_bounded_message() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            400,
+            json={
+                "error": {
+                    "code": "invalid_parameter",
+                    "message": "temperature is unsupported",
+                }
+            },
+        )
+
+    client = ModelClient(
+        profile(ModelProvider.openai_compatible),
+        "secret",
+        max_retries=0,
+    )
+    client.client = httpx.Client(transport=httpx.MockTransport(handler))
+
+    with pytest.raises(
+        ProviderResponseError,
+        match="HTTP 400.*invalid_parameter.*temperature is unsupported",
+    ):
+        client.complete(MESSAGES, [])
+
+
+def test_provider_error_cannot_echo_the_sent_api_key() -> None:
+    secret = "top-secret-provider-key"
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            400,
+            json={"error": {"message": f"received Authorization: Bearer {secret}"}},
+        )
+
+    client = ModelClient(
+        profile(ModelProvider.openai_compatible),
+        secret,
+        max_retries=0,
+    )
+    client.client = httpx.Client(transport=httpx.MockTransport(handler))
+
+    with pytest.raises(ProviderResponseError) as caught:
+        client.complete(MESSAGES, [])
+
+    assert secret not in str(caught.value)
+    assert "[redacted]" in str(caught.value)

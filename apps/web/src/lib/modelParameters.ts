@@ -54,10 +54,16 @@ export function decomposeModelParameters(
   draft.topP = takeNumber(rest, "top_p");
   draft.maxOutputTokens = takeNumber(rest, maxTokensKey(provider));
 
-  if (provider === "openai_responses") {
+  if (provider === "openai_responses" || provider === "codex") {
     draft.reasoningEffort = takeNestedString(rest, "reasoning", "effort");
   } else if (provider === "anthropic") {
     draft.reasoningEffort = takeNestedString(rest, "output_config", "effort");
+  } else if (provider === "gemini") {
+    draft.reasoningEffort = takeNestedString(
+      rest,
+      "thinking_config",
+      "thinkingLevel",
+    );
   } else if (provider === "openai_compatible") {
     draft.reasoningEffort = takeString(rest, "reasoning_effort");
   } else {
@@ -71,7 +77,7 @@ export function decomposeModelParameters(
     }
   }
 
-  if (provider !== "ollama") {
+  if (provider !== "ollama" && provider !== "gemini") {
     draft.serviceTier = takeString(rest, "service_tier");
   }
   draft.advanced = JSON.stringify(rest, null, 2);
@@ -90,12 +96,14 @@ export function buildModelParameters(
     }
   }
 
-  assignNumber(parameters, "temperature", draft.temperature, 0, 2);
-  assignNumber(parameters, "top_p", draft.topP, 0, 1);
-  assignInteger(parameters, maxTokensKey(provider), draft.maxOutputTokens, 1);
+  if (provider !== "codex") {
+    assignNumber(parameters, "temperature", draft.temperature, 0, 2);
+    assignNumber(parameters, "top_p", draft.topP, 0, 1);
+    assignInteger(parameters, maxTokensKey(provider), draft.maxOutputTokens, 1);
+  }
 
   if (draft.reasoningEffort) {
-    if (provider === "openai_responses") {
+    if (provider === "openai_responses" || provider === "codex") {
       parameters.reasoning = mergeNested(parameters.reasoning, {
         effort: draft.reasoningEffort,
       });
@@ -105,6 +113,10 @@ export function buildModelParameters(
       });
     } else if (provider === "openai_compatible") {
       parameters.reasoning_effort = draft.reasoningEffort;
+    } else if (provider === "gemini") {
+      parameters.thinking_config = mergeNested(parameters.thinking_config, {
+        thinkingLevel: draft.reasoningEffort,
+      });
     } else {
       parameters.think =
         draft.reasoningEffort === "on"
@@ -115,7 +127,11 @@ export function buildModelParameters(
     }
   }
 
-  if (draft.serviceTier && provider !== "ollama") {
+  if (
+    draft.serviceTier &&
+    provider !== "ollama" &&
+    provider !== "gemini"
+  ) {
     parameters.service_tier = draft.serviceTier;
   }
   return parameters;
@@ -148,6 +164,9 @@ export function reasoningOptions(provider: ModelProvider): ParameterOption[] {
   if (provider === "ollama") {
     return ["off", "on", "low", "medium", "high"].map(option);
   }
+  if (provider === "gemini") {
+    return ["minimal", "low", "medium", "high"].map(option);
+  }
   return ["none", "minimal", "low", "medium", "high", "xhigh", "max"].map(
     option,
   );
@@ -157,16 +176,18 @@ export function serviceTierOptions(provider: ModelProvider): ParameterOption[] {
   if (provider === "anthropic") {
     return ["standard", "priority"].map(option);
   }
-  if (provider === "ollama") return [];
+  if (provider === "ollama" || provider === "gemini") return [];
   return ["auto", "default", "flex", "priority"].map(option);
 }
 
 export function parameterFieldNames(provider: ModelProvider) {
   const effort =
-    provider === "openai_responses"
+    provider === "openai_responses" || provider === "codex"
       ? "reasoning.effort"
       : provider === "anthropic"
         ? "output_config.effort"
+        : provider === "gemini"
+          ? "thinking_config.thinkingLevel"
         : provider === "openai_compatible"
           ? "reasoning_effort"
           : "think";
@@ -205,7 +226,13 @@ function assertSafeParameterKeys(value: unknown): void {
 }
 
 function maxTokensKey(provider: ModelProvider): string {
-  if (provider === "openai_responses") return "max_output_tokens";
+  if (
+    provider === "openai_responses" ||
+    provider === "codex" ||
+    provider === "gemini"
+  ) {
+    return "max_output_tokens";
+  }
   if (provider === "anthropic") return "max_tokens";
   if (provider === "ollama") return "num_predict";
   return "max_completion_tokens";

@@ -5,7 +5,15 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator, model_validator
 
 from app.model_parameters import validate_model_parameters
-from app.models import EvidenceRelation, HypothesisStatus, ModelProvider, RunStatus, UserRole
+from app.models import (
+    CredentialKind,
+    CredentialStatus,
+    EvidenceRelation,
+    HypothesisStatus,
+    ModelProvider,
+    RunStatus,
+    UserRole,
+)
 from app.run_outcomes import normalize_scorecard_outcome
 
 
@@ -126,12 +134,68 @@ class TaskRead(TaskCreate, ORMModel):
     updated_at: datetime
 
 
+class CredentialCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    kind: CredentialKind = CredentialKind.api_key
+    secret: str = Field(min_length=1, max_length=65_536)
+
+
+class CredentialImport(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    kind: CredentialKind
+    document: dict[str, Any]
+
+    @model_validator(mode="after")
+    def only_oauth_documents_are_imported(self) -> "CredentialImport":
+        if self.kind == CredentialKind.api_key:
+            raise ValueError("API keys must be created as a secret, not imported as JSON")
+        return self
+
+
+class CredentialUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+
+
+class CredentialRead(ORMModel):
+    id: uuid.UUID
+    name: str
+    kind: CredentialKind
+    account_hint: str | None
+    status: CredentialStatus
+    expires_at: datetime | None
+    last_refreshed_at: datetime | None
+    last_validated_at: datetime | None
+    last_error_code: str | None
+    model_count: int = 0
+    created_at: datetime
+    updated_at: datetime
+
+
+class OAuthDeviceStart(BaseModel):
+    expires_at: datetime
+    flow_token: str
+    interval: int
+    user_code: str
+    verification_uri: str
+
+
+class OAuthDevicePoll(BaseModel):
+    flow_token: str = Field(min_length=1, max_length=16_384)
+    name: str = Field(min_length=1, max_length=120)
+
+
+class OAuthDevicePollResult(BaseModel):
+    state: str
+    credential: CredentialRead | None = None
+
+
 class ModelCreate(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     provider: ModelProvider
     base_url: HttpUrl
     model_id: str = Field(min_length=1, max_length=200)
     api_key: str | None = Field(default=None, max_length=8_192)
+    credential_id: uuid.UUID | None = None
     native_tools: bool = True
     parameters: dict[str, Any] = Field(default_factory=dict)
     enabled: bool = True
@@ -141,6 +205,12 @@ class ModelCreate(BaseModel):
     def parameters_are_safe(cls, value: dict[str, Any]) -> dict[str, Any]:
         return validate_model_parameters(value)
 
+    @model_validator(mode="after")
+    def one_credential_source(self) -> "ModelCreate":
+        if self.credential_id is not None and self.api_key:
+            raise ValueError("Choose either a saved credential or an inline API key")
+        return self
+
 
 class ModelUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=120)
@@ -148,6 +218,7 @@ class ModelUpdate(BaseModel):
     base_url: HttpUrl | None = None
     model_id: str | None = Field(default=None, min_length=1, max_length=200)
     api_key: str | None = Field(default=None, max_length=8_192)
+    credential_id: uuid.UUID | None = None
     native_tools: bool | None = None
     parameters: dict[str, Any] | None = None
     enabled: bool | None = None
@@ -160,6 +231,17 @@ class ModelUpdate(BaseModel):
     ) -> dict[str, Any] | None:
         return validate_model_parameters(value) if value is not None else None
 
+    @model_validator(mode="after")
+    def one_credential_source(self) -> "ModelUpdate":
+        if (
+            "credential_id" in self.model_fields_set
+            and self.credential_id is not None
+            and "api_key" in self.model_fields_set
+            and self.api_key
+        ):
+            raise ValueError("Choose either a saved credential or an inline API key")
+        return self
+
 
 class ModelRead(ORMModel):
     id: uuid.UUID
@@ -168,6 +250,10 @@ class ModelRead(ORMModel):
     base_url: str
     model_id: str
     has_api_key: bool
+    credential_id: uuid.UUID | None
+    credential_name: str | None
+    credential_kind: CredentialKind | None
+    credential_status: CredentialStatus | None
     native_tools: bool
     parameters: dict[str, Any]
     enabled: bool

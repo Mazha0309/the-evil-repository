@@ -347,6 +347,224 @@ export default function LiveRunMonitor({
         </section>
       </div>
 
+      <div className="agent-observability-grid">
+        <section className="panel live-card agent-observability">
+          <MonitorHeading
+            icon={<Bot size={15} />}
+            title={text("Provider 管线", "Provider pipeline")}
+            detail={text(
+              `${analysis.modelTurns} 轮模型响应 · ${analysis.providerAttempts} 次 HTTP 尝试`,
+              `${analysis.modelTurns} model turns · ${analysis.providerAttempts} HTTP attempts`,
+            )}
+          />
+          <div className="agent-signal-grid">
+            <SignalMetric
+              label={text("平均响应", "Average response")}
+              value={formatDuration(
+                analysis.providerLatencyAverageMs,
+                locale,
+              )}
+            />
+            <SignalMetric
+              label="P95"
+              value={formatDuration(analysis.providerLatencyP95Ms, locale)}
+              warning={analysis.providerLatencyP95Ms >= 120_000}
+            />
+            <SignalMetric
+              label={text("最长响应", "Longest response")}
+              value={formatDuration(analysis.providerLatencyMaxMs, locale)}
+              warning={analysis.providerLatencyMaxMs >= 180_000}
+            />
+            <SignalMetric
+              danger={analysis.providerErrors > 0}
+              label={text("错误 / 重试", "Errors / retries")}
+              value={`${analysis.providerErrors} / ${analysis.providerRetries}`}
+            />
+          </div>
+          <div className="agent-observability__ledger">
+            <span>
+              {text("累计等待", "total wait")}{" "}
+              <strong>
+                {formatDuration(analysis.providerWaitMs, locale)}
+              </strong>
+            </span>
+            <span>
+              {text("退避等待", "retry backoff")}{" "}
+              <strong>{formatDuration(analysis.retryDelayMs, locale)}</strong>
+            </span>
+            <span>
+              {text("输出速率", "output rate")}{" "}
+              <strong>
+                {analysis.outputTokensPerSecond.toFixed(1)} tok/s
+              </strong>
+            </span>
+          </div>
+          <div className="agent-context-meter">
+            <div>
+              <span>{text("上下文峰值", "Peak context")}</span>
+              <strong>
+                {analysis.peakContextMessages} msg ·{" "}
+                {compact(analysis.peakContextCharacters)} chars
+              </strong>
+            </div>
+            <small>
+              {text("本次增长", "growth")} +{" "}
+              {compact(analysis.contextGrowthCharacters)} chars
+            </small>
+          </div>
+        </section>
+
+        <section className="panel live-card agent-observability">
+          <MonitorHeading
+            icon={<SquareTerminal size={15} />}
+            title={text("工具管线", "Tool pipeline")}
+            detail={text(
+              "延迟、重复、截断与写入纪律",
+              "latency, repetition, truncation, and write discipline",
+            )}
+          />
+          <div className="agent-signal-grid">
+            <SignalMetric
+              label={text("平均耗时", "Average latency")}
+              value={formatDuration(analysis.toolLatencyAverageMs, locale)}
+            />
+            <SignalMetric
+              label="P95"
+              value={formatDuration(analysis.toolLatencyP95Ms, locale)}
+              warning={analysis.toolLatencyP95Ms >= 30_000}
+            />
+            <SignalMetric
+              label={text("最长工具", "Longest tool")}
+              value={formatDuration(analysis.toolLatencyMaxMs, locale)}
+              warning={analysis.toolLatencyMaxMs >= 60_000}
+            />
+            <SignalMetric
+              danger={analysis.toolErrors > 0}
+              label={text("错误 / 拒绝", "Errors / denials")}
+              value={String(analysis.toolErrors)}
+            />
+          </div>
+          <div className="agent-observability__ledger">
+            <span>
+              {text("工具等待", "tool wait")}{" "}
+              <strong>{formatDuration(analysis.toolWaitMs, locale)}</strong>
+            </span>
+            <span
+              className={analysis.duplicateToolCalls ? "text-danger" : ""}
+            >
+              {text("重复调用", "duplicate calls")}{" "}
+              <strong>{analysis.duplicateToolCalls}</strong>
+            </span>
+            <span
+              className={analysis.repeatedPathReads ? "text-danger" : ""}
+            >
+              {text("重复读", "re-reads")}{" "}
+              <strong>{analysis.repeatedPathReads}</strong>
+            </span>
+          </div>
+          <div className="agent-file-ledger">
+            <span>
+              {text("唯一路径", "unique paths")}{" "}
+              <strong>{analysis.uniquePathsRead}</strong>
+            </span>
+            <span>
+              {text("写入", "writes")} <strong>{analysis.writes}</strong>
+            </span>
+            <span
+              className={analysis.blindWrites ? "text-danger" : ""}
+            >
+              {text("盲写", "blind writes")}{" "}
+              <strong>{analysis.blindWrites}</strong>
+            </span>
+            <span
+              className={analysis.truncatedResults ? "text-danger" : ""}
+            >
+              {text("截断结果", "truncated")}{" "}
+              <strong>{analysis.truncatedResults}</strong>
+            </span>
+          </div>
+        </section>
+
+        <section className="panel live-card agent-observability">
+          <MonitorHeading
+            icon={<Lightbulb size={15} />}
+            title={text("推理账本", "Reasoning ledger")}
+            detail={text(
+              "仅记录显式假设演化，不推断隐藏思维链",
+              "explicit hypothesis evolution only; no inferred hidden chain of thought",
+            )}
+          />
+          <div className="agent-signal-grid">
+            <SignalMetric
+              label={text("假设修订", "Revisions")}
+              value={String(analysis.hypothesisRevisions)}
+            />
+            <SignalMetric
+              label={text("状态修正", "Status changes")}
+              value={String(analysis.hypothesisStatusChanges)}
+            />
+            <SignalMetric
+              label={text("显著降置信", "Confidence drops")}
+              value={String(analysis.confidenceDrops)}
+              warning={analysis.confidenceDrops > 0}
+            />
+            <SignalMetric
+              label={text("主动自验", "Self-verification")}
+              value={String(analysis.selfVerificationCalls)}
+              warning={
+                analysis.modelTurns > 8 &&
+                analysis.selfVerificationCalls === 0
+              }
+            />
+          </div>
+          <div className="agent-evidence-flow">
+            <div>
+              <span>{text("证据节点", "Evidence nodes")}</span>
+              <strong>{analysis.evidenceItems || graph.evidence.length}</strong>
+            </div>
+            <i>
+              <b
+                style={{
+                  width: `${Math.min(
+                    100,
+                    ((analysis.evidenceEdges || graph.edges.length) /
+                      Math.max(
+                        1,
+                        analysis.evidenceItems || graph.evidence.length,
+                      )) *
+                      50,
+                  )}%`,
+                }}
+              />
+            </i>
+            <div>
+              <span>{text("证据关系", "Evidence links")}</span>
+              <strong>{analysis.evidenceEdges || graph.edges.length}</strong>
+            </div>
+          </div>
+          <div className="agent-observability__ledger">
+            <span>
+              {text("当前假设", "current hypotheses")}{" "}
+              <strong>{graph.hypotheses.length}</strong>
+            </span>
+            <span>
+              {text("已否决", "rejected")}{" "}
+              <strong>
+                {
+                  graph.hypotheses.filter(
+                    (hypothesis) => hypothesis.status === "rejected",
+                  ).length
+                }
+              </strong>
+            </span>
+            <span>
+              {text("图谱边", "graph edges")}{" "}
+              <strong>{graph.edges.length}</strong>
+            </span>
+          </div>
+        </section>
+      </div>
+
       {incidentTelemetry.state && (
         <section className="panel live-card incident-live">
           <MonitorHeading
@@ -1054,6 +1272,33 @@ function Anomaly({
   );
 }
 
+function SignalMetric({
+  danger = false,
+  label,
+  value,
+  warning = false,
+}: {
+  danger?: boolean;
+  label: string;
+  value: string;
+  warning?: boolean;
+}) {
+  return (
+    <div
+      className={`agent-signal ${
+        danger
+          ? "agent-signal--danger"
+          : warning
+            ? "agent-signal--warning"
+            : ""
+      }`}
+    >
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
+  );
+}
+
 function MonitorEmpty({ text }: { text: string }) {
   return <div className="monitor-empty">{text}</div>;
 }
@@ -1123,7 +1368,21 @@ function phaseDetail(
         ? `Provider 返回 HTTP ${status}，将在 ${formatDuration(delay * 1_000, locale)} 后进行第 ${next}/${maximum} 次尝试。`
         : `Provider returned HTTP ${status}; attempt ${next}/${maximum} follows after ${formatDuration(delay * 1_000, locale)}.`;
     }
-    const turn = event?.kind === "model.request" ? event.payload.turn : null;
+    if (event?.kind === "provider.request") {
+      const turn = event.payload.turn ?? event.payload.logical_turn ?? "—";
+      const attempt = event.payload.attempt ?? "—";
+      const maximum = event.payload.maximum_attempts ?? "—";
+      return locale === "zh-CN"
+        ? `第 ${String(turn)} 轮正在进行第 ${String(attempt)}/${String(maximum)} 次 Provider HTTP 尝试，已等待 ${elapsed}。`
+        : `Turn ${String(turn)} is on Provider HTTP attempt ${String(attempt)}/${String(maximum)}; waiting ${elapsed}.`;
+    }
+    if (event?.kind === "provider.error") {
+      return locale === "zh-CN"
+        ? `Provider 请求失败：${String(event.payload.error_type ?? "unknown")}。Runner 正在保存失败遥测。`
+        : `Provider request failed with ${String(event.payload.error_type ?? "unknown")}; the Runner is preserving failure telemetry.`;
+    }
+    const turn =
+      event?.payload.turn ?? event?.payload.logical_turn ?? null;
     return locale === "zh-CN"
       ? `Provider 正在生成第 ${turn ?? "—"} 轮响应，已等待 ${elapsed}。`
       : `The Provider is generating turn ${String(turn ?? "—")}; waiting ${elapsed}.`;

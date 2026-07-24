@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import io
-import json
 import tarfile
 from abc import ABC, abstractmethod
 from collections.abc import Callable
@@ -17,6 +16,7 @@ from pydantic import BaseModel, Field
 
 from app.challenge.spec import BudgetSpec, RepositorySpec
 from app.runner.protocol import ToolResult
+from app.telemetry import build_telemetry_bundle, json_bytes, jsonl_bytes
 from app.version import VERSION
 
 if TYPE_CHECKING:
@@ -214,45 +214,101 @@ class Scenario(ABC):
         destination: Path,
     ) -> Path:
         destination.parent.mkdir(parents=True, exist_ok=True)
-        event_data = (
-            "\n".join(
-                json.dumps(event, ensure_ascii=False, sort_keys=True)
-                for event in result.events
-            )
-            + ("\n" if result.events else "")
-        ).encode()
+        telemetry = build_telemetry_bundle(result.events)
+        event_data = jsonl_bytes(telemetry["events"])
         artifact_payloads = {
             name: value.encode() for name, value in result.artifacts.items()
         }
+        investigation_graph = result.private_state.get(
+            "investigation_graph",
+            {
+                "hypotheses": [],
+                "revisions": [],
+                "evidence": [],
+                "edges": [],
+            },
+        )
+        run_context = result.private_state.get("run_export", {})
+        archive_readme = (
+            "The Evil Repository run archive · schema v2\n\n"
+            "run.json                         canonical manifest and integrity roots\n"
+            "events.jsonl                     full timestamped immutable event stream\n"
+            "telemetry/summary.json           derived latency, token, tool and error metrics\n"
+            "telemetry/provider-turns.jsonl   one normalized row per model turn\n"
+            "telemetry/tool-lifecycle.jsonl   paired tool call/result records\n"
+            "telemetry/stage-timeline.jsonl   scenario and judge stage transitions\n"
+            "telemetry/resource-snapshots.jsonl periodic Agent resource snapshots\n"
+            "telemetry/errors.jsonl           Provider, tool, Runner and judge failures\n"
+            "investigation/graph.json         hypotheses, revisions, evidence and edges\n"
+            "artifacts/index.json             artifact size and SHA-256 inventory\n"
+            "artifacts/*                      candidate and judge outputs\n\n"
+            "Secrets and Provider credentials are excluded or redacted. This archive "
+            "contains visible model output and tool I/O, never hidden chain-of-thought.\n"
+        ).encode()
+        artifact_inventory = [
+            {
+                "name": name,
+                "archive_path": f"artifacts/{safe_archive_name(name)}",
+                "size": len(payload),
+                "sha256": hashlib.sha256(payload).hexdigest(),
+            }
+            for name, payload in sorted(artifact_payloads.items())
+        ]
+        detailed_payloads = {
+            "ARCHIVE_FORMAT.txt": archive_readme,
+            "telemetry/summary.json": json_bytes(telemetry["summary"]),
+            "telemetry/provider-turns.jsonl": jsonl_bytes(
+                telemetry["provider_turns"]
+            ),
+            "telemetry/tool-lifecycle.jsonl": jsonl_bytes(
+                telemetry["tool_lifecycle"]
+            ),
+            "telemetry/stage-timeline.jsonl": jsonl_bytes(
+                telemetry["stage_timeline"]
+            ),
+            "telemetry/resource-snapshots.jsonl": jsonl_bytes(
+                telemetry["resource_snapshots"]
+            ),
+            "telemetry/errors.jsonl": jsonl_bytes(telemetry["error_events"]),
+            "investigation/graph.json": json_bytes(investigation_graph),
+            "artifacts/index.json": json_bytes(artifact_inventory),
+        }
         manifest = {
+            "archive_schema_version": 2,
             "platform_version": VERSION,
             "scenario": prepared.metadata.model_dump(mode="json"),
+            "run": run_context,
             "result": {
                 "final_response": result.final_response,
                 "elapsed_seconds": result.elapsed_seconds,
                 "tool_calls": result.tool_calls,
                 "artifacts": result.artifacts,
             },
+            "telemetry_summary": telemetry["summary"],
+            "artifact_inventory": artifact_inventory,
             "integrity": {
                 "events_sha256": hashlib.sha256(event_data).hexdigest(),
                 "artifact_sha256": {
                     name: hashlib.sha256(payload).hexdigest()
                     for name, payload in artifact_payloads.items()
                 },
+                "detail_entry_sha256": {
+                    name: hashlib.sha256(payload).hexdigest()
+                    for name, payload in detailed_payloads.items()
+                },
             },
         }
         with tarfile.open(destination, "w:gz") as archive:
-            data = json.dumps(manifest, indent=2, ensure_ascii=False).encode()
-            info = tarfile.TarInfo("run.json")
-            info.size = len(data)
-            archive.addfile(info, io.BytesIO(data))
-            event_info = tarfile.TarInfo("events.jsonl")
-            event_info.size = len(event_data)
-            archive.addfile(event_info, io.BytesIO(event_data))
+            add_archive_bytes(archive, "run.json", json_bytes(manifest))
+            add_archive_bytes(archive, "events.jsonl", event_data)
+            for name, payload in detailed_payloads.items():
+                add_archive_bytes(archive, name, payload)
             for name, payload in artifact_payloads.items():
-                artifact_info = tarfile.TarInfo(f"artifacts/{safe_archive_name(name)}")
-                artifact_info.size = len(payload)
-                archive.addfile(artifact_info, io.BytesIO(payload))
+                add_archive_bytes(
+                    archive,
+                    f"artifacts/{safe_archive_name(name)}",
+                    payload,
+                )
         return destination
 
     def component_path(self, relative: str) -> Path:
@@ -264,6 +320,17 @@ class Scenario(ABC):
 
 def safe_archive_name(value: str) -> str:
     return "".join(character if character.isalnum() or character in "._-" else "_" for character in value)
+
+
+def add_archive_bytes(
+    archive: tarfile.TarFile,
+    name: str,
+    payload: bytes,
+) -> None:
+    info = tarfile.TarInfo(name)
+    info.size = len(payload)
+    info.mode = 0o640
+    archive.addfile(info, io.BytesIO(payload))
 
 
 def load_scenario(root: Path) -> Scenario:

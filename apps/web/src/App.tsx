@@ -68,6 +68,7 @@ import {
 import AccountPage from "./components/AccountPage";
 import AdminPage from "./components/AdminPage";
 import AuthScreen from "./components/AuthScreen";
+import CredentialsPage from "./components/CredentialsPage";
 import LiveRunMonitor from "./components/LiveRunMonitor";
 import { api, ApiError } from "./lib/api";
 import { useLocale } from "./lib/i18n";
@@ -88,6 +89,7 @@ import {
 import type {
   AuthConfig,
   AuthResponse,
+  CredentialKind,
   ModelProfile,
   ModelProvider,
   Run,
@@ -169,6 +171,11 @@ function ControlPlane({
             to="/models"
             icon={<Bot size={17} />}
             label={text("模型配置", "Model profiles")}
+          />
+          <NavItem
+            to="/credentials"
+            icon={<KeyRound size={17} />}
+            label={text("认证中心", "Credentials")}
           />
           <NavItem
             to="/runs"
@@ -257,6 +264,7 @@ function ControlPlane({
             <Route path="/" element={<DashboardPage />} />
             <Route path="/scenarios" element={<ScenariosPage />} />
             <Route path="/models" element={<ModelsPage />} />
+            <Route path="/credentials" element={<CredentialsPage />} />
             <Route path="/runs" element={<RunsPage />} />
             <Route path="/runs/new" element={<NewRunPage />} />
             <Route path="/runs/:runId" element={<RunDetailPage />} />
@@ -649,6 +657,10 @@ function ModelsPage() {
   const { text } = useLocale();
   const queryClient = useQueryClient();
   const models = useQuery({ queryKey: ["models"], queryFn: api.models });
+  const credentials = useQuery({
+    queryKey: ["credentials"],
+    queryFn: api.credentials,
+  });
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<ModelProfile | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<ModelProfile | null>(null);
@@ -656,6 +668,7 @@ function ModelsPage() {
   const [deleteError, setDeleteError] = useState("");
   const [provider, setProvider] = useState<ModelProvider>("openai_responses");
   const [baseUrl, setBaseUrl] = useState("");
+  const [credentialId, setCredentialId] = useState("");
   const [parameterDraft, setParameterDraft] = useState<ModelParameterDraft>(
     emptyModelParameterDraft,
   );
@@ -700,6 +713,7 @@ function ModelsPage() {
     setEditing(null);
     setProvider("openai_responses");
     setBaseUrl("");
+    setCredentialId("");
     setParameterDraft(emptyModelParameterDraft());
     setError("");
     setOpen(true);
@@ -708,6 +722,7 @@ function ModelsPage() {
     setEditing(model);
     setProvider(model.provider);
     setBaseUrl(model.base_url);
+    setCredentialId(model.credential_id ?? "");
     setParameterDraft(
       decomposeModelParameters(model.provider, model.parameters),
     );
@@ -745,6 +760,15 @@ function ModelsPage() {
       return;
     }
     const apiKey = String(data.get("api_key") ?? "");
+    if (provider !== "ollama" && !credentialId && !apiKey) {
+      setError(
+        text(
+          "请选择兼容凭据，或输入新的 API Key。",
+          "Choose a compatible credential or enter a new API key.",
+        ),
+      );
+      return;
+    }
     const payload: Record<string, unknown> = {
       name: data.get("name"),
       provider,
@@ -754,15 +778,19 @@ function ModelsPage() {
       parameters,
       enabled: data.get("enabled") === "on",
     };
-    if (!editing || apiKey) payload.api_key = apiKey || null;
-    if (editing && !apiKey && data.get("clear_api_key") === "on") {
-      payload.api_key = null;
+    if (apiKey) {
+      payload.api_key = apiKey;
+    } else {
+      payload.credential_id = credentialId || null;
     }
     save.mutate({ id: editing?.id, payload });
   };
   const fieldNames = parameterFieldNames(provider);
   const effortOptions = reasoningOptions(provider);
   const tierOptions = serviceTierOptions(provider);
+  const compatibleCredentials = (credentials.data ?? []).filter(
+    (credential) => credentialSupportsProvider(credential.kind, provider),
+  );
   return (
     <>
       <PageHeader
@@ -835,11 +863,26 @@ function ModelsPage() {
               <div>
                 <dt>{text("凭据", "Credential")}</dt>
                 <dd className={model.has_api_key ? "text-safe" : ""}>
-                  {model.has_api_key
-                    ? text("已加密", "Encrypted")
-                    : text("无需提供", "Not required")}
+                  {model.credential_name ??
+                    (model.has_api_key
+                      ? text("旧版加密密钥", "Legacy encrypted key")
+                      : text("未配置", "Not configured"))}
                 </dd>
               </div>
+              {model.credential_status && (
+                <div>
+                  <dt>{text("认证状态", "Auth status")}</dt>
+                  <dd
+                    className={
+                      model.credential_status === "ready"
+                        ? "text-safe"
+                        : "text-warning"
+                    }
+                  >
+                    {model.credential_status}
+                  </dd>
+                </div>
+              )}
             </dl>
             <div className="model-card__parameters">
               <span>
@@ -865,7 +908,9 @@ function ModelsPage() {
           <button className="model-card model-card--empty" onClick={openCreate}>
             <Plus size={28} />
             <strong>{text("添加第一个模型", "Add your first model")}</strong>
-            <span>OpenAI Responses · Anthropic · Compatible · Ollama</span>
+            <span>
+              OpenAI · Anthropic · Codex OAuth · Gemini · Compatible · Ollama
+            </span>
           </button>
         )}
       </div>
@@ -886,8 +931,8 @@ function ModelsPage() {
                 </strong>
                 <p>
                   {text(
-                    "API 密钥、BaseURL 与推理参数会被清除；历史运行及其冻结的模型身份会保留。若仍有进行中的测试使用该配置，删除会被阻止。",
-                    "The API key, Base URL, and inference parameters will be erased. Historical runs and their frozen model identity remain. Deletion is blocked while an active run uses this profile.",
+                    "BaseURL、推理参数和凭据引用会从此配置清除；认证中心里的可复用凭据不会被顺带删除。历史运行及其冻结的模型身份会保留。若仍有进行中的测试使用该配置，删除会被阻止。",
+                    "The Base URL, inference parameters, and credential reference will be cleared from this profile. A reusable vault credential is not deleted with it. Historical runs and their frozen model identity remain. Deletion is blocked while an active run uses this profile.",
                   )}
                 </p>
               </div>
@@ -963,7 +1008,16 @@ function ModelsPage() {
                 onChange={(event) => {
                   const next = event.target.value as ModelProvider;
                   setProvider(next);
-                  setBaseUrl("");
+                  setBaseUrl(next === "codex" ? providerDefaultUrl(next) : "");
+                  setCredentialId((current) => {
+                    const selected = credentials.data?.find(
+                      (item) => item.id === current,
+                    );
+                    return selected &&
+                      credentialSupportsProvider(selected.kind, next)
+                      ? current
+                      : "";
+                  });
                   setParameterDraft((current) => ({
                     ...current,
                     reasoningEffort: "",
@@ -973,16 +1027,31 @@ function ModelsPage() {
               >
                 <option value="openai_responses">OpenAI Responses API</option>
                 <option value="anthropic">Anthropic Messages API</option>
+                <option value="codex">
+                  Codex OAuth (ChatGPT subscription)
+                </option>
+                <option value="gemini">Google Gemini native API</option>
                 <option value="openai_compatible">OpenAI-compatible API</option>
                 <option value="ollama">Ollama</option>
               </select>
             </Field>
-            <Field label={text("基础 URL", "Base URL")}>
+            <Field
+              label={text("基础 URL", "Base URL")}
+              hint={
+                provider === "codex"
+                  ? text(
+                      "OAuth 令牌强制锁定到 OpenAI 官方 Codex 后端。",
+                      "OAuth tokens are pinned to the official OpenAI Codex backend.",
+                    )
+                  : undefined
+              }
+            >
               <input
                 name="base_url"
                 type="url"
                 required
                 value={baseUrl}
+                readOnly={provider === "codex"}
                 placeholder={providerDefaultUrl(provider)}
                 onChange={(event) => setBaseUrl(event.target.value)}
               />
@@ -996,31 +1065,69 @@ function ModelsPage() {
               />
             </Field>
             <Field
-              label="API key"
+              label={text("已保存凭据", "Saved credential")}
               hint={text(
-                editing?.has_api_key
-                  ? "已保存加密凭据；留空会保留原密钥。"
-                  : "静态加密保存；使用 Ollama 时可留空。",
-                editing?.has_api_key
-                  ? "An encrypted credential is stored; leave blank to keep it."
-                  : "Encrypted at rest; leave blank for Ollama.",
+                "凭据可被多个模型配置复用；只显示名称和状态，不显示密文。",
+                "Credentials can be reused by multiple profiles; only names and status are shown.",
               )}
             >
-              <input
-                name="api_key"
-                type="password"
-                autoComplete="new-password"
-              />
+              <select
+                value={credentialId}
+                onChange={(event) => setCredentialId(event.target.value)}
+              >
+                <option value="">
+                  {provider === "ollama"
+                    ? text("无凭据", "No credential")
+                    : text("选择凭据…", "Choose a credential…")}
+                </option>
+                {editing?.credential_id &&
+                  !compatibleCredentials.some(
+                    (credential) => credential.id === editing.credential_id,
+                  ) && (
+                    <option value={editing.credential_id}>
+                      {editing.credential_name ??
+                        text("当前受管凭据", "Current managed credential")}{" "}
+                      · {editing.credential_status ?? "unknown"}
+                    </option>
+                  )}
+                {compatibleCredentials.map((credential) => (
+                  <option key={credential.id} value={credential.id}>
+                    {credential.name} · {credential.kind} · {credential.status}
+                  </option>
+                ))}
+              </select>
             </Field>
-            {editing?.has_api_key && (
-              <label className="check-row check-row--compact">
-                <input name="clear_api_key" type="checkbox" />
-                <span>
-                  <strong>
-                    {text("清除已保存密钥", "Clear stored API key")}
-                  </strong>
-                </span>
-              </label>
+            <div className="credential-form-link">
+              <KeyRound size={13} />
+              <span>
+                {compatibleCredentials.length
+                  ? text(
+                      "需要另一份登录？前往认证中心添加。",
+                      "Need another sign-in? Add it in the credential vault.",
+                    )
+                  : text(
+                      "没有兼容凭据，请先到认证中心添加。",
+                      "No compatible credential. Add one in the credential vault first.",
+                    )}
+              </span>
+              <Link to="/credentials" onClick={closeForm}>
+                {text("打开认证中心", "Open credentials")}
+              </Link>
+            </div>
+            {provider !== "codex" && (
+              <Field
+                label={text("快速添加 API Key（可选）", "Quick-add API key (optional)")}
+                hint={text(
+                  "输入后会新建可复用的加密凭据，并覆盖上面的选择；留空则使用所选凭据。",
+                  "Entering a key creates a reusable encrypted credential and overrides the selection above; leave blank to use the selection.",
+                )}
+              >
+                <input
+                  name="api_key"
+                  type="password"
+                  autoComplete="new-password"
+                />
+              </Field>
             )}
             <div className="form-section-heading">
               <SlidersHorizontal size={14} />
@@ -1034,59 +1141,76 @@ function ModelsPage() {
                 </small>
               </div>
             </div>
+            {provider === "codex" && (
+              <div className="credential-import-warning">
+                <AlertTriangle size={14} />
+                <span>
+                  {text(
+                    "Codex 订阅后端自行管理采样与输出预算；此协议只发送 reasoning.effort 和受支持的高级字段。",
+                    "The Codex subscription backend controls sampling and output budget; this protocol only sends reasoning.effort and supported advanced fields.",
+                  )}
+                </span>
+              </div>
+            )}
             <div className="model-parameter-grid">
-              <Field
-                label={text("温度", "Temperature")}
-                hint={text("范围 0–2。", "Range 0–2.")}
-              >
-                <input
-                  type="number"
-                  min="0"
-                  max="2"
-                  step="0.01"
-                  value={parameterDraft.temperature}
-                  placeholder={text("默认", "default")}
-                  onChange={(event) =>
-                    updateParameter("temperature", event.target.value)
-                  }
-                />
-              </Field>
-              <Field
-                label="Top P"
-                hint={text(
-                  "范围 0–1；通常只调整它或温度之一。",
-                  "Range 0–1; normally tune this or temperature, not both.",
-                )}
-              >
-                <input
-                  type="number"
-                  min="0"
-                  max="1"
-                  step="0.01"
-                  value={parameterDraft.topP}
-                  placeholder={text("默认", "default")}
-                  onChange={(event) =>
-                    updateParameter("topP", event.target.value)
-                  }
-                />
-              </Field>
-              <Field
-                label={text("最大输出 Token", "Maximum output tokens")}
-                hint={fieldNames.maxOutputTokens}
-              >
-                <input
-                  type="number"
-                  min="1"
-                  step="1"
-                  value={parameterDraft.maxOutputTokens}
-                  placeholder={
-                    provider === "anthropic" ? "8192" : text("默认", "default")
-                  }
-                  onChange={(event) =>
-                    updateParameter("maxOutputTokens", event.target.value)
-                  }
-                />
-              </Field>
+              {provider !== "codex" && (
+                <>
+                  <Field
+                    label={text("温度", "Temperature")}
+                    hint={text("范围 0–2。", "Range 0–2.")}
+                  >
+                    <input
+                      type="number"
+                      min="0"
+                      max="2"
+                      step="0.01"
+                      value={parameterDraft.temperature}
+                      placeholder={text("默认", "default")}
+                      onChange={(event) =>
+                        updateParameter("temperature", event.target.value)
+                      }
+                    />
+                  </Field>
+                  <Field
+                    label="Top P"
+                    hint={text(
+                      "范围 0–1；通常只调整它或温度之一。",
+                      "Range 0–1; normally tune this or temperature, not both.",
+                    )}
+                  >
+                    <input
+                      type="number"
+                      min="0"
+                      max="1"
+                      step="0.01"
+                      value={parameterDraft.topP}
+                      placeholder={text("默认", "default")}
+                      onChange={(event) =>
+                        updateParameter("topP", event.target.value)
+                      }
+                    />
+                  </Field>
+                  <Field
+                    label={text("最大输出 Token", "Maximum output tokens")}
+                    hint={fieldNames.maxOutputTokens}
+                  >
+                    <input
+                      type="number"
+                      min="1"
+                      step="1"
+                      value={parameterDraft.maxOutputTokens}
+                      placeholder={
+                        provider === "anthropic"
+                          ? "8192"
+                          : text("默认", "default")
+                      }
+                      onChange={(event) =>
+                        updateParameter("maxOutputTokens", event.target.value)
+                      }
+                    />
+                  </Field>
+                </>
+              )}
               <Field
                 label={
                   provider === "ollama"
@@ -2035,13 +2159,19 @@ function RunDetailPage() {
         </div>
       )}
       <div className="run-footer-actions">
-        <a className="button button--ghost" href={api.reportUrl(data.id)}>
-          <Download size={14} /> {text("导出报告", "Export report")}
+        <a
+          className="button button--ghost"
+          href={api.reportUrl(data.id)}
+          download={`run-${data.id}-telemetry.json`}
+        >
+          <Download size={14} />{" "}
+          {text("导出完整遥测", "Export full telemetry")}
         </a>
         {artifacts.data?.map((artifact) => (
           <a
             className="button button--ghost"
             href={api.runArtifactUrl(data.id, artifact.id)}
+            download={artifact.name}
             key={artifact.id}
           >
             <Download size={14} />{" "}
@@ -3173,6 +3303,8 @@ function providerLabel(provider: ModelProvider) {
   const labels: Record<ModelProvider, string> = {
     openai_responses: "OpenAI Responses API",
     anthropic: "Anthropic Messages API",
+    codex: "Codex OAuth · ChatGPT subscription",
+    gemini: "Google Gemini native API",
     openai_compatible: "OpenAI-compatible Chat Completions",
     ollama: "Ollama",
   };
@@ -3183,10 +3315,23 @@ function providerDefaultUrl(provider: ModelProvider) {
   const urls: Record<ModelProvider, string> = {
     openai_responses: "https://api.openai.com/v1",
     anthropic: "https://api.anthropic.com/v1",
+    codex: "https://chatgpt.com/backend-api/codex",
+    gemini: "https://generativelanguage.googleapis.com/v1beta",
     openai_compatible: "https://api.example.com/v1",
     ollama: "http://host.docker.internal:11434",
   };
   return urls[provider];
+}
+
+function credentialSupportsProvider(
+  kind: CredentialKind,
+  provider: ModelProvider,
+) {
+  if (provider === "codex") return kind === "codex_oauth";
+  if (provider === "gemini") {
+    return kind === "api_key" || kind === "gemini_oauth";
+  }
+  return kind === "api_key";
 }
 
 function effortLabel(

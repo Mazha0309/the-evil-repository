@@ -26,7 +26,7 @@ provider credentials.
 
 ## Status
 
-The platform is currently **v0.10.0** and remains under active construction.
+The platform is currently **v0.11.0** and remains under active construction.
 See [`CHANGELOG.md`](CHANGELOG.md). This release includes two independently
 versioned scenarios, account isolation, administrator controls, server
 monitoring, a live Agent activity console, and the complete execution,
@@ -59,24 +59,37 @@ container. It contains the event stream, repository diffs/status, bounded
 investigation artifacts, scenario audit, resource ledger, and failure summary.
 This checkpoint is replayable evidence, not a resumable model conversation.
 
-The control plane supports four explicit model protocols: OpenAI Responses,
-Anthropic Messages, OpenAI-compatible Chat Completions, and Ollama Chat.
-OpenAI-compatible and OpenAI Responses remain separate because their message,
-tool-call, and usage contracts are not interchangeable.
+The control plane supports six explicit model protocols: OpenAI Responses,
+Anthropic Messages, Codex subscription Responses, Google Gemini native
+`generateContent`, OpenAI-compatible Chat Completions, and Ollama Chat.
+Similar brand names do not collapse protocol boundaries: every adapter maps
+messages, tools, errors, parameters, and usage according to its real wire
+contract.
 
-Model profiles can be edited after creation without re-entering a stored API
-key. The bilingual parameter editor exposes temperature, top-p, maximum output
-tokens, reasoning/thinking effort, and service tier using protocol-correct
-field names. Additional Provider fields can be supplied as bounded JSON.
-Credentials, headers, prompts, model IDs, tool declarations, and transport
-fields are rejected from that JSON, and the Runner enforces the same boundary
-again when constructing every request.
+Provider authentication is a separate, per-account vault. One encrypted API
+key can be reused by several profiles; Codex can import the Codex CLI
+`auth.json` or use device sign-in; Gemini can use an API key or import Gemini
+CLI `oauth_creds.json`. OAuth access tokens refresh in the control plane and
+never enter candidate containers, events, tool results, or archives. Codex
+tokens are pinned to OpenAI's authentication and Codex hosts, while Gemini
+tokens are pinned to Google OAuth and Code Assist hosts, regardless of the
+profile Base URL.
 
-Deleting a model profile is a credential-destroying archive operation rather
-than a cascading database delete. Its API key, endpoint, and inference
-parameters are erased, while historical runs retain frozen non-secret model
-identity and remain replayable. A profile referenced by an active run cannot
-be deleted until that run finishes or is cancelled.
+Model profiles can be edited after creation and switched between compatible
+saved credentials. The bilingual parameter editor exposes temperature, top-p,
+maximum output tokens, reasoning/thinking effort, and service tier using
+protocol-correct field names. Additional Provider fields can be supplied as
+bounded JSON. Credentials, headers, prompts, model IDs, tool declarations, and
+transport fields are rejected from that JSON, and the Runner enforces the same
+boundary again when constructing every request.
+
+Deleting a model profile archives the profile and detaches its credential
+rather than cascading through history or deleting a reusable login. Its
+endpoint and inference parameters are erased, while historical runs retain a
+frozen non-secret model identity. Credentials have a separate confirmed delete
+operation that is blocked while any active profile references them. A profile
+referenced by an active run cannot be deleted until that run finishes or is
+cancelled.
 
 The Runner executes multiple independent runs concurrently. Two slots are
 enabled by default; administrators can change the 1–16 slot limit live without
@@ -230,6 +243,21 @@ cache reads/writes, hidden reasoning tokens, batch/service tiers, discounts,
 and compatible-API usage semantics are not reliably comparable across
 Providers.
 
+The live run console additionally shows per-turn context messages and
+characters, average/P95/maximum Provider latency, HTTP attempts and backoff,
+token throughput, average/P95 tool latency, duplicate calls and reads,
+truncated results, blind writes, self-verification, and explicit
+hypothesis-status/confidence revisions. It analyzes observable events only and
+does not request or fabricate private chain-of-thought.
+
+**Export full telemetry** downloads a schema-v2 JSON snapshot even while a run
+is active. Normal archives and failure checkpoints also split the same data
+into script-friendly `events.jsonl`, `telemetry/provider-turns.jsonl`,
+`telemetry/tool-lifecycle.jsonl`, stage timelines, periodic resource
+snapshots, an error stream, the complete investigation graph, and a SHA-256
+artifact inventory. OAuth tokens, API keys, Authorization headers, passwords,
+and Gemini thought signatures are excluded or redacted.
+
 Every candidate event carries a stable Agent identity. Today the built-in
 executor is intentionally single-Agent and produces a one-node Agent Graph.
 The event and archive schemas already support spawn, delegation, role,
@@ -310,11 +338,48 @@ proxy. It provides:
 - per-user model-profile, run, event, graph, and report isolation;
 - administrator account creation, enable/disable, role changes, and global
   session revocation;
+- confirmations for privileged account/session actions, search, and
+  mobile-native account cards;
 - live API, Runner, PostgreSQL, queue, CPU, memory, disk, and Rootless Docker
-  monitoring.
+  capacity and freshness monitoring.
 
 Administrators can see legacy and global benchmark data. Ordinary users see
 only resources mapped to their account.
+
+## Provider authentication
+
+Open **Credentials** in the WebUI before creating a model profile:
+
+- **API key:** enter a revocable key once, then select the saved credential
+  from any compatible OpenAI, Anthropic, Gemini, compatible, or optional Ollama
+  profile. The plaintext is never shown again.
+- **Codex device sign-in:** request a device code, open the displayed OpenAI
+  page, authorize it, and wait for the UI to finish automatically.
+- **Codex JSON import:** upload the `~/.codex/auth.json` created by Codex CLI.
+  EvilBench accepts both the normal nested `tokens` shape and the normalized
+  flat OAuth shape.
+- **Gemini JSON import:** first complete OAuth/onboarding in Gemini CLI, then
+  upload `~/.gemini/oauth_creds.json`. Newer Gemini CLI installations may use
+  an operating-system keychain and therefore have no JSON file; use a Gemini
+  API key unless you deliberately have an exportable credential file. Imported
+  refresh tokens also require `GEMINI_OAUTH_CLIENT_ID` and
+  `GEMINI_OAUTH_CLIENT_SECRET` to contain the OAuth client pair that originally
+  issued the token; the project never embeds or publishes third-party client
+  credentials.
+
+After saving the credential, create or edit a model profile, choose **Codex
+OAuth (ChatGPT subscription)** or **Google Gemini native API**, and select the
+matching credential. Incompatible combinations are rejected by both the UI
+and API. Gemini API keys call the standard Generative Language endpoint;
+Gemini OAuth calls the Code Assist endpoint and may require that Gemini CLI has
+already completed account onboarding.
+
+`auth.json` and `oauth_creds.json` contain refresh tokens and must be treated
+like passwords. Import them only into an EvilBench deployment you control,
+keep `APP_SECRET` stable and private, and use HTTPS for a remote deployment.
+Codex subscription access is distinct from a Platform API key and is marked
+experimental here; operators are responsible for confirming that their
+account, organization policy, and applicable service terms permit its use.
 
 ## External deployment
 

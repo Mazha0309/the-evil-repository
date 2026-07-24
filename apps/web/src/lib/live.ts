@@ -38,7 +38,36 @@ export interface LiveRunAnalysis {
   substantiveCalls: number;
   redundantCalls: number;
   toolErrors: number;
+  toolLatencyAverageMs: number;
+  toolLatencyP95Ms: number;
+  toolLatencyMaxMs: number;
+  toolWaitMs: number;
+  truncatedResults: number;
+  blindWrites: number;
+  duplicateToolCalls: number;
+  uniquePathsRead: number;
+  repeatedPathReads: number;
+  writes: number;
   protocolRepairs: number;
+  modelTurns: number;
+  providerAttempts: number;
+  providerRetries: number;
+  providerErrors: number;
+  providerLatencyAverageMs: number;
+  providerLatencyP95Ms: number;
+  providerLatencyMaxMs: number;
+  providerWaitMs: number;
+  retryDelayMs: number;
+  peakContextMessages: number;
+  peakContextCharacters: number;
+  contextGrowthCharacters: number;
+  outputTokensPerSecond: number;
+  hypothesisRevisions: number;
+  hypothesisStatusChanges: number;
+  confidenceDrops: number;
+  evidenceItems: number;
+  evidenceEdges: number;
+  selfVerificationCalls: number;
   injectedFaults: number;
   boundaryViolations: number;
   pausedMs: number;
@@ -81,6 +110,27 @@ export function analyzeRunEvents(
 ): LiveRunAnalysis {
   const calls = events.filter((event) => event.kind === "tool.call");
   const results = events.filter((event) => event.kind === "tool.result");
+  const modelRequests = events.filter(
+    (event) => event.kind === "model.request",
+  );
+  const assistantMessages = events.filter(
+    (event) => event.kind === "assistant.message",
+  );
+  const providerAttempts = events.filter(
+    (event) => event.kind === "provider.request",
+  );
+  const providerRetries = events.filter(
+    (event) => event.kind === "provider.retry",
+  );
+  const providerErrors = events.filter(
+    (event) => event.kind === "provider.error",
+  );
+  const providerDurations = [...assistantMessages, ...providerErrors]
+    .map((event) => numberValue(event.payload.duration_ms))
+    .filter((value) => value > 0);
+  const toolDurations = results
+    .map((event) => numberValue(event.payload.duration_ms))
+    .filter((value) => value > 0);
   const resultByCall = new Map(
     results.map((event) => [stringValue(event.payload.call_id), event]),
   );
@@ -118,12 +168,8 @@ export function analyzeRunEvents(
     pendingCall ??
     (lastEvent?.kind === "model.request" ? lastEvent : undefined) ??
     lastEvent;
-  const visibleMessages = events
-    .filter(
-      (event) =>
-        event.kind === "assistant.message" &&
-        stringValue(event.payload.content).trim(),
-    )
+  const visibleMessages = assistantMessages
+    .filter((event) => stringValue(event.payload.content).trim())
     .slice(-4)
     .reverse();
   const substantiveCalls = substantiveToolCallCount(calls);
@@ -159,6 +205,40 @@ export function analyzeRunEvents(
     const args = objectValue(event.payload.arguments);
     return `${stringValue(args.path)} ${stringValue(args.command)}`.toLocaleLowerCase();
   });
+  const readPaths = calls
+    .filter((event) => stringValue(event.payload.name) === "read_file")
+    .map((event) =>
+      stringValue(objectValue(event.payload.arguments).path),
+    )
+    .filter(Boolean);
+  const readPathCounts = new Map<string, number>();
+  for (const path of readPaths) {
+    readPathCounts.set(path, (readPathCounts.get(path) ?? 0) + 1);
+  }
+  const signatures = new Map<string, number>();
+  for (const call of calls) {
+    const signature =
+      stringValue(call.payload.call_signature_sha256) ||
+      stableStringify({
+        name: stringValue(call.payload.name),
+        arguments: objectValue(call.payload.arguments),
+      });
+    signatures.set(signature, (signatures.get(signature) ?? 0) + 1);
+  }
+  const contextCharacters = modelRequests.map((event) =>
+    numberValue(event.payload.context_characters),
+  );
+  const hypothesisEvents = events.filter(
+    (event) => event.kind === "investigation.hypothesis",
+  );
+  const outputTokens = assistantMessages.reduce(
+    (total, event) => total + numberValue(event.payload.output_tokens),
+    0,
+  );
+  const providerWaitMs = providerDurations.reduce(
+    (total, value) => total + value,
+    0,
+  );
   return {
     phase,
     phaseSince: phaseEvent?.created_at ?? null,
@@ -171,9 +251,91 @@ export function analyzeRunEvents(
     toolErrors: results.filter(
       (event) => !["ok", "success"].includes(stringValue(event.payload.status)),
     ).length,
+    toolLatencyAverageMs: average(toolDurations),
+    toolLatencyP95Ms: percentile(toolDurations, 0.95),
+    toolLatencyMaxMs: Math.max(0, ...toolDurations),
+    toolWaitMs: toolDurations.reduce((total, value) => total + value, 0),
+    truncatedResults: results.filter((event) =>
+      Boolean(event.payload.truncated),
+    ).length,
+    blindWrites: results.filter((event) =>
+      Boolean(event.payload.blind_write),
+    ).length,
+    duplicateToolCalls: [...signatures.values()].reduce(
+      (total, count) => total + Math.max(0, count - 1),
+      0,
+    ),
+    uniquePathsRead: readPathCounts.size,
+    repeatedPathReads: [...readPathCounts.values()].reduce(
+      (total, count) => total + Math.max(0, count - 1),
+      0,
+    ),
+    writes: calls.filter(
+      (event) => stringValue(event.payload.name) === "write_file",
+    ).length,
     protocolRepairs: events.filter(
       (event) => event.kind === "provider.tool_call_invalid",
     ).length,
+    modelTurns: modelRequests.length,
+    providerAttempts: providerAttempts.length,
+    providerRetries: providerRetries.length,
+    providerErrors: providerErrors.length,
+    providerLatencyAverageMs: average(providerDurations),
+    providerLatencyP95Ms: percentile(providerDurations, 0.95),
+    providerLatencyMaxMs: Math.max(0, ...providerDurations),
+    providerWaitMs,
+    retryDelayMs:
+      providerRetries.reduce(
+        (total, event) =>
+          total + numberValue(event.payload.delay_seconds),
+        0,
+      ) * 1_000,
+    peakContextMessages: Math.max(
+      0,
+      ...modelRequests.map((event) =>
+        numberValue(event.payload.context_messages),
+      ),
+    ),
+    peakContextCharacters: Math.max(0, ...contextCharacters),
+    contextGrowthCharacters:
+      contextCharacters.length > 1
+        ? Math.max(
+            0,
+            contextCharacters.at(-1)! - contextCharacters[0],
+          )
+        : 0,
+    outputTokensPerSecond:
+      providerWaitMs > 0 ? outputTokens / (providerWaitMs / 1_000) : 0,
+    hypothesisRevisions: hypothesisEvents.length,
+    hypothesisStatusChanges: hypothesisEvents.filter(
+      (event) =>
+        stringValue(event.payload.previous_status) &&
+        stringValue(event.payload.previous_status) !==
+          stringValue(event.payload.status),
+    ).length,
+    confidenceDrops: hypothesisEvents.filter(
+      (event) => numberValue(event.payload.confidence_delta) <= -0.15,
+    ).length,
+    evidenceItems: events.filter(
+      (event) => event.kind === "investigation.evidence",
+    ).length,
+    evidenceEdges: events.filter(
+      (event) => event.kind === "investigation.edge",
+    ).length,
+    selfVerificationCalls: calls.filter((event) => {
+      if (stringValue(event.payload.name) !== "exec_command") return false;
+      const command = stringValue(
+        objectValue(event.payload.arguments).command,
+      ).toLocaleLowerCase();
+      return [
+        "self-verify",
+        "self:verify",
+        "mutation",
+        "source-contract",
+        "verify_chain.py",
+        "audit-release.py",
+      ].some((marker) => command.includes(marker));
+    }).length,
     injectedFaults: results.filter((event) =>
       Boolean(event.payload.injected_fault),
     ).length,
@@ -580,6 +742,24 @@ function stringValue(value: unknown): string {
 function numberValue(value: unknown): number {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function average(values: number[]) {
+  return values.length
+    ? values.reduce((total, value) => total + value, 0) / values.length
+    : 0;
+}
+
+function percentile(values: number[], quantile: number) {
+  if (!values.length) return 0;
+  const ordered = [...values].sort((left, right) => left - right);
+  if (ordered.length === 1) return ordered[0];
+  const position = (ordered.length - 1) * quantile;
+  const lower = Math.floor(position);
+  const upper = Math.ceil(position);
+  if (lower === upper) return ordered[lower];
+  const weight = position - lower;
+  return ordered[lower] * (1 - weight) + ordered[upper] * weight;
 }
 
 function truncate(value: string, maximum: number): string {
