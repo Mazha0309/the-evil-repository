@@ -127,6 +127,107 @@ describe("live run telemetry", () => {
     expect(result.substantiveCalls).toBe(0);
   });
 
+  it("derives Provider, context, tool latency, and investigation telemetry", () => {
+    const events = [
+      event(1, "model.request", {
+        turn: 1,
+        context_messages: 3,
+        context_characters: 1_000,
+      }),
+      event(2, "provider.request", { turn: 1 }),
+      event(3, "provider.retry", {
+        logical_turn: 1,
+        delay_seconds: 2,
+      }),
+      event(4, "provider.request", { turn: 1 }),
+      event(5, "assistant.message", {
+        turn: 1,
+        duration_ms: 4_000,
+        output_tokens: 80,
+        content: "checking",
+      }),
+      event(6, "model.request", {
+        turn: 2,
+        context_messages: 7,
+        context_characters: 2_500,
+      }),
+      event(7, "assistant.message", {
+        turn: 2,
+        duration_ms: 6_000,
+        output_tokens: 120,
+        content: "next",
+      }),
+      event(8, "tool.call", {
+        name: "read_file",
+        call_id: "read-a",
+        arguments: { path: "README.md" },
+      }),
+      event(9, "tool.result", {
+        name: "read_file",
+        call_id: "read-a",
+        status: "ok",
+        duration_ms: 1_000,
+        output: "v3",
+      }),
+      event(10, "tool.call", {
+        name: "read_file",
+        call_id: "read-b",
+        arguments: { path: "README.md" },
+      }),
+      event(11, "tool.result", {
+        name: "read_file",
+        call_id: "read-b",
+        status: "timeout",
+        duration_ms: 3_000,
+        output: "timeout",
+        truncated: true,
+      }),
+      event(12, "investigation.hypothesis", {
+        key: "H1",
+        status: "rejected",
+        previous_status: "testing",
+        confidence_delta: -0.4,
+      }),
+      event(13, "investigation.evidence", { key: "E1" }),
+      event(14, "investigation.edge", { edge_id: "edge-1" }),
+      event(15, "context.compacted", {
+        messages_removed: 40,
+        characters_removed: 120_000,
+      }),
+      event(16, "model.request.retry", {
+        turn: 2,
+        reason: "provider_context_rejection",
+        recovery_attempt: 1,
+      }),
+    ];
+
+    const result = analyzeRunEvents(events, "running", 15_000);
+
+    expect(result.modelTurns).toBe(2);
+    expect(result.providerAttempts).toBe(2);
+    expect(result.providerRetries).toBe(1);
+    expect(result.providerLatencyAverageMs).toBe(5_000);
+    expect(result.providerWaitMs).toBe(10_000);
+    expect(result.retryDelayMs).toBe(2_000);
+    expect(result.peakContextMessages).toBe(7);
+    expect(result.contextGrowthCharacters).toBe(1_500);
+    expect(result.contextCompactions).toBe(1);
+    expect(result.contextMessagesRemoved).toBe(40);
+    expect(result.contextCharactersRemoved).toBe(120_000);
+    expect(result.contextOverflowRetries).toBe(1);
+    expect(result.providerPolicyRetries).toBe(0);
+    expect(result.outputTokensPerSecond).toBe(20);
+    expect(result.toolLatencyAverageMs).toBe(2_000);
+    expect(result.toolLatencyP95Ms).toBe(2_900);
+    expect(result.duplicateToolCalls).toBe(1);
+    expect(result.repeatedPathReads).toBe(1);
+    expect(result.truncatedResults).toBe(1);
+    expect(result.hypothesisStatusChanges).toBe(1);
+    expect(result.confidenceDrops).toBe(1);
+    expect(result.evidenceItems).toBe(1);
+    expect(result.evidenceEdges).toBe(1);
+  });
+
   it("distinguishes a pause request from a safe-boundary pause", () => {
     const requested = [
       event(1, "model.request", { turn: 1 }),

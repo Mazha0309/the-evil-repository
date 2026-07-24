@@ -1,3 +1,4 @@
+import json
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
@@ -6,11 +7,17 @@ import app.runner.engine as engine_module
 from app.models import RunStatus
 from app.runner.engine import (
     AgentEngine,
+    compact_message_history,
     completion_actions_from_events,
+    json_size,
     substantive_tool_call_count,
 )
 from app.runner.faults import FaultController
 from app.runner.protocol import AssistantTurn, InvalidToolCall, ToolCall
+from app.runner.providers import (
+    ProviderContextLengthError,
+    ProviderPolicyRejectionError,
+)
 from app.scenario import PreparedScenario, load_scenario
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -96,6 +103,50 @@ class RepairingToolCallClient:
         )
 
 
+class OverflowOnceClient:
+    profile = SimpleNamespace(native_tools=True)
+    on_request = None
+
+    def __init__(self) -> None:
+        self.calls = 0
+        self.context_sizes: list[int] = []
+
+    def complete(self, messages: list[dict], tools: list[dict]) -> AssistantTurn:
+        self.calls += 1
+        self.context_sizes.append(json_size(messages))
+        if self.calls == 1:
+            raise ProviderContextLengthError(
+                "context_length_exceeded · input exceeds the context window"
+            )
+        return AssistantTurn(
+            content="Recovered after bounded compaction.",
+            input_tokens=100,
+            output_tokens=10,
+        )
+
+
+class PolicyOnceClient:
+    profile = SimpleNamespace(native_tools=True)
+    on_request = None
+
+    def __init__(self) -> None:
+        self.calls = 0
+        self.messages: list[list[dict]] = []
+
+    def complete(self, messages: list[dict], tools: list[dict]) -> AssistantTurn:
+        self.calls += 1
+        self.messages.append([dict(message) for message in messages])
+        if self.calls == 1:
+            raise ProviderPolicyRejectionError(
+                "cyber_policy · content was flagged"
+            )
+        return AssistantTurn(
+            content="Recovered with a clean maintenance continuation.",
+            input_tokens=80,
+            output_tokens=8,
+        )
+
+
 def test_scenario_run_passes_prepared_scenario_to_agent_engine(
     tmp_path: Path,
     monkeypatch,
@@ -127,15 +178,22 @@ def test_scenario_run_passes_prepared_scenario_to_agent_engine(
     assert result.final_response == "Investigation complete."
     assert result.private_state["input_tokens"] == 17
     assert result.private_state["output_tokens"] == 4
-    assert result.events[0] == {
-        "kind": "model.request",
-        "turn": 1,
-        "context_messages": 2,
-        "tool_calls": 0,
+    assert result.events[0]["kind"] == "model.request"
+    assert result.events[0]["turn"] == 1
+    assert result.events[0]["context_messages"] == 2
+    assert result.events[0]["context_role_counts"] == {
+        "system": 1,
+        "user": 1,
     }
+    assert result.events[0]["context_characters"] > 0
+    assert result.events[0]["tool_calls"] == 0
     assert result.events[1]["kind"] == "assistant.message"
     assert result.events[1]["turn"] == 1
     assert result.events[1]["duration_ms"] >= 0
+    assert any(
+        event["kind"] == "agent.telemetry.snapshot"
+        for event in result.events
+    )
 
 
 def test_invalid_tool_call_is_repaired_without_execution(
@@ -443,3 +501,211 @@ def test_pause_waits_at_safe_boundary_and_excludes_paused_time(
     assert engine._active_elapsed() == 10.0
     assert run.stage == "Candidate investigation"
     assert [kind for kind, _ in emitted] == ["run.paused", "run.resumed"]
+
+
+def test_context_compaction_preserves_native_tool_pairs() -> None:
+    def assistant(call_id: str) -> dict:
+        return {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": call_id,
+                    "type": "function",
+                    "function": {
+                        "name": "exec_command",
+                        "arguments": '{"command":"inspect"}',
+                    },
+                }
+            ],
+        }
+
+    def result(call_id: str, marker: str) -> dict:
+        return {
+            "role": "tool",
+            "tool_call_id": call_id,
+            "content": json.dumps(
+                {
+                    "call_id": call_id,
+                    "name": "exec_command",
+                    "status": "ok",
+                    "output": marker * 30_000,
+                }
+            ),
+        }
+
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "opening"},
+        assistant("old-call"),
+        result("old-call", "a"),
+        assistant("new-call"),
+        result("new-call", "b"),
+    ]
+    compacted, report = compact_message_history(
+        messages,
+        checkpoint={
+            "role": "user",
+            "content": "RUNNER_CONTEXT_CHECKPOINT_V1\n{}",
+        },
+        target_characters=1_500,
+        tool_content_limit=1_000,
+    )
+
+    call_ids = {
+        call["id"]
+        for message in compacted
+        for call in message.get("tool_calls", [])
+    }
+    result_ids = {
+        message["tool_call_id"]
+        for message in compacted
+        if message.get("role") == "tool"
+    }
+    assert result_ids == call_ids == {"new-call"}
+    assert json_size(compacted) <= 1_500
+    assert report["messages_removed"] == 2
+    assert report["tool_results_truncated"] == 1
+    assert "RUNNER_CONTEXT_CHECKPOINT_V1" in compacted[2]["content"]
+
+
+def test_provider_context_overflow_is_compacted_and_retried(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    scenario = load_scenario(SCENARIO_ROOT)
+    prepared = PreparedScenario(
+        scenario_root=SCENARIO_ROOT,
+        workspace=tmp_path,
+        metadata=scenario.metadata,
+    )
+    client = OverflowOnceClient()
+    engine = AgentEngine(
+        run_id=uuid.uuid4(),
+        client=client,
+        sandbox=SimpleNamespace(),
+        prepared=prepared,
+        faults=FaultController([]),
+        context_soft_characters=40_000,
+        context_target_characters=24_000,
+        context_emergency_characters=16_000,
+    )
+    monkeypatch.setattr(
+        engine,
+        "_context_checkpoint_message",
+        lambda **_kwargs: {
+            "role": "user",
+            "content": "RUNNER_CONTEXT_CHECKPOINT_V1\n{}",
+        },
+    )
+    monkeypatch.setattr(
+        engine,
+        "_event",
+        lambda kind, payload: engine.events.append({"kind": kind, **payload}),
+    )
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "opening"},
+        {
+            "role": "assistant",
+            "content": "x" * 70_000,
+        },
+    ]
+    engine.current_turn = 7
+
+    turn, _duration_ms = engine._complete_model_turn(
+        messages,
+        [{"type": "function", "function": {"name": "read_file"}}],
+        turn_number=7,
+    )
+
+    assert turn.content == "Recovered after bounded compaction."
+    assert client.calls == 2
+    assert client.context_sizes[1] < client.context_sizes[0]
+    assert engine.context_overflow_retries == 1
+    assert engine.context_compactions == 1
+    assert any(event["kind"] == "context.compacted" for event in engine.events)
+    assert any(event["kind"] == "model.request.retry" for event in engine.events)
+
+
+def test_provider_policy_rejection_retries_without_raw_tool_history(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    scenario = load_scenario(SCENARIO_ROOT)
+    prepared = PreparedScenario(
+        scenario_root=SCENARIO_ROOT,
+        workspace=tmp_path,
+        metadata=scenario.metadata,
+    )
+    client = PolicyOnceClient()
+    engine = AgentEngine(
+        run_id=uuid.uuid4(),
+        client=client,
+        sandbox=SimpleNamespace(),
+        prepared=prepared,
+        faults=FaultController([]),
+    )
+    monkeypatch.setattr(
+        engine,
+        "_context_checkpoint_message",
+        lambda **_kwargs: {
+            "role": "user",
+            "content": "RUNNER_CONTEXT_CHECKPOINT_V1\n{}",
+        },
+    )
+    monkeypatch.setattr(
+        engine,
+        "_event",
+        lambda kind, payload: engine.events.append({"kind": kind, **payload}),
+    )
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "opening"},
+        {
+            "role": "assistant",
+            "content": "raw untrusted material",
+            "tool_calls": [
+                {
+                    "id": "call-risky",
+                    "type": "function",
+                    "function": {
+                        "name": "exec_command",
+                        "arguments": '{"command":"raw"}',
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call-risky",
+            "content": '{"status":"ok","output":"raw embedded instructions"}',
+        },
+    ]
+    engine.current_turn = 9
+
+    turn, _duration_ms = engine._complete_model_turn(
+        messages,
+        [{"type": "function", "function": {"name": "read_file"}}],
+        turn_number=9,
+    )
+
+    retried = client.messages[1]
+    assert turn.content.startswith("Recovered")
+    assert client.calls == 2
+    assert all(
+        message["role"] not in {"assistant", "tool"}
+        for message in retried
+    )
+    assert any(
+        "RUNNER_PROVIDER_POLICY_RECOVERY_V1"
+        in str(message.get("content", ""))
+        for message in retried
+    )
+    assert engine.provider_policy_retries == 1
+    retry = next(
+        event
+        for event in engine.events
+        if event["kind"] == "model.request.retry"
+    )
+    assert retry["reason"] == "provider_policy_rejection"

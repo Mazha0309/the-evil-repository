@@ -7,6 +7,11 @@ class ToolCall(BaseModel):
     call_id: str
     name: str
     arguments: dict[str, Any] = Field(default_factory=dict)
+    provider_metadata: dict[str, Any] = Field(
+        default_factory=dict,
+        exclude=True,
+        repr=False,
+    )
 
 
 class InvalidToolCall(BaseModel):

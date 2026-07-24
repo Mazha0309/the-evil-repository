@@ -26,7 +26,7 @@ provider credentials.
 
 ## Status
 
-The platform is currently **v0.10.0** and remains under active construction.
+The platform is currently **v0.12.0** and remains under active construction.
 See [`CHANGELOG.md`](CHANGELOG.md). This release includes two independently
 versioned scenarios, account isolation, administrator controls, server
 monitoring, a live Agent activity console, and the complete execution,
@@ -53,30 +53,68 @@ repair turn. Provider read/connect/protocol transport failures use bounded
 backoff, and every HTTP attempt still consumes the configured raw Provider
 request budget.
 
+Long-running contexts are bounded before transport. At the soft character
+threshold, the Runner replaces retired transcript blocks with a deterministic
+checkpoint assembled from the candidate's explicit hypothesis/evidence graph,
+operational ledger, and recent protocol-complete tool blocks. Full raw events
+remain in telemetry. If a Provider still returns a context-length rejection,
+the same logical turn gets two progressively smaller recovery attempts rather
+than immediately destroying the run. Compaction is observable and does not
+invent a model-authored summary.
+
+Provider content-policy rejections are also distinguished from transport and
+context failures. The Runner never loops or disguises rejected material. It
+gets one auditable recovery attempt that removes recent raw untrusted
+repository/tool text, retains the explicit investigation ledger, and asks for
+a benign isolated-software-maintenance continuation. A repeated policy
+rejection remains terminal and is preserved in the failure checkpoint.
+
 If an unexpected terminal exception occurs after Scenario preparation, the
 Runner preserves a downloadable forensic checkpoint before removing the
 container. It contains the event stream, repository diffs/status, bounded
 investigation artifacts, scenario audit, resource ledger, and failure summary.
 This checkpoint is replayable evidence, not a resumable model conversation.
 
-The control plane supports four explicit model protocols: OpenAI Responses,
-Anthropic Messages, OpenAI-compatible Chat Completions, and Ollama Chat.
-OpenAI-compatible and OpenAI Responses remain separate because their message,
-tool-call, and usage contracts are not interchangeable.
+The control plane supports six explicit model protocols: OpenAI Responses,
+Anthropic Messages (Console API key) or the official Claude Agent SDK
+(Claude Code OAuth), Codex subscription Responses, Google Gemini native
+`generateContent`, OpenAI-compatible Chat Completions, and Ollama Chat.
+Similar brand names do not collapse protocol boundaries: every adapter maps
+messages, tools, errors, parameters, and usage according to its real wire
+contract.
 
-Model profiles can be edited after creation without re-entering a stored API
-key. The bilingual parameter editor exposes temperature, top-p, maximum output
-tokens, reasoning/thinking effort, and service tier using protocol-correct
-field names. Additional Provider fields can be supplied as bounded JSON.
-Credentials, headers, prompts, model IDs, tool declarations, and transport
-fields are rejected from that JSON, and the Runner enforces the same boundary
-again when constructing every request.
+Provider authentication is a separate, per-account vault. One encrypted API
+key can be reused by several profiles. Anthropic can use a Console API key or
+a long-lived token produced by `claude setup-token`; Codex can import the
+Codex CLI `auth.json` or use device sign-in; Gemini can use an API key or
+import Gemini CLI `oauth_creds.json`. OAuth secrets never enter candidate
+containers, events, tool results, or archives. Claude Code tokens are consumed
+only by the bundled official Agent SDK, Codex tokens are pinned to OpenAI's
+authentication and Codex hosts, and Gemini tokens are pinned to Google OAuth
+and Code Assist hosts regardless of the profile Base URL.
 
-Deleting a model profile is a credential-destroying archive operation rather
-than a cascading database delete. Its API key, endpoint, and inference
-parameters are erased, while historical runs retain frozen non-secret model
-identity and remain replayable. A profile referenced by an active run cannot
-be deleted until that run finishes or is cancelled.
+After Codex OAuth import or device sign-in, the control plane reads the
+account-scoped official model catalog and idempotently creates enabled model
+profiles for selectable entries; hidden models never enter the run picker.
+Credentials also expose a **Sync models** action for later catalog changes.
+Catalog requests use the latest stable Codex client version, with a
+release-tested fallback when version discovery is unavailable.
+
+Model profiles can be edited after creation and switched between compatible
+saved credentials. The bilingual parameter editor exposes temperature, top-p,
+maximum output tokens, reasoning/thinking effort, and service tier using
+protocol-correct field names. Additional Provider fields can be supplied as
+bounded JSON. Credentials, headers, prompts, model IDs, tool declarations, and
+transport fields are rejected from that JSON, and the Runner enforces the same
+boundary again when constructing every request.
+
+Deleting a model profile archives the profile and detaches its credential
+rather than cascading through history or deleting a reusable login. Its
+endpoint and inference parameters are erased, while historical runs retain a
+frozen non-secret model identity. Credentials have a separate confirmed delete
+operation that is blocked while any active profile references them. A profile
+referenced by an active run cannot be deleted until that run finishes or is
+cancelled.
 
 The Runner executes multiple independent runs concurrently. Two slots are
 enabled by default; administrators can change the 1–16 slot limit live without
@@ -230,6 +268,24 @@ cache reads/writes, hidden reasoning tokens, batch/service tiers, discounts,
 and compatible-API usage semantics are not reliably comparable across
 Providers.
 
+The live run console additionally shows per-turn context messages and
+characters, average/P95/maximum Provider latency, HTTP attempts and backoff,
+token throughput, average/P95 tool latency, duplicate calls and reads,
+truncated results, blind writes, self-verification, and explicit
+hypothesis-status/confidence revisions. Context rollovers show their count,
+retired message/character volume, and Provider-overflow recovery attempts. It
+analyzes observable events only and does not request or fabricate private
+chain-of-thought.
+
+**Export full telemetry** downloads a schema-v2 JSON snapshot even while a run
+is active. Normal archives and failure checkpoints also split the same data
+into script-friendly `events.jsonl`, `telemetry/provider-turns.jsonl`,
+`telemetry/tool-lifecycle.jsonl`, stage timelines, periodic resource
+snapshots, `telemetry/context-compactions.jsonl`, an error stream, the complete
+investigation graph, and a SHA-256 artifact inventory. OAuth tokens, API keys,
+Authorization headers, passwords, and Gemini thought signatures are excluded
+or redacted.
+
 Every candidate event carries a stable Agent identity. Today the built-in
 executor is intentionally single-Agent and produces a one-node Agent Graph.
 The event and archive schemas already support spawn, delegation, role,
@@ -277,6 +333,12 @@ use the same bounded policy. A Provider that remains unavailable after the
 retry budget still fails explicitly and leaves a downloadable forensic
 checkpoint when Scenario preparation had completed.
 
+The default rolling-context thresholds are 360,000 / 240,000 / 120,000 UTF-8
+characters for soft trigger, normal target, and emergency target. Deployments
+may override them with `RUNNER_CONTEXT_SOFT_CHARACTERS`,
+`RUNNER_CONTEXT_TARGET_CHARACTERS`, and
+`RUNNER_CONTEXT_EMERGENCY_CHARACTERS`; they must remain strictly descending.
+
 Deployment and shutdown fail closed while any run is queued, preparing,
 running, or scoring. Wait for those runs to finish or cancel them in the WebUI.
 If interruption is intentional, `ALLOW_ACTIVE_RUN_DISRUPTION=1 make deploy`
@@ -285,7 +347,9 @@ because their in-memory model conversations cannot be reconstructed.
 
 Node.js 22+, pnpm, Python 3.12+, and uv are only required for host-side
 development; the deployment command builds application dependencies inside
-containers.
+containers. The control image includes the official Claude Agent SDK and its
+native runtime, so Claude Code OAuth requires no host-side Claude or Node
+installation.
 
 On a fresh database, the first page creates the initial administrator. Set
 `SETUP_TOKEN` before startup if anyone else could reach the service during
@@ -310,11 +374,69 @@ proxy. It provides:
 - per-user model-profile, run, event, graph, and report isolation;
 - administrator account creation, enable/disable, role changes, and global
   session revocation;
+- confirmations for privileged account/session actions, search, and
+  mobile-native account cards;
 - live API, Runner, PostgreSQL, queue, CPU, memory, disk, and Rootless Docker
-  monitoring.
+  capacity and freshness monitoring.
 
 Administrators can see legacy and global benchmark data. Ordinary users see
 only resources mapped to their account.
+
+## Provider authentication
+
+Open **Credentials** in the WebUI before creating a model profile:
+
+- **API key:** enter a revocable key once, then select the saved credential
+  from any compatible OpenAI, Anthropic, Gemini, compatible, or optional Ollama
+  profile. The plaintext is never shown again.
+- **Claude Code OAuth:** on a trusted machine with Claude Code installed, run
+  `claude setup-token`, finish the official browser authorization, and paste
+  the emitted long-lived `CLAUDE_CODE_OAUTH_TOKEN` into Credentials. EvilBench
+  does not implement or imitate Claude.ai login. It provisions the official
+  `opus`, `sonnet`, and `haiku` runtime aliases; Anthropic checks the selected
+  account's entitlement when a run starts. A revoked token can be replaced in
+  place without rewiring model profiles.
+- **Codex device sign-in:** request a device code, open the displayed OpenAI
+  page, authorize it, and wait while the UI saves the login and synchronizes
+  the account's selectable models.
+- **Codex JSON import:** upload the `~/.codex/auth.json` created by Codex CLI.
+  EvilBench accepts both the normal nested `tokens` shape and the normalized
+  flat OAuth shape. Codex refresh tokens rotate: importing a snapshot while
+  Codex CLI keeps using its own copy can invalidate either client later. Prefer
+  device sign-in for a long-lived independent platform session. A successful
+  import also synchronizes selectable models, and the Credentials page can
+  safely retry that catalog sync later.
+- **Gemini JSON import:** first complete OAuth/onboarding in Gemini CLI, then
+  upload `~/.gemini/oauth_creds.json`. Newer Gemini CLI installations may use
+  an operating-system keychain and therefore have no JSON file; use a Gemini
+  API key unless you deliberately have an exportable credential file. Imported
+  refresh tokens also require `GEMINI_OAUTH_CLIENT_ID` and
+  `GEMINI_OAUTH_CLIENT_SECRET` to contain the OAuth client pair that originally
+  issued the token; the project never embeds or publishes third-party client
+  credentials.
+
+Claude Code and Codex OAuth-generated profiles appear directly in the
+candidate and judge selectors; no second manual model-ID step is required.
+Claude Code OAuth uses the official Agent SDK with all built-in tools,
+settings, skills, plugins, MCP servers, and session persistence disabled. It
+receives only a schema-constrained next-action interface; EvilBench still
+executes and records every repository, Git, database, Browser, and incident
+tool. For Gemini OAuth, choose **Google Gemini native API** and bind the
+matching credential. Gemini API keys call the standard Generative Language
+endpoint; Gemini OAuth calls the Code Assist endpoint and may require completed
+Gemini CLI onboarding. Incompatible combinations are rejected by both the UI
+and API.
+
+Setup tokens, `auth.json`, and `oauth_creds.json` must be treated like
+passwords. Store them only in an EvilBench deployment you control, keep
+`APP_SECRET` stable and private, and use HTTPS for a remote deployment.
+Anthropic documents `claude setup-token` for CI and scripts, but also
+[prohibits third-party services from offering Claude.ai login or routing
+Free/Pro/Max credentials on users' behalf](https://code.claude.com/docs/en/legal-and-compliance).
+This integration is therefore for self-hosted personal or organization-internal
+use. A public service must use Anthropic Console API keys or a supported cloud
+provider. Codex subscription access is likewise distinct from a Platform API
+key; operators remain responsible for account and organization policy.
 
 ## External deployment
 

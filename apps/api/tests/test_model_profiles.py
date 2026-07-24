@@ -198,3 +198,54 @@ def test_archived_profile_cannot_be_selected_for_a_new_run() -> None:
 
         assert error.value.status_code == 400
         assert error.value.detail == "Unknown task or candidate model"
+
+
+def test_create_run_freezes_task_identity_for_historical_display() -> None:
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        user = make_user()
+        candidate = make_model("candidate")
+        task = make_task()
+        task.version = "3.0.4"
+        task.manifest = {
+            "localizations": {
+                "zh-CN": {
+                    "name": "归档场景",
+                    "description": "归档时的说明",
+                }
+            }
+        }
+        session.add_all([user, candidate, task])
+        session.flush()
+        session.add(
+            UserModelAccess(
+                user_id=user.id,
+                model_profile_id=candidate.id,
+            )
+        )
+        session.commit()
+
+        run = create_run(
+            RunCreate(
+                task_id=task.id,
+                candidate_model_id=candidate.id,
+            ),
+            session,
+            user,
+        )
+
+        assert run.config["task_snapshot"] == {
+            "id": str(task.id),
+            "slug": "archive-test",
+            "version": "3.0.4",
+            "name": "Archive test",
+            "description": "Test model lifecycle",
+            "localizations": {
+                "zh-CN": {
+                    "name": "归档场景",
+                    "description": "归档时的说明",
+                }
+            },
+        }

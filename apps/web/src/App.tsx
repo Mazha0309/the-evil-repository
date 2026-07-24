@@ -54,6 +54,8 @@ import {
   lazy,
   type ReactNode,
   Suspense,
+  useEffect,
+  useMemo,
   useState,
 } from "react";
 import {
@@ -64,10 +66,12 @@ import {
   Routes,
   useNavigate,
   useParams,
+  useSearchParams,
 } from "react-router-dom";
 import AccountPage from "./components/AccountPage";
 import AdminPage from "./components/AdminPage";
 import AuthScreen from "./components/AuthScreen";
+import CredentialsPage from "./components/CredentialsPage";
 import LiveRunMonitor from "./components/LiveRunMonitor";
 import { api, ApiError } from "./lib/api";
 import { useLocale } from "./lib/i18n";
@@ -81,13 +85,16 @@ import {
   serviceTierOptions,
   type ModelParameterDraft,
 } from "./lib/modelParameters";
+import { resolveRunModel, type RunModelIdentity } from "./lib/runModels";
 import {
-  resolveRunModel,
-  type RunModelIdentity,
-} from "./lib/runModels";
+  orderTasks,
+  resolveRunTask,
+  type RunTaskIdentity,
+} from "./lib/runTasks";
 import type {
   AuthConfig,
   AuthResponse,
+  CredentialKind,
   ModelProfile,
   ModelProvider,
   Run,
@@ -169,6 +176,11 @@ function ControlPlane({
             to="/models"
             icon={<Bot size={17} />}
             label={text("模型配置", "Model profiles")}
+          />
+          <NavItem
+            to="/credentials"
+            icon={<KeyRound size={17} />}
+            label={text("认证中心", "Credentials")}
           />
           <NavItem
             to="/runs"
@@ -257,6 +269,7 @@ function ControlPlane({
             <Route path="/" element={<DashboardPage />} />
             <Route path="/scenarios" element={<ScenariosPage />} />
             <Route path="/models" element={<ModelsPage />} />
+            <Route path="/credentials" element={<CredentialsPage />} />
             <Route path="/runs" element={<RunsPage />} />
             <Route path="/runs/new" element={<NewRunPage />} />
             <Route path="/runs/:runId" element={<RunDetailPage />} />
@@ -319,7 +332,8 @@ function DashboardPage() {
   const models = useQuery({ queryKey: ["models"], queryFn: api.models });
   const tasks = useQuery({ queryKey: ["tasks"], queryFn: api.tasks });
   const data = summary.data;
-  const spotlight = tasks.data?.[0];
+  const orderedTasks = orderTasks(tasks.data ?? []);
+  const spotlight = orderedTasks[0];
   const spotlightPressure = spotlight?.manifest.context_pressure;
   const spotlightBudget = spotlight?.manifest.budget;
   return (
@@ -387,6 +401,7 @@ function DashboardPage() {
           <RunTable
             runs={runs.data ?? []}
             models={models.data ?? []}
+            tasks={orderedTasks}
             compact
           />
         </section>
@@ -499,7 +514,10 @@ function ScenariosPage() {
     <>
       <PageHeader
         eyebrow="SCENARIO SDK"
-        title={text("版本化的工程调查世界。", "Engineering investigations, versioned.")}
+        title={text(
+          "版本化的工程调查世界。",
+          "Engineering investigations, versioned.",
+        )}
         description={text(
           "每个场景独立封装仓库、可选数据源、冲突证据、故障脚本、隐藏裁判、回放契约与离线互联网。",
           "Each scenario owns its repositories, optional data stores, conflicting evidence, failure scripts, hidden judge, replay contract, and offline internet.",
@@ -545,7 +563,7 @@ function ScenariosPage() {
         </section>
       )}
       <div className="card-stack">
-        {(tasks.data ?? []).map((task) => (
+        {orderTasks(tasks.data ?? []).map((task) => (
           <ScenarioCard key={task.id} task={task} />
         ))}
         {!tasks.isLoading && !tasks.data?.length && (
@@ -649,6 +667,10 @@ function ModelsPage() {
   const { text } = useLocale();
   const queryClient = useQueryClient();
   const models = useQuery({ queryKey: ["models"], queryFn: api.models });
+  const credentials = useQuery({
+    queryKey: ["credentials"],
+    queryFn: api.credentials,
+  });
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<ModelProfile | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<ModelProfile | null>(null);
@@ -656,6 +678,7 @@ function ModelsPage() {
   const [deleteError, setDeleteError] = useState("");
   const [provider, setProvider] = useState<ModelProvider>("openai_responses");
   const [baseUrl, setBaseUrl] = useState("");
+  const [credentialId, setCredentialId] = useState("");
   const [parameterDraft, setParameterDraft] = useState<ModelParameterDraft>(
     emptyModelParameterDraft,
   );
@@ -700,6 +723,7 @@ function ModelsPage() {
     setEditing(null);
     setProvider("openai_responses");
     setBaseUrl("");
+    setCredentialId("");
     setParameterDraft(emptyModelParameterDraft());
     setError("");
     setOpen(true);
@@ -708,6 +732,7 @@ function ModelsPage() {
     setEditing(model);
     setProvider(model.provider);
     setBaseUrl(model.base_url);
+    setCredentialId(model.credential_id ?? "");
     setParameterDraft(
       decomposeModelParameters(model.provider, model.parameters),
     );
@@ -745,6 +770,15 @@ function ModelsPage() {
       return;
     }
     const apiKey = String(data.get("api_key") ?? "");
+    if (provider !== "ollama" && !credentialId && !apiKey) {
+      setError(
+        text(
+          "请选择兼容凭据，或输入新的 API Key。",
+          "Choose a compatible credential or enter a new API key.",
+        ),
+      );
+      return;
+    }
     const payload: Record<string, unknown> = {
       name: data.get("name"),
       provider,
@@ -754,15 +788,27 @@ function ModelsPage() {
       parameters,
       enabled: data.get("enabled") === "on",
     };
-    if (!editing || apiKey) payload.api_key = apiKey || null;
-    if (editing && !apiKey && data.get("clear_api_key") === "on") {
-      payload.api_key = null;
+    if (apiKey) {
+      payload.api_key = apiKey;
+    } else {
+      payload.credential_id = credentialId || null;
     }
     save.mutate({ id: editing?.id, payload });
   };
   const fieldNames = parameterFieldNames(provider);
   const effortOptions = reasoningOptions(provider);
-  const tierOptions = serviceTierOptions(provider);
+  const compatibleCredentials = (credentials.data ?? []).filter((credential) =>
+    credentialSupportsProvider(credential.kind, provider),
+  );
+  const selectedCredential = (credentials.data ?? []).find(
+    (credential) => credential.id === credentialId,
+  );
+  const isClaudeCodeOAuth =
+    provider === "anthropic" &&
+    selectedCredential?.kind === "anthropic_oauth";
+  const tierOptions = isClaudeCodeOAuth
+    ? []
+    : serviceTierOptions(provider);
   return (
     <>
       <PageHeader
@@ -787,7 +833,11 @@ function ModelsPage() {
               </div>
               <div>
                 <h3>{model.name}</h3>
-                <span>{providerLabel(model.provider)}</span>
+                <span>
+                  {model.credential_kind === "anthropic_oauth"
+                    ? "Claude Code OAuth · Agent SDK"
+                    : providerLabel(model.provider)}
+                </span>
               </div>
               <div className="model-card__actions">
                 <button
@@ -835,11 +885,26 @@ function ModelsPage() {
               <div>
                 <dt>{text("凭据", "Credential")}</dt>
                 <dd className={model.has_api_key ? "text-safe" : ""}>
-                  {model.has_api_key
-                    ? text("已加密", "Encrypted")
-                    : text("无需提供", "Not required")}
+                  {model.credential_name ??
+                    (model.has_api_key
+                      ? text("旧版加密密钥", "Legacy encrypted key")
+                      : text("未配置", "Not configured"))}
                 </dd>
               </div>
+              {model.credential_status && (
+                <div>
+                  <dt>{text("认证状态", "Auth status")}</dt>
+                  <dd
+                    className={
+                      model.credential_status === "ready"
+                        ? "text-safe"
+                        : "text-warning"
+                    }
+                  >
+                    {model.credential_status}
+                  </dd>
+                </div>
+              )}
             </dl>
             <div className="model-card__parameters">
               <span>
@@ -865,7 +930,9 @@ function ModelsPage() {
           <button className="model-card model-card--empty" onClick={openCreate}>
             <Plus size={28} />
             <strong>{text("添加第一个模型", "Add your first model")}</strong>
-            <span>OpenAI Responses · Anthropic · Compatible · Ollama</span>
+            <span>
+              OpenAI · Anthropic · Codex OAuth · Gemini · Compatible · Ollama
+            </span>
           </button>
         )}
       </div>
@@ -886,8 +953,8 @@ function ModelsPage() {
                 </strong>
                 <p>
                   {text(
-                    "API 密钥、BaseURL 与推理参数会被清除；历史运行及其冻结的模型身份会保留。若仍有进行中的测试使用该配置，删除会被阻止。",
-                    "The API key, Base URL, and inference parameters will be erased. Historical runs and their frozen model identity remain. Deletion is blocked while an active run uses this profile.",
+                    "BaseURL、推理参数和凭据引用会从此配置清除；认证中心里的可复用凭据不会被顺带删除。历史运行及其冻结的模型身份会保留。若仍有进行中的测试使用该配置，删除会被阻止。",
+                    "The Base URL, inference parameters, and credential reference will be cleared from this profile. A reusable vault credential is not deleted with it. Historical runs and their frozen model identity remain. Deletion is blocked while an active run uses this profile.",
                   )}
                 </p>
               </div>
@@ -963,7 +1030,16 @@ function ModelsPage() {
                 onChange={(event) => {
                   const next = event.target.value as ModelProvider;
                   setProvider(next);
-                  setBaseUrl("");
+                  setBaseUrl(next === "codex" ? providerDefaultUrl(next) : "");
+                  setCredentialId((current) => {
+                    const selected = credentials.data?.find(
+                      (item) => item.id === current,
+                    );
+                    return selected &&
+                      credentialSupportsProvider(selected.kind, next)
+                      ? current
+                      : "";
+                  });
                   setParameterDraft((current) => ({
                     ...current,
                     reasoningEffort: "",
@@ -972,17 +1048,39 @@ function ModelsPage() {
                 }}
               >
                 <option value="openai_responses">OpenAI Responses API</option>
-                <option value="anthropic">Anthropic Messages API</option>
+                <option value="anthropic">
+                  Anthropic (Messages API / Claude Code OAuth)
+                </option>
+                <option value="codex">
+                  Codex OAuth (ChatGPT subscription)
+                </option>
+                <option value="gemini">Google Gemini native API</option>
                 <option value="openai_compatible">OpenAI-compatible API</option>
                 <option value="ollama">Ollama</option>
               </select>
             </Field>
-            <Field label={text("基础 URL", "Base URL")}>
+            <Field
+              label={text("基础 URL", "Base URL")}
+              hint={
+                provider === "codex"
+                  ? text(
+                      "OAuth 令牌强制锁定到 OpenAI 官方 Codex 后端。",
+                      "OAuth tokens are pinned to the official OpenAI Codex backend.",
+                    )
+                  : isClaudeCodeOAuth
+                    ? text(
+                        "Claude Code OAuth 由官方 Agent SDK 消费；自定义 URL 不会生效。",
+                        "Claude Code OAuth is consumed by the official Agent SDK; custom URLs do not apply.",
+                      )
+                  : undefined
+              }
+            >
               <input
                 name="base_url"
                 type="url"
                 required
                 value={baseUrl}
+                readOnly={provider === "codex" || isClaudeCodeOAuth}
                 placeholder={providerDefaultUrl(provider)}
                 onChange={(event) => setBaseUrl(event.target.value)}
               />
@@ -996,31 +1094,91 @@ function ModelsPage() {
               />
             </Field>
             <Field
-              label="API key"
+              label={text("已保存凭据", "Saved credential")}
               hint={text(
-                editing?.has_api_key
-                  ? "已保存加密凭据；留空会保留原密钥。"
-                  : "静态加密保存；使用 Ollama 时可留空。",
-                editing?.has_api_key
-                  ? "An encrypted credential is stored; leave blank to keep it."
-                  : "Encrypted at rest; leave blank for Ollama.",
+                "凭据可被多个模型配置复用；只显示名称和状态，不显示密文。",
+                "Credentials can be reused by multiple profiles; only names and status are shown.",
               )}
             >
-              <input
-                name="api_key"
-                type="password"
-                autoComplete="new-password"
-              />
+              <select
+                value={credentialId}
+                onChange={(event) => {
+                  const nextCredentialId = event.target.value;
+                  setCredentialId(nextCredentialId);
+                  const nextCredential = credentials.data?.find(
+                    (item) => item.id === nextCredentialId,
+                  );
+                  if (
+                    provider === "anthropic" &&
+                    nextCredential?.kind === "anthropic_oauth"
+                  ) {
+                    setBaseUrl("https://api.anthropic.com");
+                    setParameterDraft((current) => ({
+                      ...current,
+                      temperature: "",
+                      topP: "",
+                      maxOutputTokens: "",
+                      serviceTier: "",
+                    }));
+                  }
+                }}
+              >
+                <option value="">
+                  {provider === "ollama"
+                    ? text("无凭据", "No credential")
+                    : text("选择凭据…", "Choose a credential…")}
+                </option>
+                {editing?.credential_id &&
+                  !compatibleCredentials.some(
+                    (credential) => credential.id === editing.credential_id,
+                  ) && (
+                    <option value={editing.credential_id}>
+                      {editing.credential_name ??
+                        text("当前受管凭据", "Current managed credential")}{" "}
+                      · {editing.credential_status ?? "unknown"}
+                    </option>
+                  )}
+                {compatibleCredentials.map((credential) => (
+                  <option key={credential.id} value={credential.id}>
+                    {credential.name} · {credential.kind} · {credential.status}
+                  </option>
+                ))}
+              </select>
             </Field>
-            {editing?.has_api_key && (
-              <label className="check-row check-row--compact">
-                <input name="clear_api_key" type="checkbox" />
-                <span>
-                  <strong>
-                    {text("清除已保存密钥", "Clear stored API key")}
-                  </strong>
-                </span>
-              </label>
+            <div className="credential-form-link">
+              <KeyRound size={13} />
+              <span>
+                {compatibleCredentials.length
+                  ? text(
+                      "需要另一份登录？前往认证中心添加。",
+                      "Need another sign-in? Add it in the credential vault.",
+                    )
+                  : text(
+                      "没有兼容凭据，请先到认证中心添加。",
+                      "No compatible credential. Add one in the credential vault first.",
+                    )}
+              </span>
+              <Link to="/credentials" onClick={closeForm}>
+                {text("打开认证中心", "Open credentials")}
+              </Link>
+            </div>
+            {provider !== "codex" && !isClaudeCodeOAuth && (
+              <Field
+                label={text(
+                  "快速添加 API Key（可选）",
+                  "Quick-add API key (optional)",
+                )}
+                hint={text(
+                  "输入后会新建可复用的加密凭据，并覆盖上面的选择；留空则使用所选凭据。",
+                  "Entering a key creates a reusable encrypted credential and overrides the selection above; leave blank to use the selection.",
+                )}
+              >
+                <input
+                  name="api_key"
+                  type="password"
+                  autoComplete="new-password"
+                />
+              </Field>
             )}
             <div className="form-section-heading">
               <SlidersHorizontal size={14} />
@@ -1034,59 +1192,87 @@ function ModelsPage() {
                 </small>
               </div>
             </div>
+            {provider === "codex" && (
+              <div className="credential-import-warning">
+                <AlertTriangle size={14} />
+                <span>
+                  {text(
+                    "Codex 订阅后端自行管理采样与输出预算；此协议只发送 reasoning.effort 和受支持的高级字段。",
+                    "The Codex subscription backend controls sampling and output budget; this protocol only sends reasoning.effort and supported advanced fields.",
+                  )}
+                </span>
+              </div>
+            )}
+            {isClaudeCodeOAuth && (
+              <div className="credential-import-warning">
+                <AlertTriangle size={14} />
+                <span>
+                  {text(
+                    "Claude Code OAuth 使用官方 Agent SDK 的模型与采样默认值。平台仅传递推理挡位；温度、Top P、输出上限和服务挡位不会伪装成 Messages API 参数。",
+                    "Claude Code OAuth uses the official Agent SDK's model and sampling defaults. The platform passes only reasoning effort; temperature, Top P, output limits, and service tier are not disguised as Messages API parameters.",
+                  )}
+                </span>
+              </div>
+            )}
             <div className="model-parameter-grid">
-              <Field
-                label={text("温度", "Temperature")}
-                hint={text("范围 0–2。", "Range 0–2.")}
-              >
-                <input
-                  type="number"
-                  min="0"
-                  max="2"
-                  step="0.01"
-                  value={parameterDraft.temperature}
-                  placeholder={text("默认", "default")}
-                  onChange={(event) =>
-                    updateParameter("temperature", event.target.value)
-                  }
-                />
-              </Field>
-              <Field
-                label="Top P"
-                hint={text(
-                  "范围 0–1；通常只调整它或温度之一。",
-                  "Range 0–1; normally tune this or temperature, not both.",
-                )}
-              >
-                <input
-                  type="number"
-                  min="0"
-                  max="1"
-                  step="0.01"
-                  value={parameterDraft.topP}
-                  placeholder={text("默认", "default")}
-                  onChange={(event) =>
-                    updateParameter("topP", event.target.value)
-                  }
-                />
-              </Field>
-              <Field
-                label={text("最大输出 Token", "Maximum output tokens")}
-                hint={fieldNames.maxOutputTokens}
-              >
-                <input
-                  type="number"
-                  min="1"
-                  step="1"
-                  value={parameterDraft.maxOutputTokens}
-                  placeholder={
-                    provider === "anthropic" ? "8192" : text("默认", "default")
-                  }
-                  onChange={(event) =>
-                    updateParameter("maxOutputTokens", event.target.value)
-                  }
-                />
-              </Field>
+              {provider !== "codex" && !isClaudeCodeOAuth && (
+                <>
+                  <Field
+                    label={text("温度", "Temperature")}
+                    hint={text("范围 0–2。", "Range 0–2.")}
+                  >
+                    <input
+                      type="number"
+                      min="0"
+                      max="2"
+                      step="0.01"
+                      value={parameterDraft.temperature}
+                      placeholder={text("默认", "default")}
+                      onChange={(event) =>
+                        updateParameter("temperature", event.target.value)
+                      }
+                    />
+                  </Field>
+                  <Field
+                    label="Top P"
+                    hint={text(
+                      "范围 0–1；通常只调整它或温度之一。",
+                      "Range 0–1; normally tune this or temperature, not both.",
+                    )}
+                  >
+                    <input
+                      type="number"
+                      min="0"
+                      max="1"
+                      step="0.01"
+                      value={parameterDraft.topP}
+                      placeholder={text("默认", "default")}
+                      onChange={(event) =>
+                        updateParameter("topP", event.target.value)
+                      }
+                    />
+                  </Field>
+                  <Field
+                    label={text("最大输出 Token", "Maximum output tokens")}
+                    hint={fieldNames.maxOutputTokens}
+                  >
+                    <input
+                      type="number"
+                      min="1"
+                      step="1"
+                      value={parameterDraft.maxOutputTokens}
+                      placeholder={
+                        provider === "anthropic"
+                          ? "8192"
+                          : text("默认", "default")
+                      }
+                      onChange={(event) =>
+                        updateParameter("maxOutputTokens", event.target.value)
+                      }
+                    />
+                  </Field>
+                </>
+              )}
               <Field
                 label={
                   provider === "ollama"
@@ -1232,14 +1418,60 @@ function ModelsPage() {
 }
 
 function RunsPage() {
-  const { text } = useLocale();
+  const { isChinese, text } = useLocale();
   const [archiveTarget, setArchiveTarget] = useState<Run | null>(null);
+  const [search, setSearch] = useState("");
+  const [scenarioFilter, setScenarioFilter] = useState("");
+  const [modelFilter, setModelFilter] = useState("");
+  const [statusFilter, setStatusFilter] = useState("");
   const runs = useQuery({
     queryKey: ["runs"],
     queryFn: api.runs,
     refetchInterval: 4_000,
   });
   const models = useQuery({ queryKey: ["models"], queryFn: api.models });
+  const tasks = useQuery({ queryKey: ["tasks"], queryFn: api.tasks });
+  const orderedTasks = useMemo(
+    () => orderTasks(tasks.data ?? []),
+    [tasks.data],
+  );
+  const allRuns = useMemo(() => runs.data ?? [], [runs.data]);
+  const filteredRuns = useMemo(() => {
+    const needle = search.trim().toLocaleLowerCase();
+    return allRuns.filter((run) => {
+      if (scenarioFilter && run.task_id !== scenarioFilter) return false;
+      if (modelFilter && run.candidate_model_id !== modelFilter) return false;
+      if (statusFilter && run.status !== statusFilter) return false;
+      if (!needle) return true;
+      const task = resolveRunTask(run, orderedTasks, isChinese);
+      const model = resolveRunModel(run, "candidate", models.data ?? []);
+      return [
+        run.id,
+        run.stage,
+        run.status,
+        task.name,
+        task.slug,
+        task.version,
+        model.name,
+        model.modelId,
+        model.provider,
+      ]
+        .filter((value): value is string => Boolean(value))
+        .some((value) => value.toLocaleLowerCase().includes(needle));
+    });
+  }, [
+    allRuns,
+    isChinese,
+    modelFilter,
+    models.data,
+    orderedTasks,
+    scenarioFilter,
+    search,
+    statusFilter,
+  ]);
+  const filtersActive = Boolean(
+    search || scenarioFilter || modelFilter || statusFilter,
+  );
   return (
     <>
       <PageHeader
@@ -1263,14 +1495,94 @@ function RunsPage() {
           </span>
           <span className="toolbar__count">
             {text(
-              `${runs.data?.length ?? 0} 条记录`,
-              `${runs.data?.length ?? 0} records`,
+              `${filteredRuns.length} / ${allRuns.length} 条记录`,
+              `${filteredRuns.length} / ${allRuns.length} records`,
             )}
           </span>
         </div>
+        <div className="run-filters">
+          <label className="run-filter run-filter--search">
+            <span>{text("搜索", "Search")}</span>
+            <input
+              type="search"
+              value={search}
+              placeholder={text(
+                "运行 ID、场景、模型或阶段",
+                "Run ID, scenario, model, or stage",
+              )}
+              onChange={(event) => setSearch(event.target.value)}
+            />
+          </label>
+          <label className="run-filter">
+            <span>{text("场景", "Scenario")}</span>
+            <select
+              value={scenarioFilter}
+              onChange={(event) => setScenarioFilter(event.target.value)}
+            >
+              <option value="">{text("全部场景", "All scenarios")}</option>
+              {orderedTasks.map((task) => (
+                <option key={task.id} value={task.id}>
+                  {taskCopy(task, isChinese).name} · {task.version}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="run-filter">
+            <span>{text("模型", "Model")}</span>
+            <select
+              value={modelFilter}
+              onChange={(event) => setModelFilter(event.target.value)}
+            >
+              <option value="">{text("全部模型", "All models")}</option>
+              {(models.data ?? []).map((model) => (
+                <option key={model.id} value={model.id}>
+                  {model.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="run-filter">
+            <span>{text("状态", "Status")}</span>
+            <select
+              value={statusFilter}
+              onChange={(event) => setStatusFilter(event.target.value)}
+            >
+              <option value="">{text("全部状态", "All statuses")}</option>
+              {(
+                [
+                  "queued",
+                  "preparing",
+                  "running",
+                  "scoring",
+                  "completed",
+                  "failed",
+                  "cancelled",
+                ] as RunStatus[]
+              ).map((status) => (
+                <option key={status} value={status}>
+                  {statusLabel(status, isChinese ? "zh-CN" : "en")}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button
+            className="button button--ghost button--small run-filters__clear"
+            type="button"
+            disabled={!filtersActive}
+            onClick={() => {
+              setSearch("");
+              setScenarioFilter("");
+              setModelFilter("");
+              setStatusFilter("");
+            }}
+          >
+            <X size={13} /> {text("清除", "Clear")}
+          </button>
+        </div>
         <RunTable
-          runs={runs.data ?? []}
+          runs={filteredRuns}
           models={models.data ?? []}
+          tasks={orderedTasks}
           onArchive={setArchiveTarget}
         />
       </section>
@@ -1288,24 +1600,42 @@ function RunsPage() {
 function NewRunPage() {
   const { isChinese, text } = useLocale();
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const tasks = useQuery({ queryKey: ["tasks"], queryFn: api.tasks });
   const models = useQuery({ queryKey: ["models"], queryFn: api.models });
   const enabledModels = (models.data ?? []).filter((model) => model.enabled);
-  const [selectedTaskId, setSelectedTaskId] = useState("");
+  const requestedTaskId = searchParams.get("task") ?? "";
+  const orderedTasks = useMemo(
+    () => orderTasks(tasks.data ?? []),
+    [tasks.data],
+  );
+  const [selectedTaskId, setSelectedTaskId] = useState(requestedTaskId);
   const [error, setError] = useState("");
+  useEffect(() => {
+    if (!orderedTasks.length) return;
+    const requestedExists = orderedTasks.some(
+      (task) => task.id === requestedTaskId,
+    );
+    const selectedExists = orderedTasks.some(
+      (task) => task.id === selectedTaskId,
+    );
+    const nextTaskId = requestedExists
+      ? requestedTaskId
+      : selectedExists
+        ? selectedTaskId
+        : orderedTasks[0].id;
+    if (nextTaskId !== selectedTaskId) setSelectedTaskId(nextTaskId);
+  }, [orderedTasks, requestedTaskId, selectedTaskId]);
   const selectedTask =
-    (tasks.data ?? []).find((task) => task.id === selectedTaskId) ??
-    tasks.data?.[0];
+    orderedTasks.find((task) => task.id === selectedTaskId) ?? orderedTasks[0];
   const selectedBudget = selectedTask?.manifest.budget;
   const budgetDefaults = {
     softSeconds: selectedBudget?.soft_seconds ?? 5_400,
     hardSeconds: selectedBudget?.hard_seconds ?? 10_800,
     softToolCalls: selectedBudget?.soft_tool_calls ?? 600,
     hardToolCalls: selectedBudget?.hard_tool_calls ?? 2_200,
-    softProviderRequests:
-      selectedBudget?.soft_provider_requests ?? 300,
-    hardProviderRequests:
-      selectedBudget?.hard_provider_requests ?? 720,
+    softProviderRequests: selectedBudget?.soft_provider_requests ?? 300,
+    hardProviderRequests: selectedBudget?.hard_provider_requests ?? 720,
   };
   const create = useMutation({
     mutationFn: api.createRun,
@@ -1358,14 +1688,17 @@ function NewRunPage() {
             detail={text("版本化世界包", "Versioned world package")}
           />
           <div className="choice-grid">
-            {(tasks.data ?? []).map((task, index) => (
+            {orderedTasks.map((task) => (
               <label className="choice-card" key={task.id}>
                 <input
                   type="radio"
                   name="task_id"
                   value={task.id}
-                  defaultChecked={index === 0}
-                  onChange={() => setSelectedTaskId(task.id)}
+                  checked={task.id === selectedTask?.id}
+                  onChange={() => {
+                    setSelectedTaskId(task.id);
+                    setSearchParams({ task: task.id }, { replace: true });
+                  }}
                 />
                 <div className="choice-card__check">
                   <CheckCircle2 size={16} />
@@ -1391,7 +1724,8 @@ function NewRunPage() {
                 </option>
                 {enabledModels.map((model) => (
                   <option value={model.id} key={model.id}>
-                    {model.name} · {model.model_id}
+                    {model.name} · {providerLabel(model.provider)} ·{" "}
+                    {model.model_id}
                   </option>
                 ))}
               </select>
@@ -1409,7 +1743,7 @@ function NewRunPage() {
                 </option>
                 {enabledModels.map((model) => (
                   <option value={model.id} key={model.id}>
-                    {model.name}
+                    {model.name} · {providerLabel(model.provider)}
                   </option>
                 ))}
               </select>
@@ -1488,14 +1822,8 @@ function NewRunPage() {
               />
             </Field>
             <Field
-              label={text(
-                "软 Provider 请求限制",
-                "Soft Provider requests",
-              )}
-              hint={text(
-                "包含 429 / 5xx 重试",
-                "Includes 429 / 5xx retries",
-              )}
+              label={text("软 Provider 请求限制", "Soft Provider requests")}
+              hint={text("包含 429 / 5xx 重试", "Includes 429 / 5xx retries")}
             >
               <input
                 name="soft_provider_requests"
@@ -1505,14 +1833,8 @@ function NewRunPage() {
               />
             </Field>
             <Field
-              label={text(
-                "硬 Provider 请求限制",
-                "Hard Provider requests",
-              )}
-              hint={text(
-                "真实 HTTP 请求上限",
-                "Raw HTTP request cap",
-              )}
+              label={text("硬 Provider 请求限制", "Hard Provider requests")}
+              hint={text("真实 HTTP 请求上限", "Raw HTTP request cap")}
             >
               <input
                 name="hard_provider_requests"
@@ -1590,7 +1912,7 @@ function NewRunPage() {
 }
 
 function RunDetailPage() {
-  const { locale, text } = useLocale();
+  const { isChinese, locale, text } = useLocale();
   const { runId = "" } = useParams();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -1688,11 +2010,8 @@ function RunDetailPage() {
   const taskManifest = tasks.data?.find(
     (task) => task.id === data.task_id,
   )?.manifest;
-  const candidateModel = resolveRunModel(
-    data,
-    "candidate",
-    models.data ?? [],
-  );
+  const candidateModel = resolveRunModel(data, "candidate", models.data ?? []);
+  const runTask = resolveRunTask(data, tasks.data ?? [], isChinese);
   const completion = taskManifest?.completion;
   const pauseRequested = data.config.pause_requested === true;
   const maximumScore = Math.max(1, data.scorecard.maximum ?? 1_200);
@@ -1703,10 +2022,7 @@ function RunDetailPage() {
       <div className="run-hero">
         <div className="run-hero__heading">
           <div className="run-hero__meta">
-            <StatusPill
-              status={data.status}
-              censored={isCensoredRun(data)}
-            />
+            <StatusPill status={data.status} censored={isCensoredRun(data)} />
             <span>{shortId(data.id)}</span>
             <span>{new Date(data.created_at).toLocaleString(locale)}</span>
           </div>
@@ -1724,16 +2040,21 @@ function RunDetailPage() {
                   "The run reached a hard budget. Its score is a partial evaluation of a censored trajectory, not a completed solution.",
                 )
               : data.status === "completed"
-              ? text(
-                  "隐藏裁判流水线已经归档本次调查。",
-                  "The hidden judge pipeline has archived this investigation.",
-                )
-              : text(
-                  "Runner 正在从隔离候选环境中流式传输可观察的调查状态。",
-                  "The Runner is streaming observable investigation state from the isolated candidate.",
-                )}
+                ? text(
+                    "隐藏裁判流水线已经归档本次调查。",
+                    "The hidden judge pipeline has archived this investigation.",
+                  )
+                : text(
+                    "Runner 正在从隔离候选环境中流式传输可观察的调查状态。",
+                    "The Runner is streaming observable investigation state from the isolated candidate.",
+                  )}
           </p>
           <div className="run-model-strip">
+            <RunTaskBadge
+              identity={runTask}
+              label={text("测试场景", "Scenario")}
+              unknown={text("未知场景", "Unknown scenario")}
+            />
             <RunModelBadge
               identity={candidateModel}
               label={text("候选模型", "Candidate")}
@@ -2035,13 +2356,18 @@ function RunDetailPage() {
         </div>
       )}
       <div className="run-footer-actions">
-        <a className="button button--ghost" href={api.reportUrl(data.id)}>
-          <Download size={14} /> {text("导出报告", "Export report")}
+        <a
+          className="button button--ghost"
+          href={api.reportUrl(data.id)}
+          download={`run-${data.id}-telemetry.json`}
+        >
+          <Download size={14} /> {text("导出完整遥测", "Export full telemetry")}
         </a>
         {artifacts.data?.map((artifact) => (
           <a
             className="button button--ghost"
             href={api.runArtifactUrl(data.id, artifact.id)}
+            download={artifact.name}
             key={artifact.id}
           >
             <Download size={14} />{" "}
@@ -2655,15 +2981,17 @@ function SettingsPage() {
 function RunTable({
   runs,
   models,
+  tasks,
   compact = false,
   onArchive,
 }: {
   runs: Run[];
   models: ModelProfile[];
+  tasks: Task[];
   compact?: boolean;
   onArchive?: (run: Run) => void;
 }) {
-  const { locale, text } = useLocale();
+  const { isChinese, locale, text } = useLocale();
   if (!runs.length) {
     return (
       <EmptyState
@@ -2681,6 +3009,7 @@ function RunTable({
         <thead>
           <tr>
             <th>{text("运行", "Run")}</th>
+            <th>{text("场景", "Scenario")}</th>
             <th>{text("模型", "Model")}</th>
             <th>{text("状态", "Status")}</th>
             <th>{text("阶段", "Stage")}</th>
@@ -2693,14 +3022,25 @@ function RunTable({
         <tbody>
           {runs.slice(0, compact ? 8 : 200).map((run) => {
             const model = resolveRunModel(run, "candidate", models);
+            const task = resolveRunTask(run, tasks, isChinese);
             return (
               <tr key={run.id}>
                 <td data-cell="run" data-label={text("运行", "Run")}>
                   <code>{shortId(run.id)}</code>
                 </td>
+                <td data-cell="scenario" data-label={text("场景", "Scenario")}>
+                  <span className="table-scenario">
+                    <strong>
+                      {task.name ?? text("未知场景", "Unknown scenario")}
+                    </strong>
+                    {task.version && <small>v{task.version}</small>}
+                  </span>
+                </td>
                 <td data-cell="model" data-label={text("模型", "Model")}>
                   <span className="table-model">
-                    <strong>{model.name ?? text("未知模型", "Unknown model")}</strong>
+                    <strong>
+                      {model.name ?? text("未知模型", "Unknown model")}
+                    </strong>
                   </span>
                 </td>
                 <td data-cell="status" data-label={text("状态", "Status")}>
@@ -2758,6 +3098,29 @@ function RunTable({
           })}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+function RunTaskBadge({
+  identity,
+  label,
+  unknown,
+}: {
+  identity: RunTaskIdentity;
+  label: string;
+  unknown: string;
+}) {
+  return (
+    <div className="run-model-badge run-task-badge">
+      <Blocks size={15} />
+      <span>
+        <small>{label}</small>
+        <strong>
+          {identity.name ?? unknown}
+          {identity.version ? ` · v${identity.version}` : ""}
+        </strong>
+      </span>
     </div>
   );
 }
@@ -2859,20 +3222,19 @@ function StatusPill({
   censored?: boolean;
 }) {
   const { locale, text } = useLocale();
-  const icon =
-    censored ? (
-      <AlertTriangle />
-    ) : status === "completed" ? (
-      <CheckCircle2 />
-    ) : status === "failed" ? (
-      <XCircle />
-    ) : status === "cancelled" ? (
-      <X />
-    ) : status === "queued" ? (
-      <Clock3 />
-    ) : (
-      <CircleDot />
-    );
+  const icon = censored ? (
+    <AlertTriangle />
+  ) : status === "completed" ? (
+    <CheckCircle2 />
+  ) : status === "failed" ? (
+    <XCircle />
+  ) : status === "cancelled" ? (
+    <X />
+  ) : status === "queued" ? (
+    <Clock3 />
+  ) : (
+    <CircleDot />
+  );
   return (
     <span
       className={`status-pill status-pill--${censored ? "censored" : status}`}
@@ -2894,8 +3256,7 @@ function censoredReasons(run: Run): string[] {
 
 function isCensoredRun(run: Run): boolean {
   return (
-    run.scorecard.outcome?.censored === true ||
-    censoredReasons(run).length > 0
+    run.scorecard.outcome?.censored === true || censoredReasons(run).length > 0
   );
 }
 
@@ -3173,6 +3534,8 @@ function providerLabel(provider: ModelProvider) {
   const labels: Record<ModelProvider, string> = {
     openai_responses: "OpenAI Responses API",
     anthropic: "Anthropic Messages API",
+    codex: "Codex OAuth · ChatGPT subscription",
+    gemini: "Google Gemini native API",
     openai_compatible: "OpenAI-compatible Chat Completions",
     ollama: "Ollama",
   };
@@ -3183,10 +3546,26 @@ function providerDefaultUrl(provider: ModelProvider) {
   const urls: Record<ModelProvider, string> = {
     openai_responses: "https://api.openai.com/v1",
     anthropic: "https://api.anthropic.com/v1",
+    codex: "https://chatgpt.com/backend-api/codex",
+    gemini: "https://generativelanguage.googleapis.com/v1beta",
     openai_compatible: "https://api.example.com/v1",
     ollama: "http://host.docker.internal:11434",
   };
   return urls[provider];
+}
+
+function credentialSupportsProvider(
+  kind: CredentialKind,
+  provider: ModelProvider,
+) {
+  if (provider === "codex") return kind === "codex_oauth";
+  if (provider === "gemini") {
+    return kind === "api_key" || kind === "gemini_oauth";
+  }
+  if (provider === "anthropic") {
+    return kind === "api_key" || kind === "anthropic_oauth";
+  }
+  return kind === "api_key";
 }
 
 function effortLabel(

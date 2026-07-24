@@ -30,6 +30,8 @@ services:
       SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-false}
       SESSION_TTL_HOURS: ${SESSION_TTL_HOURS:-168}
       SETUP_TOKEN: ${SETUP_TOKEN:-}
+      GEMINI_OAUTH_CLIENT_ID: ${GEMINI_OAUTH_CLIENT_ID:-}
+      GEMINI_OAUTH_CLIENT_SECRET: ${GEMINI_OAUTH_CLIENT_SECRET:-}
       RUNNER_ENABLED: "false"
       SCENARIOS_ROOT: /scenarios
     depends_on:
@@ -42,6 +44,8 @@ services:
       retries: 10
     ports:
       - "${API_BIND_HOST:-127.0.0.1}:${API_BIND_PORT:-8080}:8080"
+    volumes:
+      - ./artifacts:/var/lib/evil-repository/artifacts:ro
     networks:
       - control
     restart: unless-stopped
@@ -53,11 +57,16 @@ services:
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://evil_repository:change-me@postgres:5432/evil_repository}
       APP_SECRET: ${APP_SECRET:-development-only-secret-change-me}
+      GEMINI_OAUTH_CLIENT_ID: ${GEMINI_OAUTH_CLIENT_ID:-}
+      GEMINI_OAUTH_CLIENT_SECRET: ${GEMINI_OAUTH_CLIENT_SECRET:-}
       DOCKER_HOST: unix:///var/run/docker.sock
       RUNNER_ENABLED: "true"
       SCENARIOS_ROOT: /scenarios
       RUNNER_POLL_SECONDS: ${RUNNER_POLL_SECONDS:-2}
       RUNNER_CONCURRENCY: ${RUNNER_CONCURRENCY:-2}
+      RUNNER_CONTEXT_SOFT_CHARACTERS: ${RUNNER_CONTEXT_SOFT_CHARACTERS:-360000}
+      RUNNER_CONTEXT_TARGET_CHARACTERS: ${RUNNER_CONTEXT_TARGET_CHARACTERS:-240000}
+      RUNNER_CONTEXT_EMERGENCY_CHARACTERS: ${RUNNER_CONTEXT_EMERGENCY_CHARACTERS:-120000}
       SEMANTIC_JUDGE_TIMEOUT: ${SEMANTIC_JUDGE_TIMEOUT:-120}
       SANDBOX_IMAGE: ${SANDBOX_IMAGE:-evil-repository-sandbox:local}
       SANDBOX_MEMORY: ${SANDBOX_MEMORY:-268435456}

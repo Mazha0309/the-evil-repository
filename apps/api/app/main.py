@@ -3,7 +3,17 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import admin, auth, dashboard, model_profiles, reports, runs, suites, tasks
+from app.api import (
+    admin,
+    auth,
+    credentials,
+    dashboard,
+    model_profiles,
+    reports,
+    runs,
+    suites,
+    tasks,
+)
 from app.config import get_settings
 from app.database import SessionLocal, create_schema
 from app.platform import ensure_platform_settings
@@ -44,6 +54,7 @@ for api_router in [
     dashboard.router,
     suites.router,
     tasks.router,
+    credentials.router,
     model_profiles.router,
     runs.router,
     reports.router,

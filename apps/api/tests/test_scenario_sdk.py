@@ -173,11 +173,29 @@ def test_archive_contains_replayable_event_stream(tmp_path: Path) -> None:
         run_manifest_file = archive.extractfile("run.json")
         assert run_manifest_file is not None
         run_manifest = json.loads(run_manifest_file.read())
+        telemetry_file = archive.extractfile("telemetry/summary.json")
+        assert telemetry_file is not None
+        telemetry = json.loads(telemetry_file.read())
 
-    assert {"run.json", "events.jsonl", "artifacts/scorecard.json"} <= names
+    assert {
+        "run.json",
+        "events.jsonl",
+        "ARCHIVE_FORMAT.txt",
+        "telemetry/summary.json",
+        "telemetry/provider-turns.jsonl",
+        "telemetry/tool-lifecycle.jsonl",
+        "telemetry/stage-timeline.jsonl",
+        "telemetry/resource-snapshots.jsonl",
+        "telemetry/errors.jsonl",
+        "investigation/graph.json",
+        "artifacts/index.json",
+        "artifacts/scorecard.json",
+    } <= names
     assert '"kind": "tool.call"' in event_text
     assert '"kind": "tool.result"' in event_text
     assert run_manifest["scenario"]["seed"] == prepared.metadata.seed
+    assert run_manifest["archive_schema_version"] == 2
+    assert telemetry["tools"]["calls"] == 1
     assert len(run_manifest["integrity"]["events_sha256"]) == 64
     assert len(
         run_manifest["integrity"]["artifact_sha256"]["scorecard.json"]

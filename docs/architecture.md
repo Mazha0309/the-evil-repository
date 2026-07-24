@@ -10,10 +10,12 @@ hypothesis/evidence graph. It does not load scenario Python or talk to Docker.
 The Web container is the single deployment entrypoint and proxies `/api/v1`
 to FastAPI over the private control network.
 
-FastAPI persists model profiles, queued runs, append-only events, hypotheses,
-evidence, graph edges, scorecards, and artifact metadata in the platform
-PostgreSQL database. Provider keys are encrypted before storage. Application
-accounts use one unique account name, with no email dependency. HttpOnly
+FastAPI persists model profiles, owner-scoped Provider credentials, queued
+runs, append-only events, hypotheses, evidence, graph edges, scorecards, and
+artifact metadata in the platform PostgreSQL database. API keys and imported
+OAuth documents are encrypted before storage; only kind, status, expiry,
+account hint, and references are serialized. Application accounts use one
+unique account name, with no email dependency. HttpOnly
 sessions, per-session CSRF tokens, role checks, and access-mapping tables
 protect tenant-scoped model profiles and runs. The administrator surface also
 owns registration policy, account controls, and aggregate service telemetry.
@@ -50,16 +52,28 @@ UID is namespaced by the host's Rootless daemon; it does not make the host
 daemon rootful. Candidate containers remain fixed at unprivileged UID 1000.
 
 Model inference happens outside the candidate container. Provider credentials
-are never copied into a scenario workspace or sandbox environment.
-Editable model profiles preserve encrypted keys when an update omits
-`api_key`. Structured inference controls are mapped per protocol, while
-bounded advanced JSON cannot override credentials, prompts, messages, models,
-tools, or transport-owned fields.
+are never copied into a scenario workspace or sandbox environment. Model
+profiles reference reusable owner-scoped credentials. API keys, imported
+Codex CLI `auth.json`, imported Gemini CLI `oauth_creds.json`, Claude Code
+setup tokens, OAuth refresh, status transitions, and destructive credential
+deletion remain control-plane operations. Structured inference controls are
+mapped per protocol, while bounded advanced JSON cannot override credentials,
+prompts, messages, models, tools, or transport-owned fields.
+
+The six Provider adapters are OpenAI Responses, Anthropic Messages / the
+official Claude Agent SDK, Codex subscription Responses, Gemini native
+`generateContent`, OpenAI-compatible Chat Completions, and Ollama Chat. OAuth
+egress is not configurable: the Claude setup token is consumed only by a
+tool-less official SDK subprocess with an ephemeral config directory, Codex is
+pinned to OpenAI authentication and the official Codex backend, and Gemini is
+pinned to Google OAuth and Code Assist. API-key profiles may use their explicit
+Base URL.
 
 Deleting a profile archives its stable row instead of cascading through run
 history. The control plane blocks deletion while a run is active, freezes any
-missing historical model identity, erases credentials and connection
-parameters, and excludes the archived profile from future selection.
+missing historical model identity, detaches its reusable credential, erases
+connection parameters, and excludes the archived profile from future
+selection. Credential deletion is separate and blocked while referenced.
 
 Candidate events carry stable Agent identities. The built-in executor currently
 emits one `candidate/root` node; the derived Agent Graph schema also supports
@@ -99,9 +113,17 @@ Trusted host-side grading receives the patch and recorded telemetry. Static,
 regression, mutation, golden-replay, resource, and security checks run outside
 the model's tool surface. Only normalized outcomes become public run data.
 
-Run archives contain replay metadata, patch/report artifacts, event data, and
-hashes. They must never contain API keys, hidden fixtures, or control-plane
-credentials.
+Run archive schema v2 contains replay metadata, timestamped events,
+patch/report artifacts, and a SHA-256 inventory. It additionally normalizes
+Provider turns, tool call/result lifecycles, stage transitions, periodic
+resource snapshots, errors, and the Hypothesis/Evidence graph into separate
+JSON/JSONL entries. The authenticated report endpoint can produce the same
+detail from the live database before terminal archival. Neither path may
+contain API keys, OAuth tokens, hidden fixtures, thought signatures, or
+control-plane credentials. Compose gives the Runner read/write access to the
+host artifact directory and the API read-only access to that same directory;
+database metadata alone is not considered proof that a downloadable file
+exists.
 
 A terminal run may be soft-deleted by setting `benchmark_runs.archived_at`.
 Normal list, detail, report, graph, event, dashboard, and administrator

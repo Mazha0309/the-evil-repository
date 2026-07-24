@@ -35,9 +35,14 @@ class Settings(BaseSettings):
     session_cookie_secure: bool = False
     session_ttl_hours: int = 168
     setup_token: str | None = None
+    gemini_oauth_client_id: str | None = None
+    gemini_oauth_client_secret: str | None = None
     runner_enabled: bool = False
     runner_poll_seconds: float = 2.0
     runner_concurrency: int = Field(default=2, ge=1, le=16)
+    runner_context_soft_characters: int = Field(default=360_000, ge=64_000)
+    runner_context_target_characters: int = Field(default=240_000, ge=32_000)
+    runner_context_emergency_characters: int = Field(default=120_000, ge=16_000)
     semantic_judge_timeout: int = 120
 
     docker_host: str = "unix:///var/run/docker.sock"

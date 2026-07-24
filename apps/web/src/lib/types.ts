@@ -208,6 +208,10 @@ export interface ModelProfile {
   base_url: string;
   model_id: string;
   has_api_key: boolean;
+  credential_id: string | null;
+  credential_name: string | null;
+  credential_kind: CredentialKind | null;
+  credential_status: CredentialStatus | null;
   native_tools: boolean;
   parameters: Record<string, unknown>;
   enabled: boolean;
@@ -216,7 +220,66 @@ export interface ModelProfile {
 }
 
 export type ModelProvider =
-  "openai_responses" | "anthropic" | "openai_compatible" | "ollama";
+  | "openai_responses"
+  | "anthropic"
+  | "openai_compatible"
+  | "ollama"
+  | "codex"
+  | "gemini";
+
+export type CredentialKind =
+  | "api_key"
+  | "anthropic_oauth"
+  | "codex_oauth"
+  | "gemini_oauth";
+
+export type CredentialStatus =
+  "unchecked" | "ready" | "expired" | "needs_reauth" | "error";
+
+export interface ProviderCredential {
+  id: string;
+  name: string;
+  kind: CredentialKind;
+  account_hint: string | null;
+  status: CredentialStatus;
+  expires_at: string | null;
+  last_refreshed_at: string | null;
+  last_validated_at: string | null;
+  last_error_code: string | null;
+  model_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SyncedModel {
+  id: string;
+  name: string;
+  provider: ModelProvider;
+  model_id: string;
+  created: boolean;
+}
+
+export interface CredentialModelSyncResult {
+  credential_id: string;
+  provider: ModelProvider;
+  discovered: number;
+  created: number;
+  existing: number;
+  models: SyncedModel[];
+}
+
+export interface OAuthDeviceStart {
+  expires_at: string;
+  flow_token: string;
+  interval: number;
+  user_code: string;
+  verification_uri: string;
+}
+
+export interface OAuthDevicePollResult {
+  state: "pending" | "complete";
+  credential: ProviderCredential | null;
+}
 
 export interface ScoreMetric {
   score: number;
@@ -313,10 +376,7 @@ export interface Run {
       substantive_tool_calls?: number;
     };
     outcome?: {
-      status:
-        | "verified_success"
-        | "evaluated_incomplete"
-        | "budget_exhausted";
+      status: "verified_success" | "evaluated_incomplete" | "budget_exhausted";
       censored: boolean;
       hard_budget_reasons: string[];
       runtime_calibration_eligible: boolean;

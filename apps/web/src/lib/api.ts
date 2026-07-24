@@ -7,7 +7,11 @@ import type {
   InvestigationGraph,
   ModelProfile,
   BenchmarkSuite,
+  CredentialModelSyncResult,
+  OAuthDevicePollResult,
+  OAuthDeviceStart,
   PlatformSettings,
+  ProviderCredential,
   Run,
   RunArtifact,
   RunEvent,
@@ -23,9 +27,40 @@ export class ApiError extends Error {
   constructor(
     public status: number,
     message: string,
+    public code?: string,
   ) {
     super(message);
   }
+}
+
+function errorDetail(body: string): { message: string; code?: string } {
+  try {
+    const parsed = JSON.parse(body) as {
+      detail?:
+        string | { code?: string; message?: string } | Array<{ msg?: string }>;
+    };
+    if (typeof parsed.detail === "string") {
+      return { message: parsed.detail };
+    }
+    if (Array.isArray(parsed.detail)) {
+      return {
+        message:
+          parsed.detail
+            .map((item) => item.msg)
+            .filter(Boolean)
+            .join("; ") || body,
+      };
+    }
+    if (parsed.detail && typeof parsed.detail === "object") {
+      return {
+        message: parsed.detail.message ?? body,
+        code: parsed.detail.code,
+      };
+    }
+  } catch {
+    // Keep the plain response body.
+  }
+  return { message: body };
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -42,16 +77,11 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   });
   if (!response.ok) {
     const body = await response.text();
-    let message = body;
-    try {
-      const parsed = JSON.parse(body) as { detail?: string };
-      message = parsed.detail ?? body;
-    } catch {
-      // Keep the plain response body.
-    }
+    const detail = errorDetail(body);
     throw new ApiError(
       response.status,
-      message || `${response.status} ${response.statusText}`,
+      detail.message || `${response.status} ${response.statusText}`,
+      detail.code,
     );
   }
   if (response.status === 204) return undefined as T;
@@ -100,10 +130,44 @@ export const api = {
   suites: () => request<BenchmarkSuite[]>("/suites"),
   taskExportUrl: (id: string) => `${API_BASE}/tasks/${id}/export`,
   models: () => request<ModelProfile[]>("/models"),
+  credentials: () => request<ProviderCredential[]>("/credentials"),
+  createCredential: (payload: Record<string, unknown>) =>
+    request<ProviderCredential>("/credentials", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  importCredential: (payload: Record<string, unknown>) =>
+    request<ProviderCredential>("/credentials/import", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  updateCredential: (id: string, payload: Record<string, unknown>) =>
+    request<ProviderCredential>(`/credentials/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    }),
+  refreshCredential: (id: string) =>
+    request<ProviderCredential>(`/credentials/${id}/refresh`, {
+      method: "POST",
+    }),
+  syncCredentialModels: (id: string) =>
+    request<CredentialModelSyncResult>(`/credentials/${id}/models/sync`, {
+      method: "POST",
+    }),
+  deleteCredential: (id: string) =>
+    request<void>(`/credentials/${id}`, { method: "DELETE" }),
+  startCodexOAuth: () =>
+    request<OAuthDeviceStart>("/credentials/oauth/codex/device/start", {
+      method: "POST",
+    }),
+  pollCodexOAuth: (payload: Record<string, unknown>) =>
+    request<OAuthDevicePollResult>("/credentials/oauth/codex/device/poll", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
   runs: () => request<Run[]>("/runs"),
   run: (id: string) => request<Run>(`/runs/${id}`),
-  runArtifacts: (id: string) =>
-    request<RunArtifact[]>(`/runs/${id}/artifacts`),
+  runArtifacts: (id: string) => request<RunArtifact[]>(`/runs/${id}/artifacts`),
   runArtifactUrl: (runId: string, artifactId: string) =>
     `${API_BASE}/runs/${runId}/artifacts/${artifactId}`,
   events: (id: string, after = 0) =>
@@ -125,8 +189,7 @@ export const api = {
     request<Run>("/runs", { method: "POST", body: JSON.stringify(payload) }),
   cancelRun: (id: string) =>
     request<Run>(`/runs/${id}/cancel`, { method: "POST" }),
-  deleteRun: (id: string) =>
-    request<void>(`/runs/${id}`, { method: "DELETE" }),
+  deleteRun: (id: string) => request<void>(`/runs/${id}`, { method: "DELETE" }),
   pauseRun: (id: string) =>
     request<Run>(`/runs/${id}/pause`, { method: "POST" }),
   resumeRun: (id: string) =>

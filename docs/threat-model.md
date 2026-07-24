@@ -32,6 +32,8 @@ administrator or a compromised kernel.
 5. Provider requests cross the local machine's network boundary.
 6. Scenario entrypoints execute in the trusted Runner process.
 7. Browser requests and session cookies cross the public Web/API boundary.
+8. Detailed JSON/JSONL telemetry and archives cross from tenant-scoped
+   database rows into authenticated downloads.
 
 Every crossing must validate structure, size, path, and allowed operation.
 Candidate text is data even when it resembles an instruction.
@@ -46,7 +48,19 @@ Candidate text is data even when it resembles an instruction.
 - Per-run tmpfs workspace volume and bounded resources.
 - Relative-path validation and unsafe-symlink rejection before archive import.
 - Tool allowlist, command-boundary policy, output caps, and hard run budgets.
-- Provider credentials held only by the trusted Runner.
+- Provider credentials held only by the trusted API/Runner control plane.
+- Owner-scoped encrypted credential payloads; list/model APIs expose only
+  non-secret metadata and references.
+- OAuth host pinning: Codex tokens cannot follow profile Base URLs and only
+  reach OpenAI authentication/Codex hosts; Gemini OAuth tokens only reach
+  Google OAuth/Code Assist hosts.
+- Claude Code setup tokens are passed only through a child-process environment
+  to the bundled official Agent SDK. Every turn uses an empty temporary config,
+  no built-in tools or MCP, no settings/skills/plugins, no persistent session,
+  and disabled nonessential traffic. The platform never implements Claude.ai
+  login or sends the token as a Messages API key.
+- Refresh-token rotation under a locked credential row, bounded
+  authentication retry, and protocol/credential-kind compatibility checks.
 - Host-side hidden judge and artifact hashing.
 - Loopback-bound UI/API defaults.
 - HttpOnly expiring sessions, scrypt password hashing, per-session CSRF
@@ -56,6 +70,10 @@ Candidate text is data even when it resembles an instruction.
 - Per-user access mappings for model profiles, runs, events, graphs, and
   reports.
 - Deterministic fault scripts and append-only audit events.
+- Central export sanitization for authorization headers, API/OAuth tokens,
+  passwords, secrets, and Provider-only thought signatures; archive v2
+  contains visible model output and tool I/O but never claims hidden
+  chain-of-thought.
 - Bounded Runner concurrency with per-run containers, workspaces, Provider
   clients, and state; only aggregate slot occupancy is exposed.
 - Server-side model-parameter validation plus adapter-side protection for
@@ -75,6 +93,22 @@ Provider endpoints can observe prompts and selected tool output. Do not use
 private repositories or real incident data. Application authentication does
 not replace TLS; an external deployment must use the operator's reverse proxy
 or load balancer and secure session cookies.
+
+Detailed telemetry intentionally contains candidate-visible repository text,
+commands, tool outputs, diffs, model-visible responses, paths, timestamps, and
+behavioral summaries. Redaction protects control-plane credentials, not
+secrets that a user deliberately placed inside benchmark inputs. Treat every
+download as sensitive run data and share it only with authorized analysts.
+
+Claude Code setup tokens and imported Codex `auth.json` / Gemini
+`oauth_creds.json` files are bearer credentials equivalent to passwords. A
+malicious or compromised control plane can use them as the signed-in account,
+and changing `APP_SECRET` without a migration makes stored credentials
+unreadable. Anthropic subscription OAuth is limited to self-hosted personal or
+organization-internal use; a public third-party deployment must use Console
+API keys or a supported cloud provider. Codex subscription access is likewise
+distinct from ordinary API-key access; operators remain responsible for
+account, organization, and service-policy compliance.
 
 Resource limits reduce denial-of-service risk but cannot eliminate disk,
 kernel, daemon, or provider-level exhaustion. The offline Browser prevents live
@@ -97,6 +131,10 @@ conversation ownership is process-local.
   `SESSION_COOKIE_SECURE=true`.
 - Use restricted, revocable provider keys and rotate them after a suspected
   compromise.
+- Import OAuth files only into an operator-controlled HTTPS deployment; revoke
+  or reauthenticate the upstream account after suspected exposure.
+- Back up `APP_SECRET` separately from the database and never rotate it by
+  replacing the value without a credential migration plan.
 - Delete run volumes after handling sensitive experimental output.
 - Stop all runs before changing the sandbox image or Docker context.
 - Keep `RUNNER_CONCURRENCY` within host capacity and Provider rate limits;

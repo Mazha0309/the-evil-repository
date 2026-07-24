@@ -336,6 +336,11 @@ def test_failure_checkpoint_preserves_events_diffs_and_resource_ledger(
             {"kind": "tool.call", "sequence": 1, "name": "read_file"}
         ],
     )
+    monkeypatch.setattr(
+        worker,
+        "prepare_export_context",
+        lambda _run_id, _result: None,
+    )
 
     checkpoint = worker.create_failure_checkpoint(
         run_id=run_id,

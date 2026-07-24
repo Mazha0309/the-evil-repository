@@ -30,6 +30,9 @@ def record_hypothesis(
     hypothesis = session.scalar(select(Hypothesis).where(Hypothesis.run_id == run_id, Hypothesis.key == key))
     parsed_status = HypothesisStatus(status)
     confidence = max(0, min(float(confidence), 1))
+    created = hypothesis is None
+    previous_status = hypothesis.status.value if hypothesis is not None else None
+    previous_confidence = hypothesis.confidence if hypothesis is not None else None
     if hypothesis is None:
         hypothesis = Hypothesis(
             run_id=run_id,
@@ -49,10 +52,11 @@ def record_hypothesis(
     sequence = session.scalar(
         select(func.max(HypothesisRevision.sequence)).where(HypothesisRevision.hypothesis_id == hypothesis.id)
     )
+    revision_sequence = (sequence or 0) + 1
     session.add(
         HypothesisRevision(
             hypothesis_id=hypothesis.id,
-            sequence=(sequence or 0) + 1,
+            sequence=revision_sequence,
             statement=statement,
             status=parsed_status,
             confidence=confidence,
@@ -65,10 +69,22 @@ def record_hypothesis(
         run_id,
         "investigation.hypothesis",
         {
+            "agent_id": "candidate/root",
+            "agent_role": "primary",
             "key": key,
+            "hypothesis_id": str(hypothesis.id),
+            "revision": revision_sequence,
+            "created": created,
             "statement": statement,
             "status": parsed_status.value,
+            "previous_status": previous_status,
             "confidence": confidence,
+            "previous_confidence": previous_confidence,
+            "confidence_delta": (
+                round(confidence - previous_confidence, 6)
+                if previous_confidence is not None
+                else None
+            ),
             "next_action": next_action,
             "reason": reason,
         },
@@ -99,16 +115,22 @@ def record_evidence(
         content_hash=hashlib.sha256(summary.encode()).hexdigest(),
     )
     session.add(item)
+    session.flush()
     append_event(
         session,
         run_id,
         "investigation.evidence",
         {
+            "agent_id": "candidate/root",
+            "agent_role": "primary",
             "key": key,
+            "evidence_id": str(item.id),
             "source_type": source_type,
             "source_ref": source_ref,
             "summary": summary,
             "trust": item.trust,
+            "content_hash": item.content_hash,
+            "summary_characters": len(summary),
         },
     )
     return item
@@ -137,11 +159,15 @@ def link_evidence(
         explanation=explanation,
     )
     session.add(edge)
+    session.flush()
     append_event(
         session,
         run_id,
         "investigation.edge",
         {
+            "agent_id": "candidate/root",
+            "agent_role": "primary",
+            "edge_id": str(edge.id),
             "source_type": source_type,
             "source_key": source_key,
             "target_type": target_type,
