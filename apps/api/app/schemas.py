@@ -6,6 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator, mod
 
 from app.model_parameters import validate_model_parameters
 from app.models import EvidenceRelation, HypothesisStatus, ModelProvider, RunStatus, UserRole
+from app.run_outcomes import normalize_scorecard_outcome
 
 
 class ORMModel(BaseModel):
@@ -181,12 +182,12 @@ class RunCreate(BaseModel):
     repetitions: int = Field(default=1, ge=1, le=5)
     temperature: float = Field(default=0, ge=0, le=2)
     instance_seed: int | None = Field(default=None, ge=1, le=2_147_483_647)
-    soft_seconds: int = Field(default=1_800, ge=60, le=14_400)
-    hard_seconds: int = Field(default=3_600, ge=300, le=21_600)
-    soft_tool_calls: int = Field(default=250, ge=10, le=2_000)
-    hard_tool_calls: int = Field(default=650, ge=20, le=3_000)
-    soft_provider_requests: int = Field(default=180, ge=1, le=5_000)
-    hard_provider_requests: int = Field(default=360, ge=2, le=10_000)
+    soft_seconds: int = Field(default=5_400, ge=60, le=14_400)
+    hard_seconds: int = Field(default=10_800, ge=300, le=21_600)
+    soft_tool_calls: int = Field(default=600, ge=10, le=2_000)
+    hard_tool_calls: int = Field(default=2_200, ge=20, le=3_000)
+    soft_provider_requests: int = Field(default=300, ge=1, le=5_000)
+    hard_provider_requests: int = Field(default=720, ge=2, le=10_000)
     soft_total_tokens: int | None = Field(default=None, ge=1_000, le=1_000_000_000)
     hard_total_tokens: int | None = Field(default=None, ge=2_000, le=2_000_000_000)
 
@@ -238,6 +239,11 @@ class RunRead(ORMModel):
     created_at: datetime
     started_at: datetime | None
     completed_at: datetime | None
+
+    @field_validator("scorecard", mode="before")
+    @classmethod
+    def infer_legacy_budget_outcome(cls, value: Any) -> dict[str, Any]:
+        return normalize_scorecard_outcome(value)
 
 
 class RunArtifactRead(ORMModel):

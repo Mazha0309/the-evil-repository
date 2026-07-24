@@ -16,6 +16,7 @@ from app.models import (
     UserRole,
     UserRunAccess,
 )
+from app.run_outcomes import scorecard_is_censored
 from app.schemas import DashboardSummary
 from app.security import current_user
 
@@ -53,11 +54,21 @@ def dashboard_summary(
         )
         or 0
     )
-    average_score = session.scalar(
-        select(func.avg(BenchmarkRun.score)).where(
+    completed_results = session.execute(
+        select(BenchmarkRun.score, BenchmarkRun.scorecard).where(
             BenchmarkRun.status == RunStatus.completed,
             *run_scope,
         )
+    ).all()
+    eligible_scores = [
+        float(score)
+        for score, scorecard in completed_results
+        if score is not None and not scorecard_is_censored(scorecard)
+    ]
+    average_score = (
+        sum(eligible_scores) / len(eligible_scores)
+        if eligible_scores
+        else None
     )
     heartbeat = session.get(RunnerHeartbeat, "default")
     heartbeat_at = heartbeat.updated_at if heartbeat else None
@@ -77,7 +88,7 @@ def dashboard_summary(
         total_runs=total_runs,
         active_runs=active_runs,
         completed_runs=completed_runs,
-        average_score=float(average_score) if average_score is not None else None,
+        average_score=average_score,
         docker_ready=bool(runner_alive and heartbeat and heartbeat.docker_ready),
         runner_enabled=runner_alive,
     )

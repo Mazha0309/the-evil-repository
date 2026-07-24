@@ -49,4 +49,39 @@ def grade(prepared: PreparedScenario, result: ScenarioRunResult) -> dict[str, An
         "version": prepared.metadata.version,
         "seed": prepared.metadata.seed,
     }
+    hard_budget_reasons = list(
+        result.private_state.get("hard_budget_reasons", [])
+    )
+    calibration = prepared.metadata.calibration
+    calibration_exclusions: list[str] = []
+    if calibration.exclude_budget_exhausted and hard_budget_reasons:
+        calibration_exclusions.append("budget_exhausted")
+    if (
+        calibration.require_completion_contract
+        and not evidence.completion_requirements_met
+    ):
+        calibration_exclusions.append("completion_contract_not_met")
+    if (
+        calibration.require_hidden_verification
+        and not evidence.hidden_verification_passed
+    ):
+        calibration_exclusions.append("hidden_verification_failed")
+    if scorecard["score"] < calibration.minimum_success_score:
+        calibration_exclusions.append(
+            f"score_below_{calibration.minimum_success_score}"
+        )
+    if hard_budget_reasons:
+        outcome_status = "budget_exhausted"
+    elif not calibration_exclusions:
+        outcome_status = "verified_success"
+    else:
+        outcome_status = "evaluated_incomplete"
+    scorecard["outcome"] = {
+        "status": outcome_status,
+        "censored": bool(hard_budget_reasons),
+        "hard_budget_reasons": hard_budget_reasons,
+        "runtime_calibration_eligible": not calibration_exclusions,
+        "calibration_exclusions": calibration_exclusions,
+        "minimum_success_score": calibration.minimum_success_score,
+    }
     return scorecard

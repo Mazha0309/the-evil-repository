@@ -288,16 +288,16 @@ def test_soft_budget_warnings_fire_once_per_threshold(
         lambda kind, payload: engine.events.append({"kind": kind, **payload}),
     )
 
-    engine.tool_calls = 250
+    engine.tool_calls = 600
     call_warning = engine._soft_budget_warning()
     assert call_warning is not None
-    assert "250 tool calls" in call_warning
+    assert "600 tool calls" in call_warning
     assert engine._soft_budget_warning() is None
 
-    clock[0] += 1_800
+    clock[0] += 5_400
     time_warning = engine._soft_budget_warning()
     assert time_warning is not None
-    assert "1800 active seconds" in time_warning
+    assert "5400 active seconds" in time_warning
     assert [event["crossed"] for event in engine.events] == [
         ["tool_calls"],
         ["active_time"],

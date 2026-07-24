@@ -20,7 +20,7 @@ families:
     status: active
 scenarios:
   - slug: terminal-repository
-    version: 3.0.3
+    version: 3.0.4
     family: cross-repository-protocol
     split: development
     instances: 1

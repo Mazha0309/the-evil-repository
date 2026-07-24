@@ -55,8 +55,7 @@ a marketing judgment.
 - Make an Agent's investigation strategy, recurring errors, and recovery
   patterns comparable without collecting private reasoning.
 - Calibrate the canonical scenario to remain discriminating throughout a
-  60-minute hard envelope for a strong software-engineering Agent, without
-  artificial waiting.
+  long-running strong-Agent investigation, without artificial waiting.
 - Remain local-first and safe to operate on a developer workstation.
 
 ### Non-goals
@@ -267,7 +266,7 @@ diversity. Planned families are not counted as active, and a missing private
 held-out set cannot be represented as complete.
 
 The bundled Production Incident Engineering Suite starts at version 0.1.0
-with one `development` reference to Terminal Repository 3.0.3. Its readiness
+with one `development` reference to Terminal Repository 3.0.4. Its readiness
 policy requires five active families, three held-out families, and 20 scenario
 references. Consequently it reports `leaderboard_eligible: false`. The API and
 React render these counts directly.
@@ -396,8 +395,8 @@ public scorecards expose only permitted IDs and aggregates. Every node and edge
 must reference a declared ID, path IDs must be unique, and an empty alternative
 group is invalid.
 
-Terminal Repository 3.0.3 retains the 3.0.2 truth and generated incident
-structure while versioning a recalibrated execution envelope. The generalized
+Terminal Repository 3.0.4 retains the 3.0.3 truth and generated incident
+structure while correcting its execution envelope. The generalized
 multi-path evaluator is a platform contract for new scenario versions and
 families; it is not used to alter the canonical answer behind an unchanged
 version number.
@@ -441,8 +440,9 @@ query does not increase coverage. Coverage must be distributed across four
 logical phases, and successful replay/soak checks require prior passing stages
 plus deterministic observation intervals. The canonical scenario permits at
 most eight rejected premature final answers; repeated finalization or a
-hard-budget stop ends the loop and grades the partial result under the
-applicable low-score caps.
+hard-budget stop ends the loop and grades the preserved partial result. A
+hard-budget outcome is explicitly right-censored and is not a completed
+solution.
 
 This gate is neither a correctness oracle nor a request for private
 chain-of-thought. It checks only observable investigation coverage. Evidence
@@ -636,7 +636,7 @@ provenance like any other evidence.
 
 These are project tools, not passthrough commands. A candidate can never attach
 to a real process, inspect the host, or capture live traffic. Terminal
-Repository 3.0.3 does not enable this post-release tool pack; a new scenario
+Repository 3.0.4 does not enable this post-release tool pack; a new scenario
 version must opt in through metadata.
 
 ## 8. Database forensics
@@ -711,7 +711,7 @@ cannot replace the completion gate or any hidden stage.
 
 ## 11. Canonical challenge
 
-Scenario 3.0.3, **The Terminal Repository / 终焉仓库**, is not primarily a
+Scenario 3.0.4, **The Terminal Repository / 终焉仓库**, is not primarily a
 large code puzzle. It is a controlled-uncertainty incident simulator whose
 repository maze is one evidence substrate.
 
@@ -746,7 +746,7 @@ SLO, error-budget burn and outcomes are identical.
 
 The 180-tick replay horizon is a logical state-machine horizon, not a
 180-minute wall-clock requirement. The completion gate requires progress to
-tick 140 while the independent real execution budget is 30/60 minutes.
+tick 140 while the independent real execution budget is 90/180 minutes.
 
 The public incident queue contains eight claims:
 
@@ -813,11 +813,11 @@ become an uncontrolled evaluation variable.
 ### Difficulty calibration
 
 The full canonical package targets approximately 5,000 files, 2,000 commits,
-and 100 MiB of locally generated material. Its default soft/hard budgets are
-30/60 minutes, 250/650 tool calls, and 180/360 raw Provider requests. Optional
-Token limits may be configured as a matched soft/hard pair. Any soft threshold
-emits one deterministic warning and overrun telemetry; any hard threshold ends
-candidate execution. Wall time is not a score input. Each candidate
+and 100 MiB of locally generated material. Scenario 3.0.4 defaults to
+90/180 minutes, 600/2,200 tool calls, and 300/720 raw Provider requests.
+Optional Token limits may be configured as a matched soft/hard pair. Any soft
+threshold emits one deterministic warning and overrun telemetry; any hard
+threshold ends candidate execution. Wall time is not a score input. Each candidate
 defaults to 0.5 CPU, 256 MiB RAM, 256 PIDs and a 1.5 GiB ephemeral workspace,
 so unbounded installs, indexing and brute-force parallelism are not viable
 strategies. Scaled smoke fixtures exist for development only and must never be
@@ -825,11 +825,26 @@ reported as leaderboard runs.
 
 Before a scenario release, maintainers run a versioned reference procedure
 with a minimal golden patch and at least one strong software-engineering Agent.
-The canonical target is a strong-Agent reference solve that uses a substantial
-portion of, but completes inside, the 60-minute hard envelope. Calibration
-reports record elapsed/active time, tool calls, token usage, evidence coverage,
-shortcut attempts, and the exact platform, scenario, provider, and model
-versions.
+The 90-minute soft threshold is an early tail signal; the 180-minute hard
+threshold is a provisional safety envelope while successful completion-time
+samples are collected. Calibration reports record elapsed/active time, tool
+calls, token usage, evidence coverage, shortcut attempts, and the exact
+platform, scenario, provider, and model versions.
+
+Runtime observations are treated as survival data. A run that touches any hard
+time, tool, Provider-request, or Token limit is a right-censored sample:
+preserved work is still graded, but the scorecard outcome is
+`budget_exhausted`, the UI must not call it completed, and the result is
+excluded from average-score and runtime-calibration aggregates. A runtime is
+eligible for calibration only when it avoids every hard limit, satisfies the
+completion contract, passes hidden verification, and reaches the scenario's
+configured success threshold (900/1,200 for 3.0.4). Historical scorecards
+without an explicit outcome are classified from their archived
+`hard_limits_crossed` resource ledger.
+
+Ending and grading are not success criteria. In particular, low-score runs
+that stop voluntarily, exhaust a budget, or merely reach the grading pipeline
+must never be used to shorten a future hard envelope.
 
 This target is empirical, not a guaranteed minimum for every future model. No
 runtime is delayed merely to hit a number. If a strong Agent finishes
@@ -847,7 +862,7 @@ complexity:
 
 | Source | Mechanism adopted here |
 |---|---|
-| [METR Time Horizon 1.1](https://metr.org/time-horizons/) | Human-expert task duration and Agent wall time are separate measurements. The 60-minute strong-Agent envelope remains provisional until repeated human and Agent calibration; wall time is never rewarded. |
+| [METR Time Horizon 1.1](https://metr.org/time-horizons/) | Human-expert task duration and Agent wall time are separate measurements. Hard-limit observations are right-censored rather than treated as solve times; wall time is never rewarded. |
 | [Terminal-Bench 2.1](https://www.tbench.ai/news/terminal-bench-2-1) | Continuous task validation checks the broken baseline, near-miss failure, oracle repair, resource envelope, database initialization and offline isolation. Scenario smoke runs in CI because difficult-but-broken is not a valid benchmark. |
 | [OSWorld 2.0](https://arxiv.org/abs/2606.29537) | Dynamic information, implicit-state recovery, cross-source reasoning and separate safety telemetry become four logical incident phases, streaming alerts and an auditable risk/data ledger. |
 | [ITBench](https://research.ibm.com/publications/itbench-evaluating-ai-agents-across-diverse-real-world-it-automation-tasks) | Incident success is judged as correct, safe and fast: SLO, error budget, data integrity, action risk and diagnosis are independent signals. |
@@ -914,7 +929,8 @@ Caps:
 - incomplete Browser provenance or wrong incident dispositions: maximum 800;
 - no successful post-change replay and soak: maximum 850;
 - incomplete objective reasoning gates: maximum 900;
-- hard budget exceeded: execution stops and partial work is graded.
+- hard budget exceeded: execution stops, partial work is graded, and the
+  outcome is labelled right-censored rather than completed.
 
 A separate deduction ledger charges observable blind writes, repeated edits,
 phantom-bug fixes, protected-surface changes, forensic database mutation,
@@ -1112,7 +1128,7 @@ label them as inferred.
 {
   "schema_version": 1,
   "analyzer_version": "behavior-v1",
-  "scenario": "terminal-repository@3.0.3",
+  "scenario": "terminal-repository@3.0.4",
   "traits": [],
   "errors": [],
   "episodes": [],
@@ -1327,7 +1343,8 @@ AGPL-3.0-only. New scenarios must include:
 - behavior-extractor fixtures and truth annotations for scenario-specific error
   categories;
 - a reference solution and minimal golden patch;
-- validation that the scenario remains solvable inside the soft budget;
+- validation that the scenario remains solvable inside the hard envelope,
+  with the soft threshold treated only as a warning and efficiency signal;
 - a reference calibration report, including intended source families and all
   discovered shortcut audits.
 

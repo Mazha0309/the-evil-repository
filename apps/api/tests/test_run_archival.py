@@ -138,3 +138,20 @@ def test_archive_run_rejects_active_result() -> None:
         assert "finish or be cancelled" in error.value.detail
         session.refresh(run)
         assert run.archived_at is None
+
+
+def test_dashboard_average_excludes_censored_completed_run() -> None:
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        user, run = seed_run(session, status=RunStatus.completed)
+        run.scorecard = {
+            "resources": {"hard_limits_crossed": ["active_time"]},
+        }
+        session.commit()
+
+        summary = dashboard_summary(session, user)
+
+        assert summary.completed_runs == 1
+        assert summary.average_score is None
