@@ -54,15 +54,17 @@ daemon rootful. Candidate containers remain fixed at unprivileged UID 1000.
 Model inference happens outside the candidate container. Provider credentials
 are never copied into a scenario workspace or sandbox environment. Model
 profiles reference reusable owner-scoped credentials. API keys, imported
-Codex CLI `auth.json`, imported Gemini CLI `oauth_creds.json`, OAuth refresh,
-status transitions, and destructive credential deletion remain control-plane
-operations. Structured inference controls are mapped per protocol, while
-bounded advanced JSON cannot override credentials, prompts, messages, models,
-tools, or transport-owned fields.
+Codex CLI `auth.json`, imported Gemini CLI `oauth_creds.json`, Claude Code
+setup tokens, OAuth refresh, status transitions, and destructive credential
+deletion remain control-plane operations. Structured inference controls are
+mapped per protocol, while bounded advanced JSON cannot override credentials,
+prompts, messages, models, tools, or transport-owned fields.
 
-The six Provider adapters are OpenAI Responses, Anthropic Messages, Codex
-subscription Responses, Gemini native `generateContent`, OpenAI-compatible
-Chat Completions, and Ollama Chat. OAuth egress is not configurable: Codex is
+The six Provider adapters are OpenAI Responses, Anthropic Messages / the
+official Claude Agent SDK, Codex subscription Responses, Gemini native
+`generateContent`, OpenAI-compatible Chat Completions, and Ollama Chat. OAuth
+egress is not configurable: the Claude setup token is consumed only by a
+tool-less official SDK subprocess with an ephemeral config directory, Codex is
 pinned to OpenAI authentication and the official Codex backend, and Gemini is
 pinned to Google OAuth and Code Assist. API-key profiles may use their explicit
 Base URL.

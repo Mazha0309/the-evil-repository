@@ -34,6 +34,12 @@ def create_schema() -> None:
         try:
             for value in ("openai_responses", "anthropic", "codex", "gemini"):
                 connection.execute(text(f"ALTER TYPE modelprovider ADD VALUE IF NOT EXISTS '{value}'"))
+            connection.execute(
+                text(
+                    "ALTER TYPE credentialkind "
+                    "ADD VALUE IF NOT EXISTS 'anthropic_oauth'"
+                )
+            )
             connection.execute(text("ALTER TABLE model_profiles DROP CONSTRAINT IF EXISTS model_profiles_name_key"))
             connection.execute(
                 text(
@@ -66,10 +72,7 @@ def create_schema() -> None:
                 )
             )
             connection.execute(
-                text(
-                    "ALTER TABLE model_profiles "
-                    "ADD COLUMN IF NOT EXISTS archived_at TIMESTAMP WITH TIME ZONE"
-                )
+                text("ALTER TABLE model_profiles ADD COLUMN IF NOT EXISTS archived_at TIMESTAMP WITH TIME ZONE")
             )
             connection.execute(
                 text(
@@ -79,24 +82,16 @@ def create_schema() -> None:
                 )
             )
             connection.execute(
-                text(
-                    "CREATE INDEX IF NOT EXISTS ix_model_profiles_credential_id "
-                    "ON model_profiles (credential_id)"
-                )
+                text("CREATE INDEX IF NOT EXISTS ix_model_profiles_credential_id ON model_profiles (credential_id)")
             )
             connection.execute(
-                text(
-                    "ALTER TABLE benchmark_runs "
-                    "ADD COLUMN IF NOT EXISTS archived_at TIMESTAMP WITH TIME ZONE"
-                )
+                text("ALTER TABLE benchmark_runs ADD COLUMN IF NOT EXISTS archived_at TIMESTAMP WITH TIME ZONE")
             )
         finally:
             connection.close()
     elif engine.dialect.name == "sqlite":
         with engine.begin() as connection:
-            platform_columns = {
-                row[1] for row in connection.execute(text("PRAGMA table_info(platform_settings)"))
-            }
+            platform_columns = {row[1] for row in connection.execute(text("PRAGMA table_info(platform_settings)"))}
             if "runner_concurrency" not in platform_columns:
                 connection.execute(
                     text(
@@ -105,13 +100,9 @@ def create_schema() -> None:
                         f"NOT NULL DEFAULT {settings.runner_concurrency}"
                     )
                 )
-            model_columns = {
-                row[1] for row in connection.execute(text("PRAGMA table_info(model_profiles)"))
-            }
+            model_columns = {row[1] for row in connection.execute(text("PRAGMA table_info(model_profiles)"))}
             if "archived_at" not in model_columns:
-                connection.execute(
-                    text("ALTER TABLE model_profiles ADD COLUMN archived_at DATETIME")
-                )
+                connection.execute(text("ALTER TABLE model_profiles ADD COLUMN archived_at DATETIME"))
             if "credential_id" not in model_columns:
                 connection.execute(
                     text(
@@ -121,19 +112,13 @@ def create_schema() -> None:
                     )
                 )
                 connection.execute(
-                    text(
-                        "CREATE INDEX IF NOT EXISTS ix_model_profiles_credential_id "
-                        "ON model_profiles (credential_id)"
-                    )
+                    text("CREATE INDEX IF NOT EXISTS ix_model_profiles_credential_id ON model_profiles (credential_id)")
                 )
-            run_columns = {
-                row[1] for row in connection.execute(text("PRAGMA table_info(benchmark_runs)"))
-            }
+            run_columns = {row[1] for row in connection.execute(text("PRAGMA table_info(benchmark_runs)"))}
             if "archived_at" not in run_columns:
-                connection.execute(
-                    text("ALTER TABLE benchmark_runs ADD COLUMN archived_at DATETIME")
-                )
+                connection.execute(text("ALTER TABLE benchmark_runs ADD COLUMN archived_at DATETIME"))
     migrate_legacy_model_credentials()
+    migrate_legacy_run_task_snapshots()
 
 
 def migrate_legacy_model_credentials() -> None:
@@ -147,12 +132,8 @@ def migrate_legacy_model_credentials() -> None:
         UserModelAccess,
     )
 
-    model_columns = {
-        column["name"] for column in inspect(engine).get_columns("model_profiles")
-    }
-    if not {"credential_id", "encrypted_api_key", "archived_at"}.issubset(
-        model_columns
-    ):
+    model_columns = {column["name"] for column in inspect(engine).get_columns("model_profiles")}
+    if not {"credential_id", "encrypted_api_key", "archived_at"}.issubset(model_columns):
         return
 
     box = SecretBox(settings.app_secret)
@@ -199,6 +180,31 @@ def migrate_legacy_model_credentials() -> None:
             session.flush()
             profile.credential_id = credential.id
             profile.encrypted_api_key = None
+            changed = True
+        if changed:
+            session.commit()
+
+
+def migrate_legacy_run_task_snapshots() -> None:
+    from app.model_identity import task_snapshot
+    from app.models import BenchmarkRun, TaskDefinition
+
+    run_columns = {column["name"] for column in inspect(engine).get_columns("benchmark_runs")}
+    if not {"task_id", "config"}.issubset(run_columns):
+        return
+
+    with SessionLocal() as session:
+        runs = session.scalars(select(BenchmarkRun)).all()
+        changed = False
+        for run in runs:
+            config = dict(run.config or {})
+            if isinstance(config.get("task_snapshot"), dict):
+                continue
+            task = session.get(TaskDefinition, run.task_id)
+            if task is None:
+                continue
+            config["task_snapshot"] = task_snapshot(task)
+            run.config = config
             changed = True
         if changed:
             session.commit()

@@ -54,6 +54,8 @@ import {
   lazy,
   type ReactNode,
   Suspense,
+  useEffect,
+  useMemo,
   useState,
 } from "react";
 import {
@@ -64,6 +66,7 @@ import {
   Routes,
   useNavigate,
   useParams,
+  useSearchParams,
 } from "react-router-dom";
 import AccountPage from "./components/AccountPage";
 import AdminPage from "./components/AdminPage";
@@ -82,10 +85,12 @@ import {
   serviceTierOptions,
   type ModelParameterDraft,
 } from "./lib/modelParameters";
+import { resolveRunModel, type RunModelIdentity } from "./lib/runModels";
 import {
-  resolveRunModel,
-  type RunModelIdentity,
-} from "./lib/runModels";
+  orderTasks,
+  resolveRunTask,
+  type RunTaskIdentity,
+} from "./lib/runTasks";
 import type {
   AuthConfig,
   AuthResponse,
@@ -327,7 +332,8 @@ function DashboardPage() {
   const models = useQuery({ queryKey: ["models"], queryFn: api.models });
   const tasks = useQuery({ queryKey: ["tasks"], queryFn: api.tasks });
   const data = summary.data;
-  const spotlight = tasks.data?.[0];
+  const orderedTasks = orderTasks(tasks.data ?? []);
+  const spotlight = orderedTasks[0];
   const spotlightPressure = spotlight?.manifest.context_pressure;
   const spotlightBudget = spotlight?.manifest.budget;
   return (
@@ -395,6 +401,7 @@ function DashboardPage() {
           <RunTable
             runs={runs.data ?? []}
             models={models.data ?? []}
+            tasks={orderedTasks}
             compact
           />
         </section>
@@ -507,7 +514,10 @@ function ScenariosPage() {
     <>
       <PageHeader
         eyebrow="SCENARIO SDK"
-        title={text("版本化的工程调查世界。", "Engineering investigations, versioned.")}
+        title={text(
+          "版本化的工程调查世界。",
+          "Engineering investigations, versioned.",
+        )}
         description={text(
           "每个场景独立封装仓库、可选数据源、冲突证据、故障脚本、隐藏裁判、回放契约与离线互联网。",
           "Each scenario owns its repositories, optional data stores, conflicting evidence, failure scripts, hidden judge, replay contract, and offline internet.",
@@ -553,7 +563,7 @@ function ScenariosPage() {
         </section>
       )}
       <div className="card-stack">
-        {(tasks.data ?? []).map((task) => (
+        {orderTasks(tasks.data ?? []).map((task) => (
           <ScenarioCard key={task.id} task={task} />
         ))}
         {!tasks.isLoading && !tasks.data?.length && (
@@ -787,10 +797,18 @@ function ModelsPage() {
   };
   const fieldNames = parameterFieldNames(provider);
   const effortOptions = reasoningOptions(provider);
-  const tierOptions = serviceTierOptions(provider);
-  const compatibleCredentials = (credentials.data ?? []).filter(
-    (credential) => credentialSupportsProvider(credential.kind, provider),
+  const compatibleCredentials = (credentials.data ?? []).filter((credential) =>
+    credentialSupportsProvider(credential.kind, provider),
   );
+  const selectedCredential = (credentials.data ?? []).find(
+    (credential) => credential.id === credentialId,
+  );
+  const isClaudeCodeOAuth =
+    provider === "anthropic" &&
+    selectedCredential?.kind === "anthropic_oauth";
+  const tierOptions = isClaudeCodeOAuth
+    ? []
+    : serviceTierOptions(provider);
   return (
     <>
       <PageHeader
@@ -815,7 +833,11 @@ function ModelsPage() {
               </div>
               <div>
                 <h3>{model.name}</h3>
-                <span>{providerLabel(model.provider)}</span>
+                <span>
+                  {model.credential_kind === "anthropic_oauth"
+                    ? "Claude Code OAuth · Agent SDK"
+                    : providerLabel(model.provider)}
+                </span>
               </div>
               <div className="model-card__actions">
                 <button
@@ -1026,7 +1048,9 @@ function ModelsPage() {
                 }}
               >
                 <option value="openai_responses">OpenAI Responses API</option>
-                <option value="anthropic">Anthropic Messages API</option>
+                <option value="anthropic">
+                  Anthropic (Messages API / Claude Code OAuth)
+                </option>
                 <option value="codex">
                   Codex OAuth (ChatGPT subscription)
                 </option>
@@ -1043,6 +1067,11 @@ function ModelsPage() {
                       "OAuth 令牌强制锁定到 OpenAI 官方 Codex 后端。",
                       "OAuth tokens are pinned to the official OpenAI Codex backend.",
                     )
+                  : isClaudeCodeOAuth
+                    ? text(
+                        "Claude Code OAuth 由官方 Agent SDK 消费；自定义 URL 不会生效。",
+                        "Claude Code OAuth is consumed by the official Agent SDK; custom URLs do not apply.",
+                      )
                   : undefined
               }
             >
@@ -1051,7 +1080,7 @@ function ModelsPage() {
                 type="url"
                 required
                 value={baseUrl}
-                readOnly={provider === "codex"}
+                readOnly={provider === "codex" || isClaudeCodeOAuth}
                 placeholder={providerDefaultUrl(provider)}
                 onChange={(event) => setBaseUrl(event.target.value)}
               />
@@ -1073,7 +1102,26 @@ function ModelsPage() {
             >
               <select
                 value={credentialId}
-                onChange={(event) => setCredentialId(event.target.value)}
+                onChange={(event) => {
+                  const nextCredentialId = event.target.value;
+                  setCredentialId(nextCredentialId);
+                  const nextCredential = credentials.data?.find(
+                    (item) => item.id === nextCredentialId,
+                  );
+                  if (
+                    provider === "anthropic" &&
+                    nextCredential?.kind === "anthropic_oauth"
+                  ) {
+                    setBaseUrl("https://api.anthropic.com");
+                    setParameterDraft((current) => ({
+                      ...current,
+                      temperature: "",
+                      topP: "",
+                      maxOutputTokens: "",
+                      serviceTier: "",
+                    }));
+                  }
+                }}
               >
                 <option value="">
                   {provider === "ollama"
@@ -1114,9 +1162,12 @@ function ModelsPage() {
                 {text("打开认证中心", "Open credentials")}
               </Link>
             </div>
-            {provider !== "codex" && (
+            {provider !== "codex" && !isClaudeCodeOAuth && (
               <Field
-                label={text("快速添加 API Key（可选）", "Quick-add API key (optional)")}
+                label={text(
+                  "快速添加 API Key（可选）",
+                  "Quick-add API key (optional)",
+                )}
                 hint={text(
                   "输入后会新建可复用的加密凭据，并覆盖上面的选择；留空则使用所选凭据。",
                   "Entering a key creates a reusable encrypted credential and overrides the selection above; leave blank to use the selection.",
@@ -1152,8 +1203,19 @@ function ModelsPage() {
                 </span>
               </div>
             )}
+            {isClaudeCodeOAuth && (
+              <div className="credential-import-warning">
+                <AlertTriangle size={14} />
+                <span>
+                  {text(
+                    "Claude Code OAuth 使用官方 Agent SDK 的模型与采样默认值。平台仅传递推理挡位；温度、Top P、输出上限和服务挡位不会伪装成 Messages API 参数。",
+                    "Claude Code OAuth uses the official Agent SDK's model and sampling defaults. The platform passes only reasoning effort; temperature, Top P, output limits, and service tier are not disguised as Messages API parameters.",
+                  )}
+                </span>
+              </div>
+            )}
             <div className="model-parameter-grid">
-              {provider !== "codex" && (
+              {provider !== "codex" && !isClaudeCodeOAuth && (
                 <>
                   <Field
                     label={text("温度", "Temperature")}
@@ -1356,14 +1418,60 @@ function ModelsPage() {
 }
 
 function RunsPage() {
-  const { text } = useLocale();
+  const { isChinese, text } = useLocale();
   const [archiveTarget, setArchiveTarget] = useState<Run | null>(null);
+  const [search, setSearch] = useState("");
+  const [scenarioFilter, setScenarioFilter] = useState("");
+  const [modelFilter, setModelFilter] = useState("");
+  const [statusFilter, setStatusFilter] = useState("");
   const runs = useQuery({
     queryKey: ["runs"],
     queryFn: api.runs,
     refetchInterval: 4_000,
   });
   const models = useQuery({ queryKey: ["models"], queryFn: api.models });
+  const tasks = useQuery({ queryKey: ["tasks"], queryFn: api.tasks });
+  const orderedTasks = useMemo(
+    () => orderTasks(tasks.data ?? []),
+    [tasks.data],
+  );
+  const allRuns = useMemo(() => runs.data ?? [], [runs.data]);
+  const filteredRuns = useMemo(() => {
+    const needle = search.trim().toLocaleLowerCase();
+    return allRuns.filter((run) => {
+      if (scenarioFilter && run.task_id !== scenarioFilter) return false;
+      if (modelFilter && run.candidate_model_id !== modelFilter) return false;
+      if (statusFilter && run.status !== statusFilter) return false;
+      if (!needle) return true;
+      const task = resolveRunTask(run, orderedTasks, isChinese);
+      const model = resolveRunModel(run, "candidate", models.data ?? []);
+      return [
+        run.id,
+        run.stage,
+        run.status,
+        task.name,
+        task.slug,
+        task.version,
+        model.name,
+        model.modelId,
+        model.provider,
+      ]
+        .filter((value): value is string => Boolean(value))
+        .some((value) => value.toLocaleLowerCase().includes(needle));
+    });
+  }, [
+    allRuns,
+    isChinese,
+    modelFilter,
+    models.data,
+    orderedTasks,
+    scenarioFilter,
+    search,
+    statusFilter,
+  ]);
+  const filtersActive = Boolean(
+    search || scenarioFilter || modelFilter || statusFilter,
+  );
   return (
     <>
       <PageHeader
@@ -1387,14 +1495,94 @@ function RunsPage() {
           </span>
           <span className="toolbar__count">
             {text(
-              `${runs.data?.length ?? 0} 条记录`,
-              `${runs.data?.length ?? 0} records`,
+              `${filteredRuns.length} / ${allRuns.length} 条记录`,
+              `${filteredRuns.length} / ${allRuns.length} records`,
             )}
           </span>
         </div>
+        <div className="run-filters">
+          <label className="run-filter run-filter--search">
+            <span>{text("搜索", "Search")}</span>
+            <input
+              type="search"
+              value={search}
+              placeholder={text(
+                "运行 ID、场景、模型或阶段",
+                "Run ID, scenario, model, or stage",
+              )}
+              onChange={(event) => setSearch(event.target.value)}
+            />
+          </label>
+          <label className="run-filter">
+            <span>{text("场景", "Scenario")}</span>
+            <select
+              value={scenarioFilter}
+              onChange={(event) => setScenarioFilter(event.target.value)}
+            >
+              <option value="">{text("全部场景", "All scenarios")}</option>
+              {orderedTasks.map((task) => (
+                <option key={task.id} value={task.id}>
+                  {taskCopy(task, isChinese).name} · {task.version}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="run-filter">
+            <span>{text("模型", "Model")}</span>
+            <select
+              value={modelFilter}
+              onChange={(event) => setModelFilter(event.target.value)}
+            >
+              <option value="">{text("全部模型", "All models")}</option>
+              {(models.data ?? []).map((model) => (
+                <option key={model.id} value={model.id}>
+                  {model.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="run-filter">
+            <span>{text("状态", "Status")}</span>
+            <select
+              value={statusFilter}
+              onChange={(event) => setStatusFilter(event.target.value)}
+            >
+              <option value="">{text("全部状态", "All statuses")}</option>
+              {(
+                [
+                  "queued",
+                  "preparing",
+                  "running",
+                  "scoring",
+                  "completed",
+                  "failed",
+                  "cancelled",
+                ] as RunStatus[]
+              ).map((status) => (
+                <option key={status} value={status}>
+                  {statusLabel(status, isChinese ? "zh-CN" : "en")}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button
+            className="button button--ghost button--small run-filters__clear"
+            type="button"
+            disabled={!filtersActive}
+            onClick={() => {
+              setSearch("");
+              setScenarioFilter("");
+              setModelFilter("");
+              setStatusFilter("");
+            }}
+          >
+            <X size={13} /> {text("清除", "Clear")}
+          </button>
+        </div>
         <RunTable
-          runs={runs.data ?? []}
+          runs={filteredRuns}
           models={models.data ?? []}
+          tasks={orderedTasks}
           onArchive={setArchiveTarget}
         />
       </section>
@@ -1412,24 +1600,42 @@ function RunsPage() {
 function NewRunPage() {
   const { isChinese, text } = useLocale();
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const tasks = useQuery({ queryKey: ["tasks"], queryFn: api.tasks });
   const models = useQuery({ queryKey: ["models"], queryFn: api.models });
   const enabledModels = (models.data ?? []).filter((model) => model.enabled);
-  const [selectedTaskId, setSelectedTaskId] = useState("");
+  const requestedTaskId = searchParams.get("task") ?? "";
+  const orderedTasks = useMemo(
+    () => orderTasks(tasks.data ?? []),
+    [tasks.data],
+  );
+  const [selectedTaskId, setSelectedTaskId] = useState(requestedTaskId);
   const [error, setError] = useState("");
+  useEffect(() => {
+    if (!orderedTasks.length) return;
+    const requestedExists = orderedTasks.some(
+      (task) => task.id === requestedTaskId,
+    );
+    const selectedExists = orderedTasks.some(
+      (task) => task.id === selectedTaskId,
+    );
+    const nextTaskId = requestedExists
+      ? requestedTaskId
+      : selectedExists
+        ? selectedTaskId
+        : orderedTasks[0].id;
+    if (nextTaskId !== selectedTaskId) setSelectedTaskId(nextTaskId);
+  }, [orderedTasks, requestedTaskId, selectedTaskId]);
   const selectedTask =
-    (tasks.data ?? []).find((task) => task.id === selectedTaskId) ??
-    tasks.data?.[0];
+    orderedTasks.find((task) => task.id === selectedTaskId) ?? orderedTasks[0];
   const selectedBudget = selectedTask?.manifest.budget;
   const budgetDefaults = {
     softSeconds: selectedBudget?.soft_seconds ?? 5_400,
     hardSeconds: selectedBudget?.hard_seconds ?? 10_800,
     softToolCalls: selectedBudget?.soft_tool_calls ?? 600,
     hardToolCalls: selectedBudget?.hard_tool_calls ?? 2_200,
-    softProviderRequests:
-      selectedBudget?.soft_provider_requests ?? 300,
-    hardProviderRequests:
-      selectedBudget?.hard_provider_requests ?? 720,
+    softProviderRequests: selectedBudget?.soft_provider_requests ?? 300,
+    hardProviderRequests: selectedBudget?.hard_provider_requests ?? 720,
   };
   const create = useMutation({
     mutationFn: api.createRun,
@@ -1482,14 +1688,17 @@ function NewRunPage() {
             detail={text("版本化世界包", "Versioned world package")}
           />
           <div className="choice-grid">
-            {(tasks.data ?? []).map((task, index) => (
+            {orderedTasks.map((task) => (
               <label className="choice-card" key={task.id}>
                 <input
                   type="radio"
                   name="task_id"
                   value={task.id}
-                  defaultChecked={index === 0}
-                  onChange={() => setSelectedTaskId(task.id)}
+                  checked={task.id === selectedTask?.id}
+                  onChange={() => {
+                    setSelectedTaskId(task.id);
+                    setSearchParams({ task: task.id }, { replace: true });
+                  }}
                 />
                 <div className="choice-card__check">
                   <CheckCircle2 size={16} />
@@ -1515,7 +1724,8 @@ function NewRunPage() {
                 </option>
                 {enabledModels.map((model) => (
                   <option value={model.id} key={model.id}>
-                    {model.name} · {model.model_id}
+                    {model.name} · {providerLabel(model.provider)} ·{" "}
+                    {model.model_id}
                   </option>
                 ))}
               </select>
@@ -1533,7 +1743,7 @@ function NewRunPage() {
                 </option>
                 {enabledModels.map((model) => (
                   <option value={model.id} key={model.id}>
-                    {model.name}
+                    {model.name} · {providerLabel(model.provider)}
                   </option>
                 ))}
               </select>
@@ -1612,14 +1822,8 @@ function NewRunPage() {
               />
             </Field>
             <Field
-              label={text(
-                "软 Provider 请求限制",
-                "Soft Provider requests",
-              )}
-              hint={text(
-                "包含 429 / 5xx 重试",
-                "Includes 429 / 5xx retries",
-              )}
+              label={text("软 Provider 请求限制", "Soft Provider requests")}
+              hint={text("包含 429 / 5xx 重试", "Includes 429 / 5xx retries")}
             >
               <input
                 name="soft_provider_requests"
@@ -1629,14 +1833,8 @@ function NewRunPage() {
               />
             </Field>
             <Field
-              label={text(
-                "硬 Provider 请求限制",
-                "Hard Provider requests",
-              )}
-              hint={text(
-                "真实 HTTP 请求上限",
-                "Raw HTTP request cap",
-              )}
+              label={text("硬 Provider 请求限制", "Hard Provider requests")}
+              hint={text("真实 HTTP 请求上限", "Raw HTTP request cap")}
             >
               <input
                 name="hard_provider_requests"
@@ -1714,7 +1912,7 @@ function NewRunPage() {
 }
 
 function RunDetailPage() {
-  const { locale, text } = useLocale();
+  const { isChinese, locale, text } = useLocale();
   const { runId = "" } = useParams();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -1812,11 +2010,8 @@ function RunDetailPage() {
   const taskManifest = tasks.data?.find(
     (task) => task.id === data.task_id,
   )?.manifest;
-  const candidateModel = resolveRunModel(
-    data,
-    "candidate",
-    models.data ?? [],
-  );
+  const candidateModel = resolveRunModel(data, "candidate", models.data ?? []);
+  const runTask = resolveRunTask(data, tasks.data ?? [], isChinese);
   const completion = taskManifest?.completion;
   const pauseRequested = data.config.pause_requested === true;
   const maximumScore = Math.max(1, data.scorecard.maximum ?? 1_200);
@@ -1827,10 +2022,7 @@ function RunDetailPage() {
       <div className="run-hero">
         <div className="run-hero__heading">
           <div className="run-hero__meta">
-            <StatusPill
-              status={data.status}
-              censored={isCensoredRun(data)}
-            />
+            <StatusPill status={data.status} censored={isCensoredRun(data)} />
             <span>{shortId(data.id)}</span>
             <span>{new Date(data.created_at).toLocaleString(locale)}</span>
           </div>
@@ -1848,16 +2040,21 @@ function RunDetailPage() {
                   "The run reached a hard budget. Its score is a partial evaluation of a censored trajectory, not a completed solution.",
                 )
               : data.status === "completed"
-              ? text(
-                  "隐藏裁判流水线已经归档本次调查。",
-                  "The hidden judge pipeline has archived this investigation.",
-                )
-              : text(
-                  "Runner 正在从隔离候选环境中流式传输可观察的调查状态。",
-                  "The Runner is streaming observable investigation state from the isolated candidate.",
-                )}
+                ? text(
+                    "隐藏裁判流水线已经归档本次调查。",
+                    "The hidden judge pipeline has archived this investigation.",
+                  )
+                : text(
+                    "Runner 正在从隔离候选环境中流式传输可观察的调查状态。",
+                    "The Runner is streaming observable investigation state from the isolated candidate.",
+                  )}
           </p>
           <div className="run-model-strip">
+            <RunTaskBadge
+              identity={runTask}
+              label={text("测试场景", "Scenario")}
+              unknown={text("未知场景", "Unknown scenario")}
+            />
             <RunModelBadge
               identity={candidateModel}
               label={text("候选模型", "Candidate")}
@@ -2164,8 +2361,7 @@ function RunDetailPage() {
           href={api.reportUrl(data.id)}
           download={`run-${data.id}-telemetry.json`}
         >
-          <Download size={14} />{" "}
-          {text("导出完整遥测", "Export full telemetry")}
+          <Download size={14} /> {text("导出完整遥测", "Export full telemetry")}
         </a>
         {artifacts.data?.map((artifact) => (
           <a
@@ -2785,15 +2981,17 @@ function SettingsPage() {
 function RunTable({
   runs,
   models,
+  tasks,
   compact = false,
   onArchive,
 }: {
   runs: Run[];
   models: ModelProfile[];
+  tasks: Task[];
   compact?: boolean;
   onArchive?: (run: Run) => void;
 }) {
-  const { locale, text } = useLocale();
+  const { isChinese, locale, text } = useLocale();
   if (!runs.length) {
     return (
       <EmptyState
@@ -2811,6 +3009,7 @@ function RunTable({
         <thead>
           <tr>
             <th>{text("运行", "Run")}</th>
+            <th>{text("场景", "Scenario")}</th>
             <th>{text("模型", "Model")}</th>
             <th>{text("状态", "Status")}</th>
             <th>{text("阶段", "Stage")}</th>
@@ -2823,14 +3022,25 @@ function RunTable({
         <tbody>
           {runs.slice(0, compact ? 8 : 200).map((run) => {
             const model = resolveRunModel(run, "candidate", models);
+            const task = resolveRunTask(run, tasks, isChinese);
             return (
               <tr key={run.id}>
                 <td data-cell="run" data-label={text("运行", "Run")}>
                   <code>{shortId(run.id)}</code>
                 </td>
+                <td data-cell="scenario" data-label={text("场景", "Scenario")}>
+                  <span className="table-scenario">
+                    <strong>
+                      {task.name ?? text("未知场景", "Unknown scenario")}
+                    </strong>
+                    {task.version && <small>v{task.version}</small>}
+                  </span>
+                </td>
                 <td data-cell="model" data-label={text("模型", "Model")}>
                   <span className="table-model">
-                    <strong>{model.name ?? text("未知模型", "Unknown model")}</strong>
+                    <strong>
+                      {model.name ?? text("未知模型", "Unknown model")}
+                    </strong>
                   </span>
                 </td>
                 <td data-cell="status" data-label={text("状态", "Status")}>
@@ -2888,6 +3098,29 @@ function RunTable({
           })}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+function RunTaskBadge({
+  identity,
+  label,
+  unknown,
+}: {
+  identity: RunTaskIdentity;
+  label: string;
+  unknown: string;
+}) {
+  return (
+    <div className="run-model-badge run-task-badge">
+      <Blocks size={15} />
+      <span>
+        <small>{label}</small>
+        <strong>
+          {identity.name ?? unknown}
+          {identity.version ? ` · v${identity.version}` : ""}
+        </strong>
+      </span>
     </div>
   );
 }
@@ -2989,20 +3222,19 @@ function StatusPill({
   censored?: boolean;
 }) {
   const { locale, text } = useLocale();
-  const icon =
-    censored ? (
-      <AlertTriangle />
-    ) : status === "completed" ? (
-      <CheckCircle2 />
-    ) : status === "failed" ? (
-      <XCircle />
-    ) : status === "cancelled" ? (
-      <X />
-    ) : status === "queued" ? (
-      <Clock3 />
-    ) : (
-      <CircleDot />
-    );
+  const icon = censored ? (
+    <AlertTriangle />
+  ) : status === "completed" ? (
+    <CheckCircle2 />
+  ) : status === "failed" ? (
+    <XCircle />
+  ) : status === "cancelled" ? (
+    <X />
+  ) : status === "queued" ? (
+    <Clock3 />
+  ) : (
+    <CircleDot />
+  );
   return (
     <span
       className={`status-pill status-pill--${censored ? "censored" : status}`}
@@ -3024,8 +3256,7 @@ function censoredReasons(run: Run): string[] {
 
 function isCensoredRun(run: Run): boolean {
   return (
-    run.scorecard.outcome?.censored === true ||
-    censoredReasons(run).length > 0
+    run.scorecard.outcome?.censored === true || censoredReasons(run).length > 0
   );
 }
 
@@ -3330,6 +3561,9 @@ function credentialSupportsProvider(
   if (provider === "codex") return kind === "codex_oauth";
   if (provider === "gemini") {
     return kind === "api_key" || kind === "gemini_oauth";
+  }
+  if (provider === "anthropic") {
+    return kind === "api_key" || kind === "anthropic_oauth";
   }
   return kind === "api_key";
 }

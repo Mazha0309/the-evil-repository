@@ -61,6 +61,11 @@ export interface LiveRunAnalysis {
   peakContextMessages: number;
   peakContextCharacters: number;
   contextGrowthCharacters: number;
+  contextCompactions: number;
+  contextMessagesRemoved: number;
+  contextCharactersRemoved: number;
+  contextOverflowRetries: number;
+  providerPolicyRetries: number;
   outputTokensPerSecond: number;
   hypothesisRevisions: number;
   hypothesisStatusChanges: number;
@@ -125,7 +130,25 @@ export function analyzeRunEvents(
   const providerErrors = events.filter(
     (event) => event.kind === "provider.error",
   );
-  const providerDurations = [...assistantMessages, ...providerErrors]
+  const fatalProviderErrors = providerErrors.filter(
+    (event) =>
+      event.payload.context_recovery_available !== true &&
+      event.payload.policy_recovery_available !== true,
+  );
+  const contextCompactions = events.filter(
+    (event) => event.kind === "context.compacted",
+  );
+  const contextRetries = events.filter(
+    (event) =>
+      event.kind === "model.request.retry" &&
+      event.payload.reason === "provider_context_rejection",
+  );
+  const policyRetries = events.filter(
+    (event) =>
+      event.kind === "model.request.retry" &&
+      event.payload.reason === "provider_policy_rejection",
+  );
+  const providerDurations = [...assistantMessages, ...fatalProviderErrors]
     .map((event) => numberValue(event.payload.duration_ms))
     .filter((value) => value > 0);
   const toolDurations = results
@@ -279,7 +302,7 @@ export function analyzeRunEvents(
     modelTurns: modelRequests.length,
     providerAttempts: providerAttempts.length,
     providerRetries: providerRetries.length,
-    providerErrors: providerErrors.length,
+    providerErrors: fatalProviderErrors.length,
     providerLatencyAverageMs: average(providerDurations),
     providerLatencyP95Ms: percentile(providerDurations, 0.95),
     providerLatencyMaxMs: Math.max(0, ...providerDurations),
@@ -299,11 +322,27 @@ export function analyzeRunEvents(
     peakContextCharacters: Math.max(0, ...contextCharacters),
     contextGrowthCharacters:
       contextCharacters.length > 1
-        ? Math.max(
-            0,
-            contextCharacters.at(-1)! - contextCharacters[0],
-          )
+        ? contextCharacters
+            .slice(1)
+            .reduce(
+              (total, value, index) =>
+                total + Math.max(0, value - contextCharacters[index]),
+              0,
+            )
         : 0,
+    contextCompactions: contextCompactions.length,
+    contextMessagesRemoved: contextCompactions.reduce(
+      (total, event) =>
+        total + numberValue(event.payload.messages_removed),
+      0,
+    ),
+    contextCharactersRemoved: contextCompactions.reduce(
+      (total, event) =>
+        total + numberValue(event.payload.characters_removed),
+      0,
+    ),
+    contextOverflowRetries: contextRetries.length,
+    providerPolicyRetries: policyRetries.length,
     outputTokensPerSecond:
       providerWaitMs > 0 ? outputTokens / (providerWaitMs / 1_000) : 0,
     hypothesisRevisions: hypothesisEvents.length,

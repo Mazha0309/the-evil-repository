@@ -36,6 +36,7 @@ class ModelProvider(StrEnum):
 
 class CredentialKind(StrEnum):
     api_key = "api_key"
+    anthropic_oauth = "anthropic_oauth"
     codex_oauth = "codex_oauth"
     gemini_oauth = "gemini_oauth"
 

@@ -5,9 +5,11 @@ import app.database as database
 from app.credentials import decode_payload
 from app.crypto import SecretBox
 from app.models import (
+    BenchmarkRun,
     ModelProfile,
     ModelProvider,
     ProviderCredential,
+    TaskDefinition,
     UserAccount,
     UserModelAccess,
     UserRole,
@@ -19,59 +21,24 @@ def test_create_schema_adds_archive_columns_to_legacy_sqlite(
 ) -> None:
     legacy_engine = create_engine("sqlite://")
     with legacy_engine.begin() as connection:
-        connection.execute(
-            text(
-                "CREATE TABLE platform_settings "
-                "(name VARCHAR(80) PRIMARY KEY)"
-            )
-        )
-        connection.execute(
-            text(
-                "CREATE TABLE model_profiles "
-                "(id CHAR(32) PRIMARY KEY)"
-            )
-        )
-        connection.execute(
-            text("INSERT INTO model_profiles (id) VALUES ('legacy-profile')")
-        )
-        connection.execute(
-            text(
-                "CREATE TABLE benchmark_runs "
-                "(id CHAR(32) PRIMARY KEY)"
-            )
-        )
-        connection.execute(
-            text("INSERT INTO benchmark_runs (id) VALUES ('legacy-run')")
-        )
+        connection.execute(text("CREATE TABLE platform_settings (name VARCHAR(80) PRIMARY KEY)"))
+        connection.execute(text("CREATE TABLE model_profiles (id CHAR(32) PRIMARY KEY)"))
+        connection.execute(text("INSERT INTO model_profiles (id) VALUES ('legacy-profile')"))
+        connection.execute(text("CREATE TABLE benchmark_runs (id CHAR(32) PRIMARY KEY)"))
+        connection.execute(text("INSERT INTO benchmark_runs (id) VALUES ('legacy-run')"))
 
     monkeypatch.setattr(database, "engine", legacy_engine)
     database.create_schema()
     database.create_schema()
 
     with legacy_engine.connect() as connection:
-        model_columns = {
-            row[1]
-            for row in connection.execute(
-                text("PRAGMA table_info(model_profiles)")
-            )
-        }
-        run_columns = {
-            row[1]
-            for row in connection.execute(
-                text("PRAGMA table_info(benchmark_runs)")
-            )
-        }
+        model_columns = {row[1] for row in connection.execute(text("PRAGMA table_info(model_profiles)"))}
+        run_columns = {row[1] for row in connection.execute(text("PRAGMA table_info(benchmark_runs)"))}
         stored_model = connection.execute(
-            text(
-                "SELECT id, archived_at FROM model_profiles "
-                "WHERE id = 'legacy-profile'"
-            )
+            text("SELECT id, archived_at FROM model_profiles WHERE id = 'legacy-profile'")
         ).one()
         stored_run = connection.execute(
-            text(
-                "SELECT id, archived_at FROM benchmark_runs "
-                "WHERE id = 'legacy-run'"
-            )
+            text("SELECT id, archived_at FROM benchmark_runs WHERE id = 'legacy-run'")
         ).one()
 
     assert {"archived_at", "credential_id"} <= model_columns
@@ -104,9 +71,7 @@ def test_legacy_profile_key_migrates_to_one_reusable_credential(
             provider=ModelProvider.openai_compatible,
             base_url="https://provider.example/v1",
             model_id="legacy-model",
-            encrypted_api_key=SecretBox(
-                database.settings.app_secret
-            ).encrypt("legacy-secret"),
+            encrypted_api_key=SecretBox(database.settings.app_secret).encrypt("legacy-secret"),
         )
         session.add_all([owner, profile])
         session.flush()
@@ -124,12 +89,79 @@ def test_legacy_profile_key_migrates_to_one_reusable_credential(
 
     with sessions() as session:
         migrated = session.get(ModelProfile, profile_id)
-        credentials = list(
-            session.scalars(select(ProviderCredential)).all()
-        )
+        credentials = list(session.scalars(select(ProviderCredential)).all())
         assert migrated is not None
         assert migrated.encrypted_api_key is None
         assert migrated.credential_id == credentials[0].id
         assert len(credentials) == 1
         assert credentials[0].name == "Legacy model · API key"
         assert decode_payload(credentials[0]) == {"secret": "legacy-secret"}
+
+
+def test_legacy_run_gains_one_immutable_task_snapshot(
+    monkeypatch,
+) -> None:
+    legacy_engine = create_engine("sqlite://")
+    database.Base.metadata.create_all(legacy_engine)
+    sessions = sessionmaker(
+        bind=legacy_engine,
+        expire_on_commit=False,
+        class_=Session,
+    )
+    monkeypatch.setattr(database, "engine", legacy_engine)
+    monkeypatch.setattr(database, "SessionLocal", sessions)
+
+    with sessions() as session:
+        profile = ModelProfile(
+            name="Candidate",
+            provider=ModelProvider.openai_compatible,
+            base_url="https://provider.example/v1",
+            model_id="candidate",
+            encrypted_api_key="legacy",
+        )
+        task = TaskDefinition(
+            slug="historical-scenario",
+            version="7.2.1",
+            name="Historical Scenario",
+            description="Original description",
+            category="test",
+            manifest={
+                "localizations": {
+                    "zh-CN": {
+                        "name": "历史场景",
+                        "description": "原始说明",
+                    }
+                }
+            },
+        )
+        session.add_all([profile, task])
+        session.flush()
+        run = BenchmarkRun(
+            task_id=task.id,
+            candidate_model_id=profile.id,
+            config={"existing": True},
+        )
+        session.add(run)
+        session.commit()
+        run_id = run.id
+
+    database.migrate_legacy_run_task_snapshots()
+    database.migrate_legacy_run_task_snapshots()
+
+    with sessions() as session:
+        migrated = session.get(BenchmarkRun, run_id)
+        assert migrated is not None
+        assert migrated.config["existing"] is True
+        assert migrated.config["task_snapshot"] == {
+            "id": str(task.id),
+            "slug": "historical-scenario",
+            "version": "7.2.1",
+            "name": "Historical Scenario",
+            "description": "Original description",
+            "localizations": {
+                "zh-CN": {
+                    "name": "历史场景",
+                    "description": "原始说明",
+                }
+            },
+        }

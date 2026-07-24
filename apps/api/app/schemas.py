@@ -147,13 +147,19 @@ class CredentialImport(BaseModel):
 
     @model_validator(mode="after")
     def only_oauth_documents_are_imported(self) -> "CredentialImport":
-        if self.kind == CredentialKind.api_key:
-            raise ValueError("API keys must be created as a secret, not imported as JSON")
+        if self.kind in {
+            CredentialKind.api_key,
+            CredentialKind.anthropic_oauth,
+        }:
+            raise ValueError(
+                "This credential kind must be created as a secret, not imported as JSON"
+            )
         return self
 
 
 class CredentialUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=120)
+    secret: str | None = Field(default=None, min_length=1, max_length=65_536)
 
 
 class CredentialRead(ORMModel):
@@ -261,6 +267,23 @@ class ModelRead(ORMModel):
     updated_at: datetime
 
 
+class SyncedModelRead(BaseModel):
+    id: uuid.UUID
+    name: str
+    provider: ModelProvider
+    model_id: str
+    created: bool
+
+
+class CredentialModelSyncRead(BaseModel):
+    credential_id: uuid.UUID
+    provider: ModelProvider
+    discovered: int
+    created: int
+    existing: int
+    models: list[SyncedModelRead]
+
+
 class RunCreate(BaseModel):
     task_id: uuid.UUID
     candidate_model_id: uuid.UUID
@@ -284,10 +307,7 @@ class RunCreate(BaseModel):
         if self.soft_tool_calls >= self.hard_tool_calls:
             raise ValueError("Soft tool-call budget must be lower than the hard tool-call budget")
         if self.soft_provider_requests >= self.hard_provider_requests:
-            raise ValueError(
-                "Soft Provider-request budget must be lower than the hard "
-                "Provider-request budget"
-            )
+            raise ValueError("Soft Provider-request budget must be lower than the hard Provider-request budget")
         self._validate_optional_pair(
             "Token",
             self.soft_total_tokens,

@@ -378,7 +378,11 @@ export default function LiveRunMonitor({
             <SignalMetric
               danger={analysis.providerErrors > 0}
               label={text("错误 / 重试", "Errors / retries")}
-              value={`${analysis.providerErrors} / ${analysis.providerRetries}`}
+              value={`${analysis.providerErrors} / ${
+                analysis.providerRetries +
+                analysis.contextOverflowRetries +
+                analysis.providerPolicyRetries
+              }`}
             />
           </div>
           <div className="agent-observability__ledger">
@@ -408,8 +412,18 @@ export default function LiveRunMonitor({
               </strong>
             </div>
             <small>
-              {text("本次增长", "growth")} +{" "}
+              {text("累计增长", "cumulative growth")} +{" "}
               {compact(analysis.contextGrowthCharacters)} chars
+              {analysis.contextCompactions > 0
+                ? text(
+                    ` · ${analysis.contextCompactions} 次压缩，移除 ${compact(
+                      analysis.contextCharactersRemoved,
+                    )} chars`,
+                    ` · ${analysis.contextCompactions} compactions, ${compact(
+                      analysis.contextCharactersRemoved,
+                    )} chars retired`,
+                  )
+                : ""}
             </small>
           </div>
         </section>
@@ -1377,6 +1391,16 @@ function phaseDetail(
         : `Turn ${String(turn)} is on Provider HTTP attempt ${String(attempt)}/${String(maximum)}; waiting ${elapsed}.`;
     }
     if (event?.kind === "provider.error") {
+      if (event.payload.policy_recovery_available === true) {
+        return locale === "zh-CN"
+          ? `Provider 拒绝了累积的原始仓库内容；Runner 正在丢弃未受信任原文并用调查账本发起一次安全续轮。`
+          : `The Provider rejected accumulated raw repository content; the Runner is retiring untrusted text and attempting one safe continuation from the investigation ledger.`;
+      }
+      if (event.payload.context_recovery_available === true) {
+        return locale === "zh-CN"
+          ? `Provider 上下文已满；Runner 正在压缩已归档历史并自动重试，本次运行不会直接判失败。`
+          : `The Provider context is full; the Runner is compacting archived history and retrying instead of failing the run.`;
+      }
       return locale === "zh-CN"
         ? `Provider 请求失败：${String(event.payload.error_type ?? "unknown")}。Runner 正在保存失败遥测。`
         : `Provider request failed with ${String(event.payload.error_type ?? "unknown")}; the Runner is preserving failure telemetry.`;

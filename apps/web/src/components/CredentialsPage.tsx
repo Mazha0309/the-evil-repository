@@ -7,6 +7,7 @@ import {
   FileJson2,
   KeyRound,
   LoaderCircle,
+  Pencil,
   Plus,
   RefreshCw,
   ShieldCheck,
@@ -14,12 +15,7 @@ import {
   Upload,
   X,
 } from "lucide-react";
-import {
-  type FormEvent,
-  type ReactNode,
-  useEffect,
-  useState,
-} from "react";
+import { type FormEvent, type ReactNode, useEffect, useState } from "react";
 import { api } from "../lib/api";
 import { useLocale } from "../lib/i18n";
 import type {
@@ -29,7 +25,12 @@ import type {
   ProviderCredential,
 } from "../lib/types";
 
-type CreateMode = "api_key" | "codex_import" | "gemini_import" | "codex_device";
+type CreateMode =
+  | "api_key"
+  | "anthropic_token"
+  | "codex_import"
+  | "gemini_import"
+  | "codex_device";
 
 export default function CredentialsPage() {
   const { locale, text } = useLocale();
@@ -42,22 +43,71 @@ export default function CredentialsPage() {
   const [deleteTarget, setDeleteTarget] = useState<ProviderCredential | null>(
     null,
   );
+  const [replaceTarget, setReplaceTarget] =
+    useState<ProviderCredential | null>(null);
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
   const refresh = useMutation({
     mutationFn: api.refreshCredential,
     onSuccess: () => {
       setError("");
+      setNotice("");
       void queryClient.invalidateQueries({ queryKey: ["credentials"] });
       void queryClient.invalidateQueries({ queryKey: ["models"] });
     },
     onError: (cause) =>
       setError(cause instanceof Error ? cause.message : String(cause)),
   });
+  const sync = useMutation({
+    mutationFn: api.syncCredentialModels,
+    onSuccess: (result) => {
+      setError("");
+      setNotice(
+        result.provider === "anthropic"
+          ? text(
+              `已配置 ${result.discovered} 个 Claude Code 官方模型别名；新增 ${result.created} 个，已有 ${result.existing} 个。实际权限会在运行时由 Anthropic 校验。`,
+              `Provisioned ${result.discovered} official Claude Code model aliases; ${result.created} created and ${result.existing} already present. Anthropic validates entitlement at runtime.`,
+            )
+          : text(
+              `账户返回 ${result.discovered} 个可选模型；新增 ${result.created} 个，已有 ${result.existing} 个。`,
+              `The account returned ${result.discovered} selectable models; ${result.created} created and ${result.existing} already present.`,
+            ),
+      );
+      void queryClient.invalidateQueries({ queryKey: ["credentials"] });
+      void queryClient.invalidateQueries({ queryKey: ["models"] });
+    },
+    onError: (cause) => {
+      setNotice("");
+      setError(cause instanceof Error ? cause.message : String(cause));
+    },
+  });
   const remove = useMutation({
     mutationFn: api.deleteCredential,
     onSuccess: () => {
       setDeleteTarget(null);
       setError("");
+      void queryClient.invalidateQueries({ queryKey: ["credentials"] });
+    },
+    onError: (cause) =>
+      setError(cause instanceof Error ? cause.message : String(cause)),
+  });
+  const replace = useMutation({
+    mutationFn: ({
+      id,
+      secret,
+    }: {
+      id: string;
+      secret: string;
+    }) => api.updateCredential(id, { secret }),
+    onSuccess: () => {
+      setReplaceTarget(null);
+      setError("");
+      setNotice(
+        text(
+          "凭据已替换；后续 Provider 请求会使用新密文。",
+          "Credential replaced; subsequent Provider requests use the new secret.",
+        ),
+      );
       void queryClient.invalidateQueries({ queryKey: ["credentials"] });
     },
     onError: (cause) =>
@@ -74,8 +124,8 @@ export default function CredentialsPage() {
           <h1>{text("Provider 凭据。", "Provider credentials.")}</h1>
           <p>
             {text(
-              "集中保存 API Key、Codex 登录和 Gemini CLI 登录。明文仅在控制平面解密，不会进入候选 Docker、工具输出或运行归档。",
-              "Store API keys, Codex sign-in, and Gemini CLI sign-in centrally. Plaintext is decrypted only in the control plane and never enters candidate Docker, tool output, or run archives.",
+              "集中保存 API Key、Claude Code、Codex 和 Gemini CLI 登录。明文仅在控制平面解密，不会进入候选 Docker、工具输出或运行归档。",
+              "Store API keys plus Claude Code, Codex, and Gemini CLI sign-ins centrally. Plaintext is decrypted only in the control plane and never enters candidate Docker, tool output, or run archives.",
             )}
           </p>
         </div>
@@ -90,8 +140,8 @@ export default function CredentialsPage() {
           <strong>{text("令牌出站域名锁定", "Token egress is pinned")}</strong>
           <span>
             {text(
-              "Codex OAuth 仅访问 auth.openai.com / chatgpt.com；Gemini OAuth 仅访问 oauth2.googleapis.com / cloudcode-pa.googleapis.com。",
-              "Codex OAuth only reaches auth.openai.com / chatgpt.com; Gemini OAuth only reaches oauth2.googleapis.com / cloudcode-pa.googleapis.com.",
+              "Claude Code OAuth 仅由官方 Agent SDK 访问 Anthropic；Codex 与 Gemini OAuth 也分别锁定到各自官方端点。",
+              "Claude Code OAuth is consumed only by the official Agent SDK; Codex and Gemini OAuth are likewise pinned to their official endpoints.",
             )}
           </span>
         </div>
@@ -101,6 +151,12 @@ export default function CredentialsPage() {
         <div className="inline-error credential-page-error">
           <AlertTriangle size={14} />
           {error}
+        </div>
+      )}
+      {notice && (
+        <div className="credential-sync-notice">
+          <CheckCircle2 size={14} />
+          {notice}
         </div>
       )}
 
@@ -114,6 +170,16 @@ export default function CredentialsPage() {
           )}
           action={text("添加密钥", "Add key")}
           onClick={() => setMode("api_key")}
+        />
+        <CredentialAction
+          icon={<ShieldCheck size={19} />}
+          title={text("Claude Code OAuth", "Claude Code OAuth")}
+          description={text(
+            "使用 claude setup-token 生成的订阅令牌；不模拟 Claude.ai 登录。",
+            "Use a subscription token from claude setup-token; no simulated Claude.ai login.",
+          )}
+          action={text("添加令牌", "Add token")}
+          onClick={() => setMode("anthropic_token")}
         />
         <CredentialAction
           icon={<FileJson2 size={19} />}
@@ -141,7 +207,9 @@ export default function CredentialsPage() {
         {(credentials.data ?? []).map((credential) => (
           <article className="credential-card" key={credential.id}>
             <div className="credential-card__head">
-              <div className={`credential-kind credential-kind--${credential.kind}`}>
+              <div
+                className={`credential-kind credential-kind--${credential.kind}`}
+              >
                 {credential.kind === "api_key" ? (
                   <KeyRound size={17} />
                 ) : (
@@ -188,19 +256,54 @@ export default function CredentialsPage() {
               </code>
             )}
             <div className="credential-card__actions">
-              <button
-                className="button button--ghost button--small"
-                disabled={
-                  refresh.isPending &&
-                  refresh.variables === credential.id
-                }
-                onClick={() => refresh.mutate(credential.id)}
-              >
-                <RefreshCw size={13} />
-                {credential.kind === "api_key"
-                  ? text("重置状态", "Reset status")
-                  : text("验证 / 刷新", "Validate / refresh")}
-              </button>
+              {(credential.kind === "codex_oauth" ||
+                credential.kind === "anthropic_oauth") && (
+                <button
+                  className="button button--small"
+                  disabled={sync.isPending && sync.variables === credential.id}
+                  onClick={() => {
+                    setNotice("");
+                    setError("");
+                    sync.mutate(credential.id);
+                  }}
+                >
+                  {sync.isPending && sync.variables === credential.id ? (
+                    <LoaderCircle className="spin" size={13} />
+                  ) : (
+                    <RefreshCw size={13} />
+                  )}
+                  {credential.model_count
+                    ? text("同步模型", "Sync models")
+                    : text("获取模型", "Fetch models")}
+                </button>
+              )}
+              {credential.kind !== "anthropic_oauth" && (
+                <button
+                  className="button button--ghost button--small"
+                  disabled={
+                    refresh.isPending && refresh.variables === credential.id
+                  }
+                  onClick={() => refresh.mutate(credential.id)}
+                >
+                  <RefreshCw size={13} />
+                  {credential.kind === "api_key"
+                    ? text("重置状态", "Reset status")
+                    : text("检查状态", "Check status")}
+                </button>
+              )}
+              {(credential.kind === "api_key" ||
+                credential.kind === "anthropic_oauth") && (
+                <button
+                  className="icon-button"
+                  title={text("替换密文", "Replace secret")}
+                  onClick={() => {
+                    setError("");
+                    setReplaceTarget(credential);
+                  }}
+                >
+                  <Pencil size={14} />
+                </button>
+              )}
               <button
                 className="icon-button icon-button--danger"
                 title={text("删除凭据", "Delete credential")}
@@ -233,6 +336,10 @@ export default function CredentialsPage() {
         <CredentialModal
           mode={mode}
           onMode={setMode}
+          onProvisionError={(message) => {
+            setNotice("");
+            setError(message);
+          }}
           onClose={() => {
             setMode(null);
             setError("");
@@ -289,6 +396,54 @@ export default function CredentialsPage() {
           </div>
         </CredentialDialog>
       )}
+
+      {replaceTarget && (
+        <CredentialDialog
+          title={text("替换凭据", "Replace credential")}
+          onClose={() => !replace.isPending && setReplaceTarget(null)}
+        >
+          <form
+            className="form"
+            onSubmit={(event) => {
+              event.preventDefault();
+              const data = new FormData(event.currentTarget);
+              replace.mutate({
+                id: replaceTarget.id,
+                secret: String(data.get("secret") ?? ""),
+              });
+            }}
+          >
+            {replaceTarget.kind === "anthropic_oauth" && (
+              <div className="credential-import-warning">
+                <AlertTriangle size={16} />
+                <span>
+                  {text(
+                    "先运行 `claude setup-token` 生成新令牌。保存后旧密文会被覆盖，现有模型引用无需修改。",
+                    "Run `claude setup-token` first. Saving replaces the old ciphertext without changing existing model references.",
+                  )}
+                </span>
+              </div>
+            )}
+            <label className="field">
+              <span>{replaceTarget.name}</span>
+              <input
+                name="secret"
+                type="password"
+                required
+                autoComplete="new-password"
+                autoFocus
+              />
+            </label>
+            {error && <div className="inline-error">{error}</div>}
+            <ModalActions
+              pending={replace.isPending}
+              onClose={() => setReplaceTarget(null)}
+              text={text}
+              submitLabel={text("覆盖旧密文", "Replace encrypted secret")}
+            />
+          </form>
+        </CredentialDialog>
+      )}
     </>
   );
 }
@@ -322,10 +477,12 @@ function CredentialModal({
   mode,
   onMode,
   onClose,
+  onProvisionError,
 }: {
   mode: CreateMode;
   onMode: (mode: CreateMode) => void;
   onClose: () => void;
+  onProvisionError: (message: string) => void;
 }) {
   const { text } = useLocale();
   const queryClient = useQueryClient();
@@ -335,6 +492,10 @@ function CredentialModal({
   const [deviceComplete, setDeviceComplete] = useState(false);
   const title = {
     api_key: text("添加 API Key", "Add API key"),
+    anthropic_token: text(
+      "添加 Claude Code OAuth",
+      "Add Claude Code OAuth",
+    ),
     codex_import: text("导入 Codex auth.json", "Import Codex auth.json"),
     gemini_import: text(
       "导入 Gemini oauth_creds.json",
@@ -344,12 +505,12 @@ function CredentialModal({
   }[mode];
   const create = useMutation({
     mutationFn: api.createCredential,
-    onSuccess: () => finish(),
+    onSuccess: (credential) => finish(credential),
     onError: showError,
   });
   const importFile = useMutation({
     mutationFn: api.importCredential,
-    onSuccess: () => finish(),
+    onSuccess: (credential) => finish(credential),
     onError: showError,
   });
   const beginDevice = useMutation({
@@ -365,10 +526,34 @@ function CredentialModal({
     setError(cause instanceof Error ? cause.message : String(cause));
   }
 
-  function finish() {
+  async function syncOAuthCredential(credential: ProviderCredential) {
+    if (
+      credential.kind !== "codex_oauth" &&
+      credential.kind !== "anthropic_oauth"
+    ) {
+      return;
+    }
+    await api.syncCredentialModels(credential.id);
+  }
+
+  async function finish(credential: ProviderCredential) {
     setError("");
-    void queryClient.invalidateQueries({ queryKey: ["credentials"] });
+    let provisionError = "";
+    try {
+      await syncOAuthCredential(credential);
+    } catch (cause) {
+      const detail = cause instanceof Error ? cause.message : String(cause);
+      provisionError = text(
+        `OAuth 已保存，但账户模型自动同步失败：${detail}`,
+        `OAuth was saved, but automatic account-model sync failed: ${detail}`,
+      );
+    }
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ["credentials"] }),
+      queryClient.invalidateQueries({ queryKey: ["models"] }),
+    ]);
     onClose();
+    if (provisionError) onProvisionError(provisionError);
   }
 
   useEffect(() => {
@@ -392,8 +577,25 @@ function CredentialModal({
           name: deviceName,
         });
         if (result.state === "complete") {
+          if (result.credential) {
+            try {
+              await syncOAuthCredential(result.credential);
+            } catch (cause) {
+              const detail =
+                cause instanceof Error ? cause.message : String(cause);
+              setError(
+                text(
+                  `登录已完成，但账户模型自动同步失败：${detail}`,
+                  `Sign-in completed, but automatic account-model sync failed: ${detail}`,
+                ),
+              );
+            }
+          }
+          await Promise.all([
+            queryClient.invalidateQueries({ queryKey: ["credentials"] }),
+            queryClient.invalidateQueries({ queryKey: ["models"] }),
+          ]);
           setDeviceComplete(true);
-          await queryClient.invalidateQueries({ queryKey: ["credentials"] });
           return;
         }
         timer = window.setTimeout(poll, Math.max(device.interval, 2) * 1_000);
@@ -406,13 +608,7 @@ function CredentialModal({
       stopped = true;
       if (timer !== undefined) window.clearTimeout(timer);
     };
-  }, [
-    device,
-    deviceComplete,
-    deviceName,
-    queryClient,
-    text,
-  ]);
+  }, [device, deviceComplete, deviceName, queryClient, text]);
 
   const submitKey = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -420,6 +616,16 @@ function CredentialModal({
     create.mutate({
       name: data.get("name"),
       kind: "api_key",
+      secret: data.get("secret"),
+    });
+  };
+
+  const submitAnthropicToken = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const data = new FormData(event.currentTarget);
+    create.mutate({
+      name: data.get("name"),
+      kind: "anthropic_oauth",
       secret: data.get("secret"),
     });
   };
@@ -446,7 +652,10 @@ function CredentialModal({
         typeof document !== "object"
       ) {
         throw new Error(
-          text("文件内容必须是 JSON 对象。", "The file must contain a JSON object."),
+          text(
+            "文件内容必须是 JSON 对象。",
+            "The file must contain a JSON object.",
+          ),
         );
       }
       importFile.mutate({
@@ -467,6 +676,12 @@ function CredentialModal({
           onClick={() => onMode("api_key")}
         >
           API Key
+        </button>
+        <button
+          className={mode === "anthropic_token" ? "active" : ""}
+          onClick={() => onMode("anthropic_token")}
+        >
+          Claude OAuth
         </button>
         <button
           className={mode === "codex_import" ? "active" : ""}
@@ -492,7 +707,12 @@ function CredentialModal({
         <form className="form" onSubmit={submitKey}>
           <label className="field">
             <span>{text("凭据名称", "Credential name")}</span>
-            <input name="name" required maxLength={120} placeholder="Provider key" />
+            <input
+              name="name"
+              required
+              maxLength={120}
+              placeholder="Provider key"
+            />
           </label>
           <label className="field">
             <span>API Key</span>
@@ -510,7 +730,56 @@ function CredentialModal({
             </small>
           </label>
           {error && <div className="inline-error">{error}</div>}
-          <ModalActions pending={create.isPending} onClose={onClose} text={text} />
+          <ModalActions
+            pending={create.isPending}
+            onClose={onClose}
+            text={text}
+          />
+        </form>
+      )}
+
+      {mode === "anthropic_token" && (
+        <form className="form" onSubmit={submitAnthropicToken}>
+          <div className="credential-import-warning">
+            <AlertTriangle size={16} />
+            <span>
+              {text(
+                "在安装了 Claude Code 的可信机器上运行 `claude setup-token`，完成网页授权后把输出的一年期令牌粘贴到这里。平台不会索取账号密码，也不会自行实现 Claude.ai OAuth 登录。该方式仅面向自托管的个人/组织内部部署；公开第三方服务应使用 Anthropic Console API Key。",
+                "Run `claude setup-token` on a trusted machine with Claude Code installed, finish authorization, then paste the emitted one-year token here. The platform never asks for your password and does not implement Claude.ai login. This route is for self-hosted personal or internal deployments; public third-party services should use an Anthropic Console API key.",
+              )}
+            </span>
+          </div>
+          <label className="field">
+            <span>{text("凭据名称", "Credential name")}</span>
+            <input
+              name="name"
+              required
+              maxLength={120}
+              defaultValue="Claude Code OAuth"
+            />
+          </label>
+          <label className="field">
+            <span>CLAUDE_CODE_OAUTH_TOKEN</span>
+            <input
+              name="secret"
+              type="password"
+              required
+              autoComplete="new-password"
+            />
+            <small>
+              {text(
+                "提交后不会再次显示明文；令牌不会进入候选环境或导出归档。",
+                "The plaintext is never shown again and never enters candidate environments or exports.",
+              )}
+            </small>
+          </label>
+          {error && <div className="inline-error">{error}</div>}
+          <ModalActions
+            pending={create.isPending}
+            onClose={onClose}
+            text={text}
+            submitLabel={text("加密保存并获取模型", "Encrypt and provision models")}
+          />
         </form>
       )}
 
@@ -521,8 +790,8 @@ function CredentialModal({
             <span>
               {mode === "codex_import"
                 ? text(
-                    "选择 Codex CLI 的 auth.json。它等同于账户密码，请只上传到你控制的 EvilBench 实例。",
-                    "Choose Codex CLI auth.json. It is equivalent to a password; only upload it to an EvilBench instance you control.",
+                    "选择 Codex CLI 的 auth.json。Refresh Token 会轮换，CLI 与平台长期共用同一份快照可能使其中一方失效；持续使用建议选择“Codex OAuth”设备登录。",
+                    "Choose Codex CLI auth.json. Refresh tokens rotate, so a snapshot shared by the CLI and platform can invalidate either copy; use Codex OAuth device sign-in for ongoing use.",
                   )
                 : text(
                     "选择 Gemini CLI 的 oauth_creds.json。若文件没有项目 ID，首次验证时会通过官方 Code Assist 接口发现项目。",
@@ -614,6 +883,7 @@ function CredentialModal({
                   "The credential is encrypted and ready for model profiles.",
                 )}
               </span>
+              {error && <div className="inline-error">{error}</div>}
               <button className="button" onClick={onClose}>
                 {text("完成", "Done")}
               </button>
@@ -621,7 +891,12 @@ function CredentialModal({
           ) : (
             <div className="credential-device">
               <LoaderCircle className="spin" size={21} />
-              <span>{text("在浏览器中输入此代码", "Enter this code in your browser")}</span>
+              <span>
+                {text(
+                  "在浏览器中输入此代码",
+                  "Enter this code in your browser",
+                )}
+              </span>
               <strong>{device.user_code}</strong>
               <div>
                 <button
@@ -638,7 +913,8 @@ function CredentialModal({
                   target="_blank"
                   rel="noreferrer"
                 >
-                  <ExternalLink size={13} /> {text("打开登录页", "Open sign-in")}
+                  <ExternalLink size={13} />{" "}
+                  {text("打开登录页", "Open sign-in")}
                 </a>
               </div>
               <small>
@@ -742,6 +1018,7 @@ function CredentialStatusBadge({
 function kindLabel(kind: CredentialKind) {
   const labels: Record<CredentialKind, string> = {
     api_key: "API KEY",
+    anthropic_oauth: "CLAUDE CODE OAUTH",
     codex_oauth: "CODEX OAUTH",
     gemini_oauth: "GEMINI OAUTH",
   };

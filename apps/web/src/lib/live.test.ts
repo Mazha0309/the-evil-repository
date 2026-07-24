@@ -190,6 +190,15 @@ describe("live run telemetry", () => {
       }),
       event(13, "investigation.evidence", { key: "E1" }),
       event(14, "investigation.edge", { edge_id: "edge-1" }),
+      event(15, "context.compacted", {
+        messages_removed: 40,
+        characters_removed: 120_000,
+      }),
+      event(16, "model.request.retry", {
+        turn: 2,
+        reason: "provider_context_rejection",
+        recovery_attempt: 1,
+      }),
     ];
 
     const result = analyzeRunEvents(events, "running", 15_000);
@@ -202,6 +211,11 @@ describe("live run telemetry", () => {
     expect(result.retryDelayMs).toBe(2_000);
     expect(result.peakContextMessages).toBe(7);
     expect(result.contextGrowthCharacters).toBe(1_500);
+    expect(result.contextCompactions).toBe(1);
+    expect(result.contextMessagesRemoved).toBe(40);
+    expect(result.contextCharactersRemoved).toBe(120_000);
+    expect(result.contextOverflowRetries).toBe(1);
+    expect(result.providerPolicyRetries).toBe(0);
     expect(result.outputTokensPerSecond).toBe(20);
     expect(result.toolLatencyAverageMs).toBe(2_000);
     expect(result.toolLatencyP95Ms).toBe(2_900);

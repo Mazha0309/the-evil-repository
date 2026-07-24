@@ -35,9 +35,7 @@ from app.models import (
 
 
 def jwt(claims: dict) -> str:
-    encoded = base64.urlsafe_b64encode(
-        json.dumps(claims, separators=(",", ":")).encode()
-    ).decode().rstrip("=")
+    encoded = base64.urlsafe_b64encode(json.dumps(claims, separators=(",", ":")).encode()).decode().rstrip("=")
     return f"header.{encoded}.signature"
 
 
@@ -111,6 +109,122 @@ def test_codex_and_gemini_auth_documents_are_normalized() -> None:
     assert abs((gemini_expiry - expiry).total_seconds()) < 1
 
 
+def test_codex_refresh_uses_json_and_persists_rotated_token() -> None:
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        captured["content_type"] = request.headers.get("content-type")
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={
+                "access_token": "new-access",
+                "refresh_token": "new-refresh",
+            },
+        )
+
+    with Session(engine) as session:
+        owner = UserAccount(
+            username="owner",
+            password_hash="unused",
+            role=UserRole.user,
+        )
+        session.add(owner)
+        session.flush()
+        credential = ProviderCredential(
+            owner_id=owner.id,
+            name="Codex",
+            kind=CredentialKind.codex_oauth,
+            encrypted_payload=encode_payload(
+                {
+                    "access_token": "old-access",
+                    "refresh_token": "old-refresh",
+                    "account_id": "account-123",
+                }
+            ),
+            status=CredentialStatus.unchecked,
+        )
+        session.add(credential)
+        session.flush()
+
+        resolved = resolve_credential(
+            session,
+            credential,
+            force_refresh=True,
+            client=httpx.Client(transport=httpx.MockTransport(handler)),
+        )
+
+        assert resolved.token == "new-access"
+        assert resolved.account_id == "account-123"
+        assert credential.status == CredentialStatus.ready
+        assert credential.last_refreshed_at is not None
+        assert decode_payload(credential)["refresh_token"] == "new-refresh"
+        assert captured["url"] == "https://auth.openai.com/oauth/token"
+        assert captured["content_type"] == "application/json"
+        assert captured["body"] == {
+            "client_id": "app_EMoamEEZ73f0CkXaXp7hrann",
+            "grant_type": "refresh_token",
+            "refresh_token": "old-refresh",
+        }
+
+
+def test_codex_refresh_surfaces_rotating_token_reuse() -> None:
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            400,
+            json={
+                "error": {
+                    "code": "refresh_token_reused",
+                    "message": "already used",
+                }
+            },
+        )
+
+    with Session(engine) as session:
+        owner = UserAccount(
+            username="owner",
+            password_hash="unused",
+            role=UserRole.user,
+        )
+        session.add(owner)
+        session.flush()
+        credential = ProviderCredential(
+            owner_id=owner.id,
+            name="Codex",
+            kind=CredentialKind.codex_oauth,
+            encrypted_payload=encode_payload(
+                {
+                    "access_token": "old-access",
+                    "refresh_token": "old-refresh",
+                    "account_id": "account-123",
+                }
+            ),
+            status=CredentialStatus.unchecked,
+        )
+        session.add(credential)
+        session.flush()
+
+        with pytest.raises(CredentialError) as captured:
+            resolve_credential(
+                session,
+                credential,
+                force_refresh=True,
+                client=httpx.Client(transport=httpx.MockTransport(handler)),
+            )
+
+        assert captured.value.code == "refresh_token_reused"
+        assert "latest auth.json" in str(captured.value)
+        assert credentials.credential_http_error(captured.value).status_code == 401
+        assert credential.status == CredentialStatus.needs_reauth
+        assert credential.last_error_code == "refresh_token_reused"
+
+
 def test_gemini_refresh_rotates_token_and_handles_sqlite_naive_expiry(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -131,10 +245,7 @@ def test_gemini_refresh_rotates_token_and_handles_sqlite_naive_expiry(
 
     def handler(request: httpx.Request) -> httpx.Response:
         captured["url"] = str(request.url)
-        captured["form"] = dict(
-            item.split("=", 1)
-            for item in request.content.decode().split("&")
-        )
+        captured["form"] = dict(item.split("=", 1) for item in request.content.decode().split("&"))
         return httpx.Response(
             200,
             json={
@@ -165,9 +276,7 @@ def test_gemini_refresh_rotates_token_and_handles_sqlite_naive_expiry(
             ),
             status=CredentialStatus.unchecked,
             # SQLite returns a naive datetime despite timezone=True.
-            expires_at=(
-                datetime.now(UTC) - timedelta(minutes=1)
-            ).replace(tzinfo=None),
+            expires_at=(datetime.now(UTC) - timedelta(minutes=1)).replace(tzinfo=None),
         )
         session.add(credential)
         session.commit()
@@ -289,9 +398,7 @@ def test_credential_api_never_returns_secrets_and_enforces_compatibility() -> No
                 "tokens": {
                     "access_token": jwt(
                         {
-                            "exp": (
-                                datetime.now(UTC) + timedelta(hours=1)
-                            ).timestamp(),
+                            "exp": (datetime.now(UTC) + timedelta(hours=1)).timestamp(),
                             "chatgpt_account_id": account_id,
                         }
                     ),
@@ -303,6 +410,14 @@ def test_credential_api_never_returns_secrets_and_enforces_compatibility() -> No
     )
     assert codex.status_code == 201
     assert "never-return-refresh" not in codex.text
+
+    checked = client.post(
+        f"/api/v1/credentials/{codex.json()['id']}/refresh",
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert checked.status_code == 200
+    assert checked.json()["status"] == "ready"
+    assert checked.json()["last_refreshed_at"] is None
 
     wrong_protocol = client.post(
         "/api/v1/models",
@@ -343,9 +458,7 @@ def test_credential_api_never_returns_secrets_and_enforces_compatibility() -> No
         },
     )
     assert wrong_codex_credential.status_code == 422
-    assert wrong_codex_credential.json()["detail"]["code"] == (
-        "credential_kind_mismatch"
-    )
+    assert wrong_codex_credential.json()["detail"]["code"] == ("credential_kind_mismatch")
 
     model = client.post(
         "/api/v1/models",
@@ -368,3 +481,58 @@ def test_credential_api_never_returns_secrets_and_enforces_compatibility() -> No
         headers={"X-CSRF-Token": csrf},
     )
     assert blocked_delete.status_code == 409
+
+
+def test_anthropic_setup_token_is_encrypted_and_provisions_models() -> None:
+    client = build_client()
+    setup = client.post(
+        "/api/v1/auth/setup",
+        json={"username": "admin", "password": "strong password"},
+    )
+    csrf = setup.json()["csrf_token"]
+    secret = "claude-code-setup-token-never-return"
+
+    created = client.post(
+        "/api/v1/credentials",
+        headers={"X-CSRF-Token": csrf},
+        json={
+            "name": "Claude subscription",
+            "kind": "anthropic_oauth",
+            "secret": secret,
+        },
+    )
+
+    assert created.status_code == 201
+    assert created.json()["kind"] == "anthropic_oauth"
+    assert created.json()["status"] == "ready"
+    assert created.json()["account_hint"] == "Claude subscription"
+    assert secret not in created.text
+    assert "encrypted_payload" not in created.text
+
+    synced = client.post(
+        f"/api/v1/credentials/{created.json()['id']}/models/sync",
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert synced.status_code == 200
+    assert synced.json()["provider"] == "anthropic"
+    assert synced.json()["discovered"] == 3
+    assert {
+        item["model_id"] for item in synced.json()["models"]
+    } == {"opus", "sonnet", "haiku"}
+
+    models = client.get("/api/v1/models")
+    assert models.status_code == 200
+    assert all(
+        model["credential_kind"] == "anthropic_oauth"
+        for model in models.json()
+    )
+
+    replacement = "replacement-setup-token-never-return"
+    replaced = client.patch(
+        f"/api/v1/credentials/{created.json()['id']}",
+        headers={"X-CSRF-Token": csrf},
+        json={"secret": replacement},
+    )
+    assert replaced.status_code == 200
+    assert replaced.json()["status"] == "ready"
+    assert replacement not in replaced.text

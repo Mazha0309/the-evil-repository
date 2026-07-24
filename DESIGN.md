@@ -229,6 +229,25 @@ and `agent.telemetry.snapshot` periodically summarizes resource use.
 confidence changes. Every derived percentile, repetition rate, and behavior
 metric remains traceable to these raw events.
 
+The Runner owns a deterministic transport-safety boundary, not a semantic
+memory oracle. Once raw message history crosses its configured character
+threshold, it retains the system contract, opening task, a bounded checkpoint
+of explicit candidate-authored hypothesis/evidence state, and the newest
+complete assistant-call/tool-result blocks. Retired raw blocks remain in the
+immutable event stream. `context.compacted` records exactly what was removed
+or truncated. A distinct `ProviderContextLengthError` can trigger two
+progressively smaller retries of the same logical turn; recovered rejections
+remain visible without classifying the completed turn as failed. This keeps
+Provider transport limits from becoming accidental benchmark hard stops while
+still rewarding Agents that maintain durable investigation state.
+
+A Provider content-policy rejection follows a separate one-shot recovery path.
+The Runner does not replay or obfuscate the rejected raw material: it retires
+recent untrusted transcript blocks, preserves only the bounded explicit ledger,
+and adds a visible safe-maintenance continuation marker. A second rejection is
+terminal. This prevents one false-positive turn from erasing a long benchmark
+run without turning the platform into a policy-bypass mechanism.
+
 ## 8. Completion and budgets
 
 A scenario can require observable investigation coverage before accepting a
@@ -315,7 +334,7 @@ percentiles are derived artifacts with analyzer and cohort versions.
 The control plane supports distinct adapters for:
 
 - OpenAI Responses API;
-- Anthropic Messages API;
+- Anthropic Messages API or the official Claude Agent SDK;
 - Codex subscription Responses;
 - Google Gemini native `generateContent`;
 - OpenAI-compatible Chat Completions;
@@ -329,9 +348,22 @@ limits, and bounded advanced JSON.
 Authentication is a separate owner-scoped entity. A `ProviderCredential`
 contains an encrypted payload, kind, non-secret account hint, expiry and
 validation state; a model profile references it by ID. Supported kinds are
-static API key, Codex OAuth, and Gemini OAuth. API responses never serialize
-the encrypted payload. Existing profile-owned API keys migrate idempotently
-into owner-scoped credentials.
+static API key, Claude Code OAuth, Codex OAuth, and Gemini OAuth. API responses
+never serialize the encrypted payload. Existing profile-owned API keys migrate
+idempotently into owner-scoped credentials.
+
+Claude Code OAuth accepts only the long-lived token emitted by the official
+`claude setup-token` command; the platform does not implement a Claude.ai
+authorization endpoint. The token is passed through a child-process
+environment to the bundled official Python Agent SDK. Each physical Provider
+turn receives a new empty config directory, `tools=[]`, no setting sources,
+no MCP servers, no skills or plugins, `dontAsk` permissions, and no session
+persistence. Nonessential runtime traffic is disabled. The SDK returns a
+schema-validated list of normalized next-action requests, while the existing
+Runner executes every tool and remains the sole owner of the candidate
+workspace, fault scripts, pause/cancel boundaries, budgets, and telemetry.
+Thus Claude Code never receives a Docker socket, repository mount, Browser
+network, or an alternate unobserved tool path.
 
 Codex OAuth accepts the Codex CLI `auth.json` format or an owner-bound device
 flow. Gemini OAuth accepts Gemini CLI `oauth_creds.json`; API-key Gemini uses
@@ -339,10 +371,34 @@ the standard Generative Language endpoint. The OAuth client pair required to
 refresh an imported Gemini token is deployment configuration and is never
 embedded in the source tree. Refresh-token rotation is persisted under a row
 lock, and one authentication rejection may trigger one forced refresh and
-retry. A Codex OAuth token can only leave the process for OpenAI authentication
+retry. Codex refresh requests use the official JSON contract and preserve the
+rotated refresh token atomically. Imported `auth.json` is a snapshot and must
+not be treated as a safely shareable refresh-token store. A Codex OAuth token
+can only leave the process for OpenAI authentication
 or the fixed `chatgpt.com/backend-api/codex` endpoint. A Gemini OAuth token can
 only leave for Google OAuth or the fixed Code Assist endpoint. The profile Base
 URL cannot redirect either OAuth token.
+
+Codex OAuth provisioning also performs account-model discovery. The control
+plane sends the account access token and ChatGPT account ID only to the fixed
+official `/backend-api/codex/models` route, accepts only `visibility=list`
+catalog entries, and idempotently creates enabled Codex profiles plus owner
+access mappings. Synchronization never deletes, disables, or overwrites an
+existing user profile, and a credential/model pair is created only once. The
+stable Codex client version is obtained by an unauthenticated, hourly cached
+GitHub Release lookup with a release-tested fallback. OAuth import and device
+sign-in trigger synchronization from the WebUI, while Credentials retains an
+explicit retry action.
+
+Claude Code OAuth provisioning idempotently creates the official `opus`,
+`sonnet`, and `haiku` runtime aliases because Anthropic does not expose a
+public per-account catalog through the Agent SDK. Alias resolution and plan
+entitlement remain Anthropic runtime decisions. A rejected token marks the
+credential `needs_reauth`; replacing its encrypted secret preserves all model
+references. This channel is limited to self-hosted personal or
+organization-internal deployment. A public third-party service must use an
+Anthropic Console API key or supported cloud provider rather than routing
+subscription credentials on behalf of users.
 
 Profiles can switch between compatible credentials. Deleting a profile
 detaches its credential and archives the profile while preserving frozen,
@@ -358,6 +414,14 @@ can change concurrency from 1–16 without killing active slots. Each claimed ru
 owns its sandbox, scenario state, Provider client, conversation, events, and
 archive. Pausing is cooperative at Provider/tool boundaries and does not make
 the in-memory conversation survive a Runner restart.
+
+Every new run freezes a minimal `task_snapshot` containing ID, slug, version,
+name, description, and localization. Historical archives therefore retain the
+Scenario identity that existed at launch even after a rename or upgrade;
+legacy runs fall back to their current `task_id`. The WebUI applies a stable
+Scenario priority order, honors a Scenario card's controlled `task` query
+parameter on first render, and filters the run archive by text, Scenario,
+candidate model, and status.
 
 ## 12. Control plane, accounts, and deployment
 

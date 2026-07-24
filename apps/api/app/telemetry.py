@@ -59,6 +59,11 @@ def build_telemetry_bundle(events: Iterable[Any]) -> dict[str, Any]:
         for event in normalized
         if event.get("kind") == "agent.telemetry.snapshot"
     ]
+    context_compactions = [
+        event
+        for event in normalized
+        if event.get("kind") == "context.compacted"
+    ]
     error_events = _error_events(normalized)
     return {
         "schema_version": 2,
@@ -73,6 +78,7 @@ def build_telemetry_bundle(events: Iterable[Any]) -> dict[str, Any]:
         "tool_lifecycle": tool_lifecycle,
         "stage_timeline": stage_timeline,
         "resource_snapshots": resource_snapshots,
+        "context_compactions": context_compactions,
         "error_events": error_events,
         "events": normalized,
     }
@@ -146,6 +152,9 @@ def _provider_turns(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     responses: dict[int, dict[str, Any]] = {}
     attempts: defaultdict[int, list[dict[str, Any]]] = defaultdict(list)
     retries: defaultdict[int, list[dict[str, Any]]] = defaultdict(list)
+    context_retries: defaultdict[int, list[dict[str, Any]]] = defaultdict(list)
+    policy_retries: defaultdict[int, list[dict[str, Any]]] = defaultdict(list)
+    context_compactions: defaultdict[int, list[dict[str, Any]]] = defaultdict(list)
     errors: defaultdict[int, list[dict[str, Any]]] = defaultdict(list)
     for event in events:
         turn = int(_number(event.get("turn") or event.get("logical_turn")))
@@ -160,6 +169,13 @@ def _provider_turns(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
             attempts[turn].append(event)
         elif kind == "provider.retry":
             retries[turn].append(event)
+        elif kind == "model.request.retry":
+            if event.get("reason") == "provider_policy_rejection":
+                policy_retries[turn].append(event)
+            else:
+                context_retries[turn].append(event)
+        elif kind == "context.compacted":
+            context_compactions[turn].append(event)
         elif kind == "provider.error":
             errors[turn].append(event)
 
@@ -177,10 +193,10 @@ def _provider_turns(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "response_sequence": response.get("sequence"),
                 "response_at": response.get("created_at"),
                 "status": (
-                    "error"
-                    if errors.get(turn)
-                    else "completed"
+                    "completed"
                     if response
+                    else "error"
+                    if errors.get(turn)
                     else "pending"
                 ),
                 "duration_ms": _number(response.get("duration_ms")),
@@ -195,6 +211,11 @@ def _provider_turns(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 ),
                 "provider_attempts": len(attempts.get(turn, [])),
                 "retry_count": len(retries.get(turn, [])),
+                "context_retry_count": len(context_retries.get(turn, [])),
+                "policy_retry_count": len(policy_retries.get(turn, [])),
+                "context_compaction_count": len(
+                    context_compactions.get(turn, [])
+                ),
                 "retry_delay_seconds": round(
                     sum(
                         _number(item.get("delay_seconds"))
@@ -400,6 +421,11 @@ def _summary(
     output_tokens = sum(
         int(_number(item.get("output_tokens"))) for item in provider_turns
     )
+    context_compactions = [
+        event
+        for event in events
+        if event.get("kind") == "context.compacted"
+    ]
     return {
         "event_count": len(events),
         "event_sequence": {
@@ -428,6 +454,14 @@ def _summary(
             "retries": sum(
                 int(_number(item.get("retry_count"))) for item in provider_turns
             ),
+            "context_retries": sum(
+                int(_number(item.get("context_retry_count")))
+                for item in provider_turns
+            ),
+            "policy_retries": sum(
+                int(_number(item.get("policy_retry_count")))
+                for item in provider_turns
+            ),
             "retry_delay_seconds": round(
                 sum(
                     _number(item.get("retry_delay_seconds"))
@@ -455,6 +489,35 @@ def _summary(
                 ),
                 default=0,
             ),
+            "context_management": {
+                "compactions": len(context_compactions),
+                "messages_removed": sum(
+                    int(_number(item.get("messages_removed")))
+                    for item in context_compactions
+                ),
+                "characters_removed": sum(
+                    int(_number(item.get("characters_removed")))
+                    for item in context_compactions
+                ),
+                "tool_results_truncated": sum(
+                    int(_number(item.get("tool_results_truncated")))
+                    for item in context_compactions
+                ),
+                "provider_overflow_retries": event_counts.get(
+                    "model.request.retry",
+                    0,
+                )
+                - sum(
+                    event.get("reason") == "provider_policy_rejection"
+                    for event in events
+                    if event.get("kind") == "model.request.retry"
+                ),
+                "provider_policy_retries": sum(
+                    event.get("reason") == "provider_policy_rejection"
+                    for event in events
+                    if event.get("kind") == "model.request.retry"
+                ),
+            },
         },
         "tools": {
             "calls": len(tools),

@@ -7,6 +7,7 @@ import type {
   InvestigationGraph,
   ModelProfile,
   BenchmarkSuite,
+  CredentialModelSyncResult,
   OAuthDevicePollResult,
   OAuthDeviceStart,
   PlatformSettings,
@@ -36,9 +37,7 @@ function errorDetail(body: string): { message: string; code?: string } {
   try {
     const parsed = JSON.parse(body) as {
       detail?:
-        | string
-        | { code?: string; message?: string }
-        | Array<{ msg?: string }>;
+        string | { code?: string; message?: string } | Array<{ msg?: string }>;
     };
     if (typeof parsed.detail === "string") {
       return { message: parsed.detail };
@@ -151,6 +150,10 @@ export const api = {
     request<ProviderCredential>(`/credentials/${id}/refresh`, {
       method: "POST",
     }),
+  syncCredentialModels: (id: string) =>
+    request<CredentialModelSyncResult>(`/credentials/${id}/models/sync`, {
+      method: "POST",
+    }),
   deleteCredential: (id: string) =>
     request<void>(`/credentials/${id}`, { method: "DELETE" }),
   startCodexOAuth: () =>
@@ -164,8 +167,7 @@ export const api = {
     }),
   runs: () => request<Run[]>("/runs"),
   run: (id: string) => request<Run>(`/runs/${id}`),
-  runArtifacts: (id: string) =>
-    request<RunArtifact[]>(`/runs/${id}/artifacts`),
+  runArtifacts: (id: string) => request<RunArtifact[]>(`/runs/${id}/artifacts`),
   runArtifactUrl: (runId: string, artifactId: string) =>
     `${API_BASE}/runs/${runId}/artifacts/${artifactId}`,
   events: (id: string, after = 0) =>
@@ -187,8 +189,7 @@ export const api = {
     request<Run>("/runs", { method: "POST", body: JSON.stringify(payload) }),
   cancelRun: (id: string) =>
     request<Run>(`/runs/${id}/cancel`, { method: "POST" }),
-  deleteRun: (id: string) =>
-    request<void>(`/runs/${id}`, { method: "DELETE" }),
+  deleteRun: (id: string) => request<void>(`/runs/${id}`, { method: "DELETE" }),
   pauseRun: (id: string) =>
     request<Run>(`/runs/${id}/pause`, { method: "POST" }),
   resumeRun: (id: string) =>

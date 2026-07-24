@@ -229,15 +229,12 @@ export type ModelProvider =
 
 export type CredentialKind =
   | "api_key"
+  | "anthropic_oauth"
   | "codex_oauth"
   | "gemini_oauth";
 
 export type CredentialStatus =
-  | "unchecked"
-  | "ready"
-  | "expired"
-  | "needs_reauth"
-  | "error";
+  "unchecked" | "ready" | "expired" | "needs_reauth" | "error";
 
 export interface ProviderCredential {
   id: string;
@@ -252,6 +249,23 @@ export interface ProviderCredential {
   model_count: number;
   created_at: string;
   updated_at: string;
+}
+
+export interface SyncedModel {
+  id: string;
+  name: string;
+  provider: ModelProvider;
+  model_id: string;
+  created: boolean;
+}
+
+export interface CredentialModelSyncResult {
+  credential_id: string;
+  provider: ModelProvider;
+  discovered: number;
+  created: number;
+  existing: number;
+  models: SyncedModel[];
 }
 
 export interface OAuthDeviceStart {
@@ -362,10 +376,7 @@ export interface Run {
       substantive_tool_calls?: number;
     };
     outcome?: {
-      status:
-        | "verified_success"
-        | "evaluated_incomplete"
-        | "budget_exhausted";
+      status: "verified_success" | "evaluated_incomplete" | "budget_exhausted";
       censored: boolean;
       hard_budget_reasons: string[];
       runtime_calibration_eligible: boolean;

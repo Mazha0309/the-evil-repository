@@ -84,7 +84,9 @@ function providerValue(value: unknown): ModelProvider | null {
   return value === "openai_responses" ||
     value === "anthropic" ||
     value === "openai_compatible" ||
-    value === "ollama"
+    value === "ollama" ||
+    value === "codex" ||
+    value === "gemini"
     ? value
     : null;
 }

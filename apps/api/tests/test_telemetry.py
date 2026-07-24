@@ -88,6 +88,15 @@ def test_telemetry_pairs_provider_turns_and_tool_lifecycle() -> None:
             "output": "timed out",
             "injected_fault": "timeout",
         },
+        {
+            "kind": "context.compacted",
+            "sequence": 10,
+            "created_at": timestamp(13),
+            "turn": 1,
+            "messages_removed": 20,
+            "characters_removed": 80_000,
+            "tool_results_truncated": 4,
+        },
     ]
 
     bundle = build_telemetry_bundle(events)
@@ -99,6 +108,15 @@ def test_telemetry_pairs_provider_turns_and_tool_lifecycle() -> None:
     assert turn["input_tokens"] == 900
     assert turn["tokens_per_second"] == 14.286
     assert bundle["summary"]["provider"]["peak_context_characters"] == 4_096
+    assert bundle["summary"]["provider"]["context_management"] == {
+        "compactions": 1,
+        "messages_removed": 20,
+        "characters_removed": 80_000,
+        "tool_results_truncated": 4,
+        "provider_overflow_retries": 0,
+        "provider_policy_retries": 0,
+    }
+    assert len(bundle["context_compactions"]) == 1
     assert bundle["summary"]["tools"]["calls"] == 2
     assert bundle["summary"]["tools"]["duplicate_calls"] == 1
     assert bundle["summary"]["tools"]["scripted_faults"] == 1
@@ -111,6 +129,58 @@ def test_telemetry_pairs_provider_turns_and_tool_lifecycle() -> None:
         "misleading proposal"
     )
     assert len(bundle["error_events"]) == 1
+
+
+def test_recovered_context_rejection_keeps_provider_turn_completed() -> None:
+    bundle = build_telemetry_bundle(
+        [
+            {
+                "kind": "model.request",
+                "sequence": 1,
+                "created_at": timestamp(0),
+                "turn": 3,
+                "context_messages": 300,
+                "context_characters": 900_000,
+            },
+            {
+                "kind": "provider.error",
+                "sequence": 2,
+                "created_at": timestamp(1),
+                "turn": 3,
+                "error_type": "ProviderContextLengthError",
+                "context_recovery_available": True,
+            },
+            {
+                "kind": "context.compacted",
+                "sequence": 3,
+                "created_at": timestamp(2),
+                "turn": 3,
+                "messages_removed": 250,
+                "characters_removed": 780_000,
+            },
+            {
+                "kind": "model.request.retry",
+                "sequence": 4,
+                "created_at": timestamp(3),
+                "turn": 3,
+                "context_messages": 50,
+                "context_characters": 120_000,
+            },
+            {
+                "kind": "assistant.message",
+                "sequence": 5,
+                "created_at": timestamp(4),
+                "turn": 3,
+                "duration_ms": 4_000,
+                "input_tokens": 30_000,
+                "output_tokens": 300,
+            },
+        ]
+    )
+
+    assert bundle["provider_turns"][0]["status"] == "completed"
+    assert bundle["provider_turns"][0]["context_retry_count"] == 1
+    assert bundle["summary"]["provider"]["context_retries"] == 1
 
 
 def test_export_redacts_credentials_without_hiding_token_metrics() -> None:

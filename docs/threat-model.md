@@ -54,6 +54,11 @@ Candidate text is data even when it resembles an instruction.
 - OAuth host pinning: Codex tokens cannot follow profile Base URLs and only
   reach OpenAI authentication/Codex hosts; Gemini OAuth tokens only reach
   Google OAuth/Code Assist hosts.
+- Claude Code setup tokens are passed only through a child-process environment
+  to the bundled official Agent SDK. Every turn uses an empty temporary config,
+  no built-in tools or MCP, no settings/skills/plugins, no persistent session,
+  and disabled nonessential traffic. The platform never implements Claude.ai
+  login or sends the token as a Messages API key.
 - Refresh-token rotation under a locked credential row, bounded
   authentication retry, and protocol/credential-kind compatibility checks.
 - Host-side hidden judge and artifact hashing.
@@ -95,10 +100,13 @@ behavioral summaries. Redaction protects control-plane credentials, not
 secrets that a user deliberately placed inside benchmark inputs. Treat every
 download as sensitive run data and share it only with authorized analysts.
 
-Imported Codex `auth.json` and Gemini `oauth_creds.json` files are bearer
-credentials equivalent to passwords. A malicious or compromised control plane
-can use them as the signed-in account, and changing `APP_SECRET` without a
-migration makes stored credentials unreadable. Codex subscription access is
+Claude Code setup tokens and imported Codex `auth.json` / Gemini
+`oauth_creds.json` files are bearer credentials equivalent to passwords. A
+malicious or compromised control plane can use them as the signed-in account,
+and changing `APP_SECRET` without a migration makes stored credentials
+unreadable. Anthropic subscription OAuth is limited to self-hosted personal or
+organization-internal use; a public third-party deployment must use Console
+API keys or a supported cloud provider. Codex subscription access is likewise
 distinct from ordinary API-key access; operators remain responsible for
 account, organization, and service-policy compliance.
 

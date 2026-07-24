@@ -33,6 +33,14 @@ GEMINI_CODE_ASSIST_URL = "https://cloudcode-pa.googleapis.com/v1internal"
 MAX_IMPORT_BYTES = 65_536
 TOKEN_REFRESH_WINDOW = timedelta(minutes=5)
 OAUTH_TIMEOUT_SECONDS = 20
+REFRESH_TOKEN_REAUTH_MESSAGES = {
+    "refresh_token_expired": ("The Codex refresh token has expired; sign in again"),
+    "refresh_token_reused": (
+        "The Codex refresh token was already used by another client; sign in again or import the latest auth.json"
+    ),
+    "refresh_token_invalidated": ("The Codex refresh token was revoked; sign in again"),
+    "invalid_grant": ("The OAuth refresh grant is no longer valid; sign in again"),
+}
 
 
 class CredentialError(RuntimeError):
@@ -61,6 +69,9 @@ class CredentialResolver:
             force_refresh=force_refresh,
         )
 
+    def mark_needs_reauth(self, code: str) -> None:
+        mark_model_credential_needs_reauth(self.profile_id, code)
+
 
 def encode_payload(payload: dict[str, Any]) -> str:
     encoded = json.dumps(
@@ -78,9 +89,7 @@ def encode_payload(payload: dict[str, Any]) -> str:
 
 def decode_payload(credential: ProviderCredential) -> dict[str, Any]:
     try:
-        encoded = SecretBox(get_settings().app_secret).decrypt(
-            credential.encrypted_payload
-        )
+        encoded = SecretBox(get_settings().app_secret).decrypt(credential.encrypted_payload)
         payload = json.loads(encoded or "")
     except Exception as exc:
         raise CredentialError(
@@ -106,7 +115,7 @@ def normalize_import(
         return normalize_gemini_auth_document(document)
     raise CredentialError(
         "credential_import_kind_invalid",
-        "API keys must be entered as a secret rather than imported as JSON",
+        "This credential kind must be entered as a secret rather than imported as JSON",
     )
 
 
@@ -118,24 +127,15 @@ def normalize_codex_auth_document(
     access_token = _optional_string(tokens.get("access_token"))
     refresh_token = _optional_string(tokens.get("refresh_token"))
     id_token = _optional_string(tokens.get("id_token"))
-    supplied_account_id = _optional_string(
-        tokens.get("account_id") or document.get("account_id")
-    )
+    supplied_account_id = _optional_string(tokens.get("account_id") or document.get("account_id"))
     if not refresh_token:
         raise CredentialError(
             "codex_refresh_token_missing",
             "Codex auth.json does not contain tokens.refresh_token",
         )
 
-    claimed_account_id = (
-        extract_codex_account_id(id_token)
-        or extract_codex_account_id(access_token)
-    )
-    if (
-        supplied_account_id
-        and claimed_account_id
-        and supplied_account_id != claimed_account_id
-    ):
+    claimed_account_id = extract_codex_account_id(id_token) or extract_codex_account_id(access_token)
+    if supplied_account_id and claimed_account_id and supplied_account_id != claimed_account_id:
         raise CredentialError(
             "codex_account_mismatch",
             "Codex auth.json account_id does not match its token claims",
@@ -175,13 +175,9 @@ def normalize_gemini_auth_document(
         "refresh_token": refresh_token,
         "token_type": _optional_string(document.get("token_type")) or "Bearer",
         "scope": _optional_string(document.get("scope")),
-        "expiry_date": (
-            int(expires_at.timestamp() * 1000) if expires_at is not None else None
-        ),
+        "expiry_date": (int(expires_at.timestamp() * 1000) if expires_at is not None else None),
         "project_id": _optional_string(
-            document.get("project_id")
-            or document.get("quota_project_id")
-            or document.get("cloudaicompanionProject")
+            document.get("project_id") or document.get("quota_project_id") or document.get("cloudaicompanionProject")
         ),
     }
     hint = _optional_string(document.get("email"))
@@ -201,9 +197,7 @@ def resolve_model_credential(
                 "The model profile is unavailable",
             )
         if profile.credential_id is None:
-            legacy = SecretBox(get_settings().app_secret).decrypt(
-                profile.encrypted_api_key
-            )
+            legacy = SecretBox(get_settings().app_secret).decrypt(profile.encrypted_api_key)
             if legacy:
                 return ResolvedCredential(
                     kind=CredentialKind.api_key,
@@ -238,6 +232,26 @@ def resolve_model_credential(
         return resolved
 
 
+def mark_model_credential_needs_reauth(
+    profile_id: uuid.UUID,
+    code: str,
+) -> None:
+    with SessionLocal() as session:
+        profile = session.get(ModelProfile, profile_id)
+        if profile is None or profile.credential_id is None:
+            return
+        credential = session.get(ProviderCredential, profile.credential_id)
+        if (
+            credential is None
+            or credential.archived_at is not None
+            or credential.kind != CredentialKind.anthropic_oauth
+        ):
+            return
+        credential.status = CredentialStatus.needs_reauth
+        credential.last_error_code = code[:120]
+        session.commit()
+
+
 def resolve_credential(
     session: Session,
     credential: ProviderCredential,
@@ -256,6 +270,18 @@ def resolve_credential(
         credential.status = CredentialStatus.ready
         credential.last_error_code = None
         return ResolvedCredential(kind=credential.kind, token=secret)
+
+    if credential.kind == CredentialKind.anthropic_oauth:
+        token = _optional_string(payload.get("oauth_token"))
+        if not token:
+            raise CredentialError(
+                "anthropic_oauth_token_missing",
+                "The Claude Code OAuth credential has no setup token",
+            )
+        credential.status = CredentialStatus.ready
+        credential.last_validated_at = datetime.now(UTC)
+        credential.last_error_code = None
+        return ResolvedCredential(kind=credential.kind, token=token)
 
     if force_refresh or credential_needs_refresh(credential, payload):
         payload = refresh_oauth_credential(
@@ -311,6 +337,8 @@ def credential_needs_refresh(
     credential: ProviderCredential,
     payload: dict[str, Any],
 ) -> bool:
+    if credential.kind == CredentialKind.anthropic_oauth:
+        return False
     if not _optional_string(payload.get("access_token")):
         return True
     expires_at = credential.expires_at
@@ -343,15 +371,18 @@ def refresh_oauth_credential(
     http = client or httpx.Client(timeout=OAUTH_TIMEOUT_SECONDS)
     try:
         if credential.kind == CredentialKind.codex_oauth:
-            form = {
+            body = {
                 "grant_type": "refresh_token",
                 "refresh_token": refresh_token,
                 "client_id": CODEX_CLIENT_ID,
             }
             response = http.post(
                 CODEX_TOKEN_URL,
-                data=form,
-                headers={"Accept": "application/json"},
+                json=body,
+                headers={
+                    "Accept": "application/json",
+                    "Content-Type": "application/json",
+                },
             )
         elif credential.kind == CredentialKind.gemini_oauth:
             client_id, client_secret = gemini_oauth_client_credentials()
@@ -385,15 +416,23 @@ def refresh_oauth_credential(
         if owns_client:
             http.close()
 
-    if response.status_code in {401, 403}:
+    oauth_error_code = _oauth_error_code(response)
+    permanent_error = response.status_code in {401, 403} or oauth_error_code in REFRESH_TOKEN_REAUTH_MESSAGES
+    if permanent_error:
+        stored_error_code = (
+            oauth_error_code if oauth_error_code in REFRESH_TOKEN_REAUTH_MESSAGES else "oauth_refresh_rejected"
+        )
         _mark_credential_error(
             credential,
             CredentialStatus.needs_reauth,
-            "oauth_refresh_rejected",
+            stored_error_code,
         )
         raise CredentialError(
-            "oauth_refresh_rejected",
-            "The OAuth refresh token was rejected; authenticate again",
+            stored_error_code,
+            REFRESH_TOKEN_REAUTH_MESSAGES.get(
+                oauth_error_code,
+                "The OAuth refresh token was rejected; authenticate again",
+            ),
         )
     if not 200 <= response.status_code < 300:
         _mark_credential_error(
@@ -432,14 +471,9 @@ def refresh_oauth_credential(
 
     now = datetime.now(UTC)
     payload["access_token"] = access_token
-    payload["refresh_token"] = (
-        _optional_string(body.get("refresh_token")) or refresh_token
-    )
+    payload["refresh_token"] = _optional_string(body.get("refresh_token")) or refresh_token
     if credential.kind == CredentialKind.codex_oauth:
-        payload["id_token"] = (
-            _optional_string(body.get("id_token"))
-            or _optional_string(payload.get("id_token"))
-        )
+        payload["id_token"] = _optional_string(body.get("id_token")) or _optional_string(payload.get("id_token"))
         payload["account_id"] = (
             _optional_string(payload.get("account_id"))
             or extract_codex_account_id(payload.get("id_token"))
@@ -537,7 +571,19 @@ def validate_credential_compatibility(
             "credential_kind_mismatch",
             "Gemini profiles require an API key or Gemini OAuth credential",
         )
-    if provider not in {ModelProvider.codex, ModelProvider.gemini} and kind != CredentialKind.api_key:
+    if provider == ModelProvider.anthropic and kind not in {
+        CredentialKind.api_key,
+        CredentialKind.anthropic_oauth,
+    }:
+        raise CredentialError(
+            "credential_kind_mismatch",
+            "Anthropic profiles require an API key or Claude Code OAuth credential",
+        )
+    if provider not in {
+        ModelProvider.anthropic,
+        ModelProvider.codex,
+        ModelProvider.gemini,
+    } and kind != CredentialKind.api_key:
         raise CredentialError(
             "credential_kind_mismatch",
             "This Provider protocol requires an API key credential",
@@ -721,6 +767,16 @@ def create_api_key_payload(secret: str) -> dict[str, str]:
     if not value:
         raise CredentialError("api_key_missing", "API key cannot be empty")
     return {"secret": value}
+
+
+def create_anthropic_oauth_payload(secret: str) -> dict[str, str]:
+    value = secret.strip()
+    if not value:
+        raise CredentialError(
+            "anthropic_oauth_token_missing",
+            "Claude Code OAuth setup token cannot be empty",
+        )
+    return {"oauth_token": value}
 
 
 def mask_identifier(value: str) -> str:

@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.credentials import (
     CredentialError,
+    create_anthropic_oauth_payload,
     create_api_key_payload,
     encode_payload,
     normalize_import,
@@ -15,6 +16,7 @@ from app.credentials import (
     start_codex_device_flow,
 )
 from app.database import get_session
+from app.model_discovery import sync_credential_models
 from app.models import (
     CredentialKind,
     CredentialStatus,
@@ -25,11 +27,13 @@ from app.models import (
 from app.schemas import (
     CredentialCreate,
     CredentialImport,
+    CredentialModelSyncRead,
     CredentialRead,
     CredentialUpdate,
     OAuthDevicePoll,
     OAuthDevicePollResult,
     OAuthDeviceStart,
+    SyncedModelRead,
 )
 from app.security import csrf_protection, current_user
 
@@ -91,17 +95,32 @@ def create_credential(
     session: Session = Depends(get_session),
     user: UserAccount = Depends(csrf_protection),
 ) -> CredentialRead:
-    if payload.kind != CredentialKind.api_key:
+    if payload.kind not in {
+        CredentialKind.api_key,
+        CredentialKind.anthropic_oauth,
+    }:
         raise HTTPException(
             status_code=422,
-            detail="OAuth credentials must use JSON import or an interactive login",
+            detail=(
+                "Codex and Gemini OAuth credentials must use JSON import "
+                "or an interactive login"
+            ),
         )
     ensure_unique_name(session, user.id, payload.name)
+    if payload.kind == CredentialKind.anthropic_oauth:
+        encrypted_payload = encode_payload(
+            create_anthropic_oauth_payload(payload.secret)
+        )
+        account_hint = "Claude subscription"
+    else:
+        encrypted_payload = encode_payload(create_api_key_payload(payload.secret))
+        account_hint = None
     credential = ProviderCredential(
         owner_id=user.id,
         name=payload.name.strip(),
-        kind=CredentialKind.api_key,
-        encrypted_payload=encode_payload(create_api_key_payload(payload.secret)),
+        kind=payload.kind,
+        encrypted_payload=encrypted_payload,
+        account_hint=account_hint,
         status=CredentialStatus.ready,
         last_validated_at=datetime.now(UTC),
     )
@@ -160,6 +179,29 @@ def update_credential(
             exclude_id=credential.id,
         )
         credential.name = payload.name.strip()
+    if payload.secret is not None:
+        if credential.kind == CredentialKind.api_key:
+            normalized = create_api_key_payload(payload.secret)
+            credential.account_hint = None
+        elif credential.kind == CredentialKind.anthropic_oauth:
+            normalized = create_anthropic_oauth_payload(payload.secret)
+            credential.account_hint = "Claude subscription"
+        else:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "credential_secret_update_unsupported",
+                    "message": (
+                        "This OAuth credential must be re-imported or "
+                        "authenticated again"
+                    ),
+                },
+            )
+        credential.encrypted_payload = encode_payload(normalized)
+        credential.status = CredentialStatus.ready
+        credential.expires_at = None
+        credential.last_error_code = None
+        credential.last_validated_at = datetime.now(UTC)
     session.commit()
     session.refresh(credential)
     return to_read(session, credential)
@@ -172,7 +214,26 @@ def refresh_credential(
     user: UserAccount = Depends(csrf_protection),
 ) -> CredentialRead:
     credential = owned_credential(session, user.id, credential_id, lock=True)
-    if credential.kind == CredentialKind.api_key:
+    if (
+        credential.kind == CredentialKind.anthropic_oauth
+        and credential.status == CredentialStatus.needs_reauth
+    ):
+        raise credential_http_error(
+            CredentialError(
+                "anthropic_oauth_replace_required",
+                "Generate a new token with `claude setup-token` and replace "
+                "the saved credential",
+            )
+        )
+    if credential.kind in {
+        CredentialKind.api_key,
+        CredentialKind.anthropic_oauth,
+    }:
+        try:
+            resolve_credential(session, credential, force_refresh=False)
+        except CredentialError as exc:
+            session.commit()
+            raise credential_http_error(exc) from exc
         credential.status = CredentialStatus.ready
         credential.last_validated_at = datetime.now(UTC)
         credential.last_error_code = None
@@ -181,7 +242,9 @@ def refresh_credential(
             resolve_credential(
                 session,
                 credential,
-                force_refresh=True,
+                # A refresh token may be single-use and rotating. Verify the
+                # current access token first and only refresh near expiry.
+                force_refresh=False,
             )
         except CredentialError as exc:
             session.commit()
@@ -189,6 +252,46 @@ def refresh_credential(
     session.commit()
     session.refresh(credential)
     return to_read(session, credential)
+
+
+@router.post(
+    "/{credential_id}/models/sync",
+    response_model=CredentialModelSyncRead,
+)
+def sync_models(
+    credential_id: uuid.UUID,
+    session: Session = Depends(get_session),
+    user: UserAccount = Depends(csrf_protection),
+) -> CredentialModelSyncRead:
+    credential = owned_credential(session, user.id, credential_id, lock=True)
+    try:
+        result = sync_credential_models(
+            session,
+            credential,
+            user.id,
+        )
+    except CredentialError as exc:
+        session.commit()
+        raise credential_http_error(exc) from exc
+    response = CredentialModelSyncRead(
+        credential_id=result.credential_id,
+        provider=result.provider,
+        discovered=result.discovered,
+        created=result.created,
+        existing=result.existing,
+        models=[
+            SyncedModelRead(
+                id=item.profile.id,
+                name=item.profile.name,
+                provider=item.profile.provider,
+                model_id=item.profile.model_id,
+                created=item.created,
+            )
+            for item in result.models
+        ],
+    )
+    session.commit()
+    return response
 
 
 @router.delete(
@@ -213,10 +316,7 @@ def delete_credential(
     if references:
         raise HTTPException(
             status_code=409,
-            detail=(
-                f"Credential is used by {references} model profile(s). "
-                "Detach those profiles before deleting it."
-            ),
+            detail=(f"Credential is used by {references} model profile(s). Detach those profiles before deleting it."),
         )
     credential.encrypted_payload = encode_payload({"deleted": True})
     credential.account_hint = None
@@ -326,7 +426,17 @@ def credential_http_error(exc: CredentialError) -> HTTPException:
     status_code = 422
     if "unreachable" in exc.code or "transport" in exc.code:
         status_code = 503
-    elif "rejected" in exc.code or "denied" in exc.code:
+    elif (
+        "rejected" in exc.code
+        or "denied" in exc.code
+        or exc.code
+        in {
+            "invalid_grant",
+            "refresh_token_expired",
+            "refresh_token_invalidated",
+            "refresh_token_reused",
+        }
+    ):
         status_code = 401
     elif "owner_mismatch" in exc.code:
         status_code = 403

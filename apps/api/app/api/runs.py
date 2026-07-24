@@ -14,7 +14,7 @@ from app.config import get_settings
 from app.database import SessionLocal, get_session
 from app.events import append_event
 from app.investigation import graph_payload
-from app.model_identity import model_snapshot
+from app.model_identity import model_snapshot, task_snapshot
 from app.models import (
     BenchmarkRun,
     ModelProfile,
@@ -65,10 +65,7 @@ def create_run(
     if payload.judge_model_id is not None:
         model_ids.add(payload.judge_model_id)
     locked_profiles = session.scalars(
-        select(ModelProfile)
-        .where(ModelProfile.id.in_(model_ids))
-        .order_by(ModelProfile.id)
-        .with_for_update()
+        select(ModelProfile).where(ModelProfile.id.in_(model_ids)).order_by(ModelProfile.id).with_for_update()
     ).all()
     profiles = {profile.id: profile for profile in locked_profiles}
     candidate = profiles.get(payload.candidate_model_id)
@@ -84,9 +81,7 @@ def create_run(
     if payload.judge_model_id == payload.candidate_model_id:
         raise HTTPException(status_code=400, detail="Candidate model cannot judge itself")
     if payload.judge_model_id and (
-        not can_access_model(session, user, judge)
-        or not judge.enabled
-        or judge.archived_at is not None
+        not can_access_model(session, user, judge) or not judge.enabled or judge.archived_at is not None
     ):
         raise HTTPException(status_code=400, detail="Unknown judge model")
     completion = task.manifest.get("completion", {})
@@ -101,6 +96,7 @@ def create_run(
         exclude={"task_id", "candidate_model_id", "judge_model_id"},
     )
     run_config["candidate_model_snapshot"] = model_snapshot(candidate)
+    run_config["task_snapshot"] = task_snapshot(task)
     if judge is not None:
         run_config["judge_model_snapshot"] = model_snapshot(judge)
     run = BenchmarkRun(
@@ -129,9 +125,7 @@ def archive_run(
     session: Session = Depends(get_session),
     user: UserAccount = Depends(csrf_protection),
 ) -> None:
-    run = session.scalar(
-        select(BenchmarkRun).where(BenchmarkRun.id == run_id).with_for_update()
-    )
+    run = session.scalar(select(BenchmarkRun).where(BenchmarkRun.id == run_id).with_for_update())
     if not can_access_run(session, user, run):
         raise HTTPException(status_code=404, detail="Run not found")
     assert run is not None
@@ -175,11 +169,7 @@ def list_run_artifacts(
     if not can_access_run(session, user, session.get(BenchmarkRun, run_id)):
         raise HTTPException(status_code=404, detail="Run not found")
     return list(
-        session.scalars(
-            select(RunArtifact)
-            .where(RunArtifact.run_id == run_id)
-            .order_by(RunArtifact.created_at)
-        ).all()
+        session.scalars(select(RunArtifact).where(RunArtifact.run_id == run_id).order_by(RunArtifact.created_at)).all()
     )
 
 
@@ -202,10 +192,7 @@ def download_run_artifact(
         raise HTTPException(status_code=404, detail="Artifact not found")
     artifact_root = Path(settings.artifact_root).resolve()
     artifact_path = Path(artifact.path).resolve()
-    if (
-        artifact_path != artifact_root
-        and artifact_root not in artifact_path.parents
-    ):
+    if artifact_path != artifact_root and artifact_root not in artifact_path.parents:
         raise HTTPException(status_code=404, detail="Artifact not found")
     if not artifact_path.is_file():
         raise HTTPException(status_code=410, detail="Artifact file is unavailable")
@@ -251,17 +238,8 @@ def get_agent_graph(
 ) -> AgentGraph:
     if not can_access_run(session, user, session.get(BenchmarkRun, run_id)):
         raise HTTPException(status_code=404, detail="Run not found")
-    events = session.scalars(
-        select(RunEvent)
-        .where(RunEvent.run_id == run_id)
-        .order_by(RunEvent.sequence)
-    ).all()
-    return derive_agent_graph(
-        [
-            {"kind": event.kind, "sequence": event.sequence, **event.payload}
-            for event in events
-        ]
-    )
+    events = session.scalars(select(RunEvent).where(RunEvent.run_id == run_id).order_by(RunEvent.sequence)).all()
+    return derive_agent_graph([{"kind": event.kind, "sequence": event.sequence, **event.payload} for event in events])
 
 
 @router.get("/{run_id}/stream")
