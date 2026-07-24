@@ -2,7 +2,7 @@ import json
 import tarfile
 from pathlib import Path
 
-from app.scenario import ScenarioRunResult, load_scenario
+from app.scenario import PreparedScenario, ScenarioRunResult, load_scenario
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 SCENARIO_ROOT = PROJECT_ROOT / "scenarios" / "terminal-repository"
@@ -11,8 +11,77 @@ SCENARIO_ROOT = PROJECT_ROOT / "scenarios" / "terminal-repository"
 def test_scenario_loads_and_components_are_confined() -> None:
     scenario = load_scenario(SCENARIO_ROOT)
     assert scenario.metadata.slug == "terminal-repository"
+    assert scenario.metadata.version == "3.0.4"
     assert sum(scenario.metadata.scoring.values()) == 1_200
     assert scenario.component_path("database/init.sql").is_file()
+
+
+def test_budget_exhaustion_is_censored_and_never_calibration_evidence(
+    tmp_path: Path,
+) -> None:
+    scenario = load_scenario(SCENARIO_ROOT)
+    prepared = PreparedScenario(
+        scenario_root=SCENARIO_ROOT,
+        workspace=tmp_path,
+        metadata=scenario.metadata,
+    )
+    result = ScenarioRunResult(
+        final_response="Hard scenario budget reached before a final response.",
+        elapsed_seconds=10_800,
+        tool_calls=900,
+        events=[],
+        private_state={
+            "hard_budget_reasons": ["active_time"],
+            "completion_requirements_met": False,
+            "hidden_verification_passed": False,
+        },
+    )
+
+    scorecard = scenario.grade(prepared, result)
+
+    assert scorecard["outcome"]["status"] == "budget_exhausted"
+    assert scorecard["outcome"]["censored"] is True
+    assert scorecard["outcome"]["hard_budget_reasons"] == ["active_time"]
+    assert scorecard["outcome"]["runtime_calibration_eligible"] is False
+    assert "budget_exhausted" in scorecard["outcome"]["calibration_exclusions"]
+
+
+def test_only_verified_high_score_run_is_runtime_calibration_evidence(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    scenario = load_scenario(SCENARIO_ROOT)
+    prepared = PreparedScenario(
+        scenario_root=SCENARIO_ROOT,
+        workspace=tmp_path,
+        metadata=scenario.metadata,
+    )
+    result = ScenarioRunResult(
+        final_response="verified",
+        elapsed_seconds=7_200,
+        tool_calls=700,
+        events=[],
+        private_state={
+            "hard_budget_reasons": [],
+            "completion_requirements_met": True,
+            "hidden_verification_passed": True,
+        },
+    )
+    monkeypatch.setattr(
+        "app.scoring.score",
+        lambda _evidence: {"score": 1_000, "maximum": 1_200},
+    )
+
+    scorecard = scenario.grade(prepared, result)
+
+    assert scorecard["outcome"] == {
+        "status": "verified_success",
+        "censored": False,
+        "hard_budget_reasons": [],
+        "runtime_calibration_eligible": True,
+        "calibration_exclusions": [],
+        "minimum_success_score": 900,
+    }
 
 
 def test_small_scenario_is_deterministic_and_complete(tmp_path: Path) -> None:

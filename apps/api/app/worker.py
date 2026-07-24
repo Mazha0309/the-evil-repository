@@ -854,7 +854,9 @@ class Worker:
             if run.status == RunStatus.cancelled:
                 return
             run.status = RunStatus.completed
-            run.stage = "Completed"
+            outcome = dict(scorecard.get("outcome", {}))
+            budget_exhausted = bool(outcome.get("censored", False))
+            run.stage = "Budget exhausted" if budget_exhausted else "Completed"
             run.score = float(scorecard["score"])
             run.scorecard = scorecard
             run.tool_calls = result.tool_calls
@@ -872,11 +874,28 @@ class Worker:
                     metadata_json={"kind": "scenario-run-archive"},
                 )
             )
+            if budget_exhausted:
+                append_event(
+                    session,
+                    run_id,
+                    "run.budget_exhausted",
+                    {
+                        "reasons": outcome.get("hard_budget_reasons", []),
+                        "score": run.score,
+                        "maximum": scorecard["maximum"],
+                        "censored": True,
+                    },
+                )
             append_event(
                 session,
                 run_id,
                 "run.completed",
-                {"score": run.score, "maximum": scorecard["maximum"]},
+                {
+                    "score": run.score,
+                    "maximum": scorecard["maximum"],
+                    "outcome": outcome.get("status", "evaluated"),
+                    "censored": budget_exhausted,
+                },
             )
             session.commit()
 

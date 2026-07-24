@@ -26,7 +26,7 @@ provider credentials.
 
 ## Status
 
-The platform is currently **v0.9.1** and remains under active construction.
+The platform is currently **v0.9.2** and remains under active construction.
 See [`CHANGELOG.md`](CHANGELOG.md). This release includes the canonical
 “terminal repository” challenge, account isolation, administrator controls,
 server monitoring, a live Agent activity console, and the complete execution,
@@ -91,8 +91,8 @@ Terminal run results can be soft-deleted with a separate confirmation.
 Soft-deletion hides the run from lists, dashboards, score aggregates, detail
 pages, and report endpoints without removing scores, events, graphs, artifacts,
 ownership, or replay data. Active runs must first finish or be cancelled. The
-retained row can be recovered administratively from the database; v0.9.1 does
-not yet expose a restore UI.
+retained row can be recovered administratively from the database; the current
+release does not yet expose a restore UI.
 
 An optional independent LLM semantic judge now performs a real second Provider
 call after deterministic grading. It assigns a separate 0–100 review for
@@ -125,8 +125,8 @@ constraints, invariants, and remediations. A scenario may declare multiple
 acceptable resolution paths—such as a verified forward fix or a safe
 rollback—plus objective hidden checks. The evaluator reports partial causal
 coverage without turning partial evidence into a false pass. Terminal
-Repository 3.0.3 retains the 3.0.2 truth and generated incident structure while
-versioning the recalibrated 30/60-minute execution envelope. The multi-path
+Repository 3.0.4 retains the 3.0.3 truth and generated incident structure while
+correcting its execution envelope to 90/180 minutes. The multi-path
 contract is available to subsequent scenario families instead of silently
 changing published truth under the same version.
 
@@ -139,7 +139,7 @@ with a stale SQLite cache. The offline mirror is available only through
 `browser.search`, `browser.open`, and `browser.find`, so a candidate cannot
 bypass Browser behavior by scanning a copied mirror directory.
 
-Scenario 3.0.3 makes the apparent bulk material. Five live relay chains contain
+Scenario 3.0.4 makes the apparent bulk material. Five live relay chains contain
 704 executable opaque cells; seven independent corruptions are jointly
 required, and fixing six still fails. The two repositories contain exactly
 5,000 tracked files and 2,000 commits, 40 semantic custody checkpoints, seven
@@ -162,7 +162,7 @@ equivalents of `ps`, `systemctl`, `journalctl`, `lsof`/socket inspection,
 `strace`, and `perf`. These tools observe only the simulated incident state;
 they never attach to a host process or expose live packets. Their collectors,
 clock domains, useful signals, and decoys remain replayable. Terminal
-Repository 3.0.3 stays frozen and does not retroactively enable this new tool
+Repository 3.0.4 stays frozen and does not retroactively enable this new tool
 pack.
 
 A candidate must build an observable investigation, not merely guess a patch.
@@ -190,21 +190,35 @@ ephemeral workspace. A one-sample quick check may lie; hidden grading reruns
 static scope, regression, mutation, runtime and fresh-database golden replay.
 
 The canonical difficulty target is to remain discriminating throughout a
-60-minute hard envelope for a strong software-engineering Agent. This is a
-calibration target, not a wall-clock promise: EvilBench never pads a run with
-`sleep`, random delay, or an artificial timer. Difficulty must come from
-necessary evidence work, conflicting provenance, bounded recovery from
-scripted failures, and hidden verification. Scenario releases are recalibrated
-when strong Agents discover material shortcuts.
+long-running strong-Agent investigation. This is a calibration target, not a
+wall-clock promise: EvilBench never pads a run with `sleep`, random delay, or
+an artificial timer. Difficulty must come from necessary evidence work,
+conflicting provenance, bounded recovery from scripted failures, and hidden
+verification. Scenario releases are recalibrated when strong Agents discover
+material shortcuts.
 
 The incident's 180 ticks are deterministic logical replay steps, not 180
-wall-clock minutes. Real execution defaults are a 30-minute soft warning and a
-60-minute hard stop. EvilBench records logical model turns, raw Provider
-HTTP requests (including retries), input/output Token counts, tool calls, and
-active time. Optional Token caps are supported, but dollar cost is deliberately
-not normalized: cache reads/writes, hidden reasoning tokens, batch/service
-tiers, discounts, and compatible-API usage semantics are not reliably
-comparable across Providers.
+wall-clock minutes. Scenario 3.0.4 defaults to a 90-minute soft warning and a
+180-minute hard observation envelope, with 600/2,200 tool calls and 300/720
+raw Provider requests. The hard limit is a safety boundary, not an intended
+duration or forced wait.
+
+A hard-budget stop is now an explicit **right-censored outcome** rather than a
+completed solution. Its partial score remains available for forensic analysis,
+but it is labelled `budget_exhausted`, excluded from average-score and runtime
+calibration aggregates, and must not establish a model's completion time.
+Runtime calibration accepts only runs that avoid every hard limit, satisfy the
+Scenario completion contract, pass hidden verification, and score at least
+900/1,200. Older scorecards are classified from their archived
+`hard_limits_crossed` ledger, so pre-3.0.4 truncated runs are not silently shown
+as successes after an upgrade.
+
+EvilBench records logical model turns, raw Provider HTTP requests (including
+retries), input/output Token counts, tool calls, and active time. Optional
+Token caps are supported, but dollar cost is deliberately not normalized:
+cache reads/writes, hidden reasoning tokens, batch/service tiers, discounts,
+and compatible-API usage semantics are not reliably comparable across
+Providers.
 
 Every candidate event carries a stable Agent identity. Today the built-in
 executor is intentionally single-Agent and produces a one-node Agent Graph.

@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.database import get_session
 from app.models import BenchmarkRun, UserAccount
+from app.run_outcomes import normalize_scorecard_outcome
 from app.security import can_access_run, current_user
 
 router = APIRouter(prefix="/reports", tags=["reports"])
@@ -24,7 +25,7 @@ def export_report(
         "run_id": str(run.id),
         "status": run.status.value,
         "score": run.score,
-        "scorecard": run.scorecard,
+        "scorecard": normalize_scorecard_outcome(run.scorecard),
         "tool_calls": run.tool_calls,
         "resources": {
             "provider_requests": run.scorecard.get("resources", {}).get(

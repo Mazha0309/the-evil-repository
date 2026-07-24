@@ -1467,6 +1467,12 @@ pre {
   color: var(--amber);
 }
 
+.status-pill--censored {
+  border-color: #66502a;
+  color: var(--amber);
+  background: rgba(243, 182, 64, 0.045);
+}
+
 .toolbar {
   display: flex;
   min-height: 38px;
@@ -4141,6 +4147,97 @@ pre {
   }
   .run-model-badge {
     width: 100%;
+  }
+  .run-score {
+    align-self: flex-end;
+    margin-left: auto;
+  }
+  .table-scroll--runs {
+    overflow: visible;
+  }
+  .run-table {
+    display: block;
+  }
+  .run-table thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  .run-table tbody {
+    display: grid;
+    gap: 10px;
+  }
+  .run-table tbody tr {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0 14px;
+    border: 1px solid var(--line);
+    border-radius: 7px;
+    padding: 11px 13px;
+    background: #0b0e0b;
+  }
+  .run-table tbody tr:hover {
+    background: #0d110c;
+  }
+  .run-table td {
+    display: flex;
+    min-width: 0;
+    height: auto;
+    min-height: 43px;
+    align-items: flex-start;
+    justify-content: center;
+    flex-direction: column;
+    gap: 5px;
+    border-bottom: 1px solid #1c211a;
+    padding: 7px 0;
+  }
+  .run-table tbody tr:last-child td:not([data-cell="actions"]) {
+    border-bottom: 1px solid #1c211a;
+  }
+  .run-table td::before {
+    color: #697164;
+    content: attr(data-label);
+    font-family: var(--mono);
+    font-size: 7px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+  .run-table td[data-cell="model"],
+  .run-table td[data-cell="stage"],
+  .run-table td[data-cell="created"],
+  .run-table td[data-cell="actions"] {
+    grid-column: 1 / -1;
+  }
+  .run-table td[data-cell="model"] .table-model {
+    width: 100%;
+    min-width: 0;
+    max-width: none;
+  }
+  .run-table td[data-cell="model"] .table-model strong {
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  .run-table td[data-cell="actions"] {
+    min-height: 34px;
+    align-items: flex-end;
+    border-bottom: 0;
+    padding-bottom: 0;
+  }
+  .run-table td[data-cell="actions"]::before {
+    display: none;
+  }
+  .run-table .table-actions {
+    width: 100%;
+  }
+  .run-table .row-link {
+    min-width: 36px;
+    min-height: 36px;
+    place-items: center;
+    border: 1px solid var(--line);
+    border-radius: 5px;
   }
   .tabs {
     overflow-x: auto;

@@ -3,6 +3,44 @@
 All notable platform changes are recorded here. The project follows Semantic
 Versioning while individual benchmark scenarios retain independent versions.
 
+## [0.9.2] - 2026-07-24
+
+### Added
+
+- A versioned runtime-calibration policy and machine-readable run outcome:
+  `verified_success`, `evaluated_incomplete`, or `budget_exhausted`.
+- Backward-compatible right-censor inference from the archived
+  `hard_limits_crossed` ledger, so pre-3.0.4 hard-stop results are relabelled
+  without rewriting retained scorecards.
+
+### Changed
+
+- Terminal Repository 3.0.4 raises the provisional execution envelope from
+  30/60 to 90/180 active minutes, tool budgets from 250/650 to 600/2,200, and
+  raw Provider-request budgets from 180/360 to 300/720.
+- Run creation now takes its defaults from the selected Scenario manifest
+  instead of carrying a second stale set of hard-coded WebUI values.
+- The dashboard average excludes right-censored runs. Run tables, detail
+  headers, result callouts, exports, and archived legacy runs distinguish
+  budget exhaustion from a completed solution.
+- Runtime calibration now accepts only runs that avoid every hard limit,
+  satisfy the completion contract, pass hidden verification, and reach
+  900/1,200.
+
+### Fixed
+
+- Corrected a serious calibration error in 3.0.3: two 35–37 minute DeepSeek
+  runs with scores of 85 and 240 were treated as completion-time evidence even
+  though they had not solved the Scenario.
+- Corrected the resulting 60-minute hard stop after exported GPT-5.6 Sol and
+  Grok 4.5 runs both reached it with the hidden functional pipeline passing
+  but the observable completion contract still unmet. Those observations are
+  right-censored and cannot establish either model's solve time or comparable
+  final score.
+- Preserved the run-score card's right alignment below the mobile breakpoint,
+  and replaced the overflowing run archive table with a 320px-safe card layout
+  while retaining the desktop table.
+
 ## [0.9.1] - 2026-07-24
 
 ### Added
@@ -108,10 +146,10 @@ Versioning while individual benchmark scenarios retain independent versions.
 - Resource accounting deliberately does not estimate or rank dollar cost:
   cache reads/writes, hidden reasoning Tokens, batch/service tiers, discounts,
   and compatible-API usage semantics are not reliably comparable.
-- Terminal Repository 3.0.3 recalibrates the active-time envelope from 40/80
-  to 30/60 minutes after completed 3.0.2 runs clustered around 35–37 minutes.
-  Wall time remains observed-only rather than a score input; `completed` means
-  execution and grading ended, not that the incident was solved.
+- Terminal Repository 3.0.3 changed the active-time envelope from 40/80 to
+  30/60 minutes after 3.0.2 run endings clustered around 35–37 minutes. That
+  evidence was later found to contain low-score incomplete outcomes; 0.9.2 and
+  Scenario 3.0.4 supersede this calibration.
 - Clarified that the 180-tick Incident Director horizon is logical replay time,
   while real execution uses a 30-minute soft threshold and 60-minute hard
   stop.

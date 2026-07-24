@@ -204,6 +204,87 @@ def test_cancelled_run_cannot_be_resurrected_by_completion(monkeypatch) -> None:
     assert session.commits == 0
 
 
+def test_budget_exhausted_run_is_archived_as_censored_outcome(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    testing_session = sessionmaker(
+        bind=engine,
+        expire_on_commit=False,
+        class_=Session,
+    )
+    run_id = uuid.uuid4()
+    with testing_session() as session:
+        session.add(
+            BenchmarkRun(
+                id=run_id,
+                task_id=uuid.uuid4(),
+                candidate_model_id=uuid.uuid4(),
+                status=RunStatus.scoring,
+                stage="Scorecard aggregation",
+                config={},
+            )
+        )
+        session.commit()
+    archive = tmp_path / "run.tar.gz"
+    archive.write_bytes(b"archive")
+    monkeypatch.setattr(worker_module, "SessionLocal", testing_session)
+    result = ScenarioRunResult(
+        final_response="Hard scenario budget reached.",
+        elapsed_seconds=10_800,
+        tool_calls=900,
+        events=[],
+        private_state={
+            "input_tokens": 100,
+            "output_tokens": 20,
+            "hard_budget_reasons": ["active_time"],
+        },
+    )
+    scorecard = {
+        "score": 85,
+        "maximum": 1_200,
+        "outcome": {
+            "status": "budget_exhausted",
+            "censored": True,
+            "hard_budget_reasons": ["active_time"],
+        },
+    }
+
+    Worker().complete(
+        run_id,
+        result,
+        scorecard,
+        archive,
+        "c" * 64,
+    )
+
+    with testing_session() as session:
+        run = session.get(BenchmarkRun, run_id)
+        events = list(
+            session.scalars(
+                select(RunEvent)
+                .where(RunEvent.run_id == run_id)
+                .order_by(RunEvent.sequence)
+            ).all()
+        )
+        assert run is not None
+        assert run.status == RunStatus.completed
+        assert run.stage == "Budget exhausted"
+        assert run.score == 85
+        assert [event.kind for event in events] == [
+            "run.budget_exhausted",
+            "run.completed",
+        ]
+        assert events[0].payload["censored"] is True
+        assert events[1].payload["outcome"] == "budget_exhausted"
+
+
 def test_failure_checkpoint_preserves_events_diffs_and_resource_ledger(
     tmp_path: Path,
     monkeypatch,

@@ -364,7 +364,10 @@ function DashboardPage() {
           value={
             data?.average_score == null ? "—" : Math.round(data.average_score)
           }
-          detail={text("满分 1,200", "out of 1,200")}
+          detail={text(
+            "仅统计未截断结果 · 满分 1,200",
+            "Non-censored results only · out of 1,200",
+          )}
         />
       </div>
       <div className="dashboard-grid">
@@ -1250,7 +1253,22 @@ function NewRunPage() {
   const tasks = useQuery({ queryKey: ["tasks"], queryFn: api.tasks });
   const models = useQuery({ queryKey: ["models"], queryFn: api.models });
   const enabledModels = (models.data ?? []).filter((model) => model.enabled);
+  const [selectedTaskId, setSelectedTaskId] = useState("");
   const [error, setError] = useState("");
+  const selectedTask =
+    (tasks.data ?? []).find((task) => task.id === selectedTaskId) ??
+    tasks.data?.[0];
+  const selectedBudget = selectedTask?.manifest.budget;
+  const budgetDefaults = {
+    softSeconds: selectedBudget?.soft_seconds ?? 5_400,
+    hardSeconds: selectedBudget?.hard_seconds ?? 10_800,
+    softToolCalls: selectedBudget?.soft_tool_calls ?? 600,
+    hardToolCalls: selectedBudget?.hard_tool_calls ?? 2_200,
+    softProviderRequests:
+      selectedBudget?.soft_provider_requests ?? 300,
+    hardProviderRequests:
+      selectedBudget?.hard_provider_requests ?? 720,
+  };
   const create = useMutation({
     mutationFn: api.createRun,
     onSuccess: (run) => navigate(`/runs/${run.id}`),
@@ -1309,6 +1327,7 @@ function NewRunPage() {
                   name="task_id"
                   value={task.id}
                   defaultChecked={index === 0}
+                  onChange={() => setSelectedTaskId(task.id)}
                 />
                 <div className="choice-card__check">
                   <CheckCircle2 size={16} />
@@ -1382,26 +1401,35 @@ function NewRunPage() {
               "Time, tool, Provider-request, and optional token limits",
             )}
           />
-          <div className="budget-grid">
+          <div
+            className="budget-grid"
+            key={selectedTask?.id ?? "default-budget"}
+          >
             <Field
               label={text("软时间限制（秒）", "Soft time (seconds)")}
-              hint={text("默认 30 分钟", "30-minute default")}
+              hint={text(
+                `场景默认 ${Math.round(budgetDefaults.softSeconds / 60)} 分钟`,
+                `${Math.round(budgetDefaults.softSeconds / 60)}-minute Scenario default`,
+              )}
             >
               <input
                 name="soft_seconds"
                 type="number"
-                defaultValue={1800}
+                defaultValue={budgetDefaults.softSeconds}
                 min={60}
               />
             </Field>
             <Field
               label={text("硬时间限制（秒）", "Hard time (seconds)")}
-              hint={text("默认 60 分钟", "60-minute default")}
+              hint={text(
+                `场景默认 ${Math.round(budgetDefaults.hardSeconds / 60)} 分钟`,
+                `${Math.round(budgetDefaults.hardSeconds / 60)}-minute Scenario default`,
+              )}
             >
               <input
                 name="hard_seconds"
                 type="number"
-                defaultValue={3600}
+                defaultValue={budgetDefaults.hardSeconds}
                 min={300}
               />
             </Field>
@@ -1409,7 +1437,7 @@ function NewRunPage() {
               <input
                 name="soft_tool_calls"
                 type="number"
-                defaultValue={250}
+                defaultValue={budgetDefaults.softToolCalls}
                 min={10}
               />
             </Field>
@@ -1417,7 +1445,7 @@ function NewRunPage() {
               <input
                 name="hard_tool_calls"
                 type="number"
-                defaultValue={650}
+                defaultValue={budgetDefaults.hardToolCalls}
                 min={20}
               />
             </Field>
@@ -1434,7 +1462,7 @@ function NewRunPage() {
               <input
                 name="soft_provider_requests"
                 type="number"
-                defaultValue={180}
+                defaultValue={budgetDefaults.softProviderRequests}
                 min={1}
               />
             </Field>
@@ -1451,7 +1479,7 @@ function NewRunPage() {
               <input
                 name="hard_provider_requests"
                 type="number"
-                defaultValue={360}
+                defaultValue={budgetDefaults.hardProviderRequests}
                 min={2}
               />
             </Field>
@@ -1637,13 +1665,25 @@ function RunDetailPage() {
       <div className="run-hero">
         <div>
           <div className="run-hero__meta">
-            <StatusPill status={data.status} />
+            <StatusPill
+              status={data.status}
+              censored={isCensoredRun(data)}
+            />
             <span>{shortId(data.id)}</span>
             <span>{new Date(data.created_at).toLocaleString(locale)}</span>
           </div>
-          <h1>{stageLabel(data.stage, locale)}</h1>
+          <h1>
+            {isCensoredRun(data)
+              ? text("预算已耗尽", "Budget exhausted")
+              : stageLabel(data.stage, locale)}
+          </h1>
           <p>
-            {data.status === "completed"
+            {isCensoredRun(data)
+              ? text(
+                  "运行已触及硬预算，当前分数只是被截断轨迹的部分评分，不代表模型完成任务。",
+                  "The run reached a hard budget. Its score is a partial evaluation of a censored trajectory, not a completed solution.",
+                )
+              : data.status === "completed"
               ? text(
                   "隐藏裁判流水线已经归档本次调查。",
                   "The hidden judge pipeline has archived this investigation.",
@@ -1667,6 +1707,18 @@ function RunDetailPage() {
           <small>/ {data.scorecard.maximum ?? 1_200}</small>
         </div>
       </div>
+      {isCensoredRun(data) && (
+        <div className="callout callout--warning">
+          <AlertTriangle size={16} />
+          <span>
+            {text(
+              `预算终止：${censoredReasons(data).join("、") || "未知资源"}。该运行不得用于校准模型完成时间。`,
+              `Budget exhausted: ${censoredReasons(data).join(", ") || "unknown resource"}. This run must not be used to calibrate model completion time.`,
+            )}
+          </span>
+          <strong>{text("右删失样本", "Censored run")}</strong>
+        </div>
+      )}
       <div className="run-kpis">
         <MiniKpi
           icon={<SquareTerminal />}
@@ -2583,8 +2635,8 @@ function RunTable({
     );
   }
   return (
-    <div className="table-scroll">
-      <table className="data-table">
+    <div className="table-scroll table-scroll--runs">
+      <table className="data-table run-table">
         <thead>
           <tr>
             <th>{text("运行", "Run")}</th>
@@ -2602,32 +2654,44 @@ function RunTable({
             const model = resolveRunModel(run, "candidate", models);
             return (
               <tr key={run.id}>
-                <td>
+                <td data-cell="run" data-label={text("运行", "Run")}>
                   <code>{shortId(run.id)}</code>
                 </td>
-                <td>
+                <td data-cell="model" data-label={text("模型", "Model")}>
                   <span className="table-model">
                     <strong>{model.name ?? text("未知模型", "Unknown model")}</strong>
                   </span>
                 </td>
-                <td>
-                  <StatusPill status={run.status} />
+                <td data-cell="status" data-label={text("状态", "Status")}>
+                  <StatusPill
+                    status={run.status}
+                    censored={isCensoredRun(run)}
+                  />
                 </td>
-                <td>
+                <td data-cell="stage" data-label={text("阶段", "Stage")}>
                   <span className="table-primary">
-                    {stageLabel(run.stage, locale)}
+                    {isCensoredRun(run)
+                      ? text("预算已耗尽", "Budget exhausted")
+                      : stageLabel(run.stage, locale)}
                   </span>
                 </td>
-                <td>{run.tool_calls}</td>
-                <td>
+                <td data-cell="tools" data-label={text("工具", "Tools")}>
+                  {run.tool_calls}
+                </td>
+                <td data-cell="score" data-label={text("得分", "Score")}>
                   <strong className={run.score != null ? "score-value" : ""}>
                     {run.score == null ? "—" : Math.round(run.score)}
                   </strong>
                 </td>
                 {!compact && (
-                  <td>{new Date(run.created_at).toLocaleString(locale)}</td>
+                  <td
+                    data-cell="created"
+                    data-label={text("创建时间", "Created")}
+                  >
+                    {new Date(run.created_at).toLocaleString(locale)}
+                  </td>
                 )}
-                <td>
+                <td data-cell="actions" aria-label={text("操作", "Actions")}>
                   <div className="table-actions">
                     <Link className="row-link" to={`/runs/${run.id}`}>
                       <ArrowRight size={14} />
@@ -2746,10 +2810,18 @@ function StatCard({
   );
 }
 
-function StatusPill({ status }: { status: RunStatus }) {
-  const { locale } = useLocale();
+function StatusPill({
+  status,
+  censored = false,
+}: {
+  status: RunStatus;
+  censored?: boolean;
+}) {
+  const { locale, text } = useLocale();
   const icon =
-    status === "completed" ? (
+    censored ? (
+      <AlertTriangle />
+    ) : status === "completed" ? (
       <CheckCircle2 />
     ) : status === "failed" ? (
       <XCircle />
@@ -2761,10 +2833,28 @@ function StatusPill({ status }: { status: RunStatus }) {
       <CircleDot />
     );
   return (
-    <span className={`status-pill status-pill--${status}`}>
+    <span
+      className={`status-pill status-pill--${censored ? "censored" : status}`}
+    >
       {icon}
-      {statusLabel(status, locale)}
+      {censored ? text("预算截断", "Censored") : statusLabel(status, locale)}
     </span>
+  );
+}
+
+function censoredReasons(run: Run): string[] {
+  const explicit = run.scorecard.outcome?.hard_budget_reasons;
+  if (explicit?.length) return explicit;
+  const legacy = run.scorecard.resources?.hard_limits_crossed;
+  return Array.isArray(legacy)
+    ? legacy.filter((reason): reason is string => typeof reason === "string")
+    : [];
+}
+
+function isCensoredRun(run: Run): boolean {
+  return (
+    run.scorecard.outcome?.censored === true ||
+    censoredReasons(run).length > 0
   );
 }
 
@@ -3184,6 +3274,7 @@ function stageLabel(stage: string, locale: "zh-CN" | "en") {
     Running: "正在运行",
     Scoring: "正在评分",
     Completed: "已完成",
+    "Budget exhausted": "预算已耗尽",
     Failed: "失败",
     Cancelled: "已取消",
     "Scorecard aggregation": "正在汇总确定性评分",

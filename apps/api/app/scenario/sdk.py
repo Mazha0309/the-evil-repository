@@ -34,6 +34,15 @@ class ContextPressure(BaseModel):
     reference_solve_minutes: int = 80
 
 
+class CalibrationPolicy(BaseModel):
+    """Defines which completed runs may inform future budget calibration."""
+
+    minimum_success_score: int = Field(default=900, ge=0)
+    require_completion_contract: bool = True
+    require_hidden_verification: bool = True
+    exclude_budget_exhausted: bool = True
+
+
 class CompletionRequirements(BaseModel):
     min_tool_calls: int = 0
     min_hypotheses: int = 0
@@ -79,6 +88,7 @@ class ScenarioMetadata(BaseModel):
     tools: list[str]
     components: ScenarioComponents
     context_pressure: ContextPressure
+    calibration: CalibrationPolicy = Field(default_factory=CalibrationPolicy)
     completion: CompletionRequirements = Field(default_factory=CompletionRequirements)
     incident: IncidentRequirements = Field(default_factory=IncidentRequirements)
     scoring: dict[str, int]

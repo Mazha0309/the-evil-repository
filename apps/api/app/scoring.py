@@ -14,8 +14,8 @@ class ScoreEvidence:
     events: list[dict[str, Any]]
     elapsed_seconds: float
     tool_calls: int
-    soft_tool_calls: int = 250
-    hard_tool_calls: int = 650
+    soft_tool_calls: int = 600
+    hard_tool_calls: int = 2_200
     completion_requirements_met: bool = False
     final_response: str = ""
     truth: dict[str, Any] = field(default_factory=dict)

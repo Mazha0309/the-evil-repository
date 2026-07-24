@@ -278,7 +278,9 @@ export interface Run {
     behavior_profile?: Record<string, number>;
     error_profile?: Record<string, number>;
     semantic_review?: SemanticJudgeReview;
-    resources?: Record<string, unknown>;
+    resources?: Record<string, unknown> & {
+      hard_limits_crossed?: string[];
+    };
     agent_graph?: {
       schema_version: number;
       execution_mode: "single_agent" | "multi_agent";
@@ -289,6 +291,17 @@ export interface Run {
       met: boolean;
       tool_calls: number;
       substantive_tool_calls?: number;
+    };
+    outcome?: {
+      status:
+        | "verified_success"
+        | "evaluated_incomplete"
+        | "budget_exhausted";
+      censored: boolean;
+      hard_budget_reasons: string[];
+      runtime_calibration_eligible: boolean;
+      calibration_exclusions: string[];
+      minimum_success_score: number;
     };
   };
   config: Record<string, unknown>;

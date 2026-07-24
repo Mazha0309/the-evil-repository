@@ -1,5 +1,5 @@
 slug: terminal-repository
-version: 3.0.3
+version: 3.0.4
 name: The Terminal Repository
 sdk_version: 1
 entrypoint: scenario.py:TerminalRepositoryScenario
@@ -36,10 +36,12 @@ repositories:
     commits: 800
     role: read-only protocol evidence and hidden contract probe
 budget:
-  soft_seconds: 1800
-  hard_seconds: 3600
-  soft_tool_calls: 250
-  hard_tool_calls: 650
+  soft_seconds: 5400
+  hard_seconds: 10800
+  soft_tool_calls: 600
+  hard_tool_calls: 2200
+  soft_provider_requests: 300
+  hard_provider_requests: 720
 tools:
   - list_files
   - read_file
@@ -81,6 +83,11 @@ context_pressure:
   repeated_read_penalty_after: 2
   native_context_window: true
   reference_solve_minutes: 80
+calibration:
+  minimum_success_score: 900
+  require_completion_contract: true
+  require_hidden_verification: true
+  exclude_budget_exhausted: true
 completion:
   min_tool_calls: 0
   min_hypotheses: 14
