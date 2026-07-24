@@ -1639,13 +1639,25 @@ pre {
 }
 
 .run-hero {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-rows: auto auto;
   min-height: 150px;
-  align-items: center;
-  justify-content: space-between;
-  gap: 25px;
+  align-content: center;
+  gap: 0 25px;
   border-bottom: 1px solid var(--line);
   margin: -20px 0 17px;
+}
+
+.run-hero__heading {
+  grid-column: 1;
+  grid-row: 1;
+  align-self: end;
+}
+
+.run-hero__details {
+  grid-column: 1;
+  grid-row: 2;
 }
 
 .run-hero__meta {
@@ -1700,8 +1712,11 @@ pre {
 
 .run-score {
   display: grid;
+  grid-column: 2;
+  grid-row: 1 / span 2;
   min-width: 130px;
   height: 100px;
+  align-self: center;
   place-content: center;
   border: 1px solid #3b4933;
   border-radius: 8px;
@@ -4084,10 +4099,21 @@ pre {
 }
 
 @media (max-width: 620px) {
-  .page-header,
-  .run-hero {
+  .page-header {
     align-items: flex-start;
     flex-direction: column;
+  }
+  .run-hero {
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-rows: auto auto;
+    align-items: start;
+    gap: 12px 14px;
+  }
+  .run-hero__heading {
+    align-self: start;
+  }
+  .run-hero__details {
+    grid-column: 1 / -1;
   }
   .page-header .button {
     width: 100%;
@@ -4149,8 +4175,10 @@ pre {
     width: 100%;
   }
   .run-score {
-    align-self: flex-end;
-    margin-left: auto;
+    grid-column: 2;
+    grid-row: 1;
+    align-self: start;
+    margin-left: 0;
   }
   .table-scroll--runs {
     overflow: visible;
@@ -4301,5 +4329,20 @@ pre {
   }
   .graph-canvas {
     height: 520px;
+  }
+}
+
+@media (max-width: 390px) {
+  .run-hero__meta {
+    align-items: flex-start;
+    flex-wrap: wrap;
+    gap: 6px 9px;
+  }
+  .run-score {
+    min-width: 108px;
+    height: 82px;
+  }
+  .run-score strong {
+    font-size: 29px;
   }
 }

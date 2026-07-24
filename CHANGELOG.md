@@ -37,8 +37,8 @@ Versioning while individual benchmark scenarios retain independent versions.
   but the observable completion contract still unmet. Those observations are
   right-censored and cannot establish either model's solve time or comparable
   final score.
-- Preserved the run-score card's right alignment below the mobile breakpoint,
-  and replaced the overflowing run archive table with a 320px-safe card layout
+- Moved the run-score card into the mobile Hero's top-right grid position, and
+  replaced the overflowing run archive table with a 320px-safe card layout
   while retaining the desktop table.
 
 ## [0.9.1] - 2026-07-24

@@ -1663,7 +1663,7 @@ function RunDetailPage() {
   return (
     <>
       <div className="run-hero">
-        <div>
+        <div className="run-hero__heading">
           <div className="run-hero__meta">
             <StatusPill
               status={data.status}
@@ -1677,6 +1677,8 @@ function RunDetailPage() {
               ? text("预算已耗尽", "Budget exhausted")
               : stageLabel(data.stage, locale)}
           </h1>
+        </div>
+        <div className="run-hero__details">
           <p>
             {isCensoredRun(data)
               ? text(
