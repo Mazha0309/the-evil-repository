@@ -110,6 +110,12 @@ export interface Task {
     tools?: string[];
     completion?: CompletionSpec;
     incident?: IncidentSpec;
+    release?: ReleaseSpec;
+    components?: {
+      database?: Record<string, string>;
+      failures?: string[];
+      mirror?: string;
+    };
     localizations?: Record<
       string,
       {
@@ -176,6 +182,20 @@ export interface IncidentSpec {
   phase_observations?: Record<string, number>;
   required_decisions?: string[];
   require_snapshot_before_risky_action?: boolean;
+  required_verification_modes?: string[];
+  required_successful_verification_modes?: string[];
+  required_verification_sequence?: string[];
+}
+
+export interface ReleaseSpec {
+  enabled?: boolean;
+  logical_tick_seconds?: number;
+  horizon_ticks?: number;
+  min_logical_ticks?: number;
+  min_unique_observations?: number;
+  required_decisions?: string[];
+  require_snapshot_before_irreversible?: boolean;
+  require_containment?: boolean;
   required_verification_modes?: string[];
   required_successful_verification_modes?: string[];
   required_verification_sequence?: string[];

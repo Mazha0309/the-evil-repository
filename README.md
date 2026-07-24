@@ -3,15 +3,15 @@
 [English](README.md) | [简体中文](README.zh-CN.md)
 
 > An evidence-grounded, container-isolated benchmark for repository-scale AI
-> software incident response.
+> software engineering and incident response.
 
-The Evil Repository evaluates how an AI Agent investigates a deterministic but
-uncertain production incident at repository scale. The environment combines
-cross-referenced Git repositories, contradictory operational evidence, broken
-CI oracles, intermittent symptoms, phantom reports, prompt injection, scripted
-tool failures, database history, and bounded production actions. The Agent
-must establish what is real, preserve constraints, contain risk, and only then
-make the smallest verified repair with an auditable evidence report.
+The Evil Repository evaluates how an AI Agent investigates deterministic but
+uncertain production failures at repository scale. Scenarios combine
+cross-referenced Git histories, contradictory runtime or artifact evidence,
+broken CI oracles, phantom reports, prompt injection, scripted tool failures,
+and bounded production actions. The Agent must establish what is real,
+preserve constraints, contain risk, and then make the smallest verified
+recovery—which may deliberately contain no source-code change.
 
 The project sits between a repository-scale software engineering benchmark, an
 incident-response simulator, and an Agent behavior analysis platform. A run
@@ -26,18 +26,18 @@ provider credentials.
 
 ## Status
 
-The platform is currently **v0.9.2** and remains under active construction.
-See [`CHANGELOG.md`](CHANGELOG.md). This release includes the canonical
-“terminal repository” challenge, account isolation, administrator controls,
-server monitoring, a live Agent activity console, and the complete execution,
-telemetry, scoring, and visualization path around it.
+The platform is currently **v0.10.0** and remains under active construction.
+See [`CHANGELOG.md`](CHANGELOG.md). This release includes two independently
+versioned scenarios, account isolation, administrator controls, server
+monitoring, a live Agent activity console, and the complete execution,
+telemetry, scoring, and visualization path around them.
 
 This release also introduces the versioned Suite contract. The bundled
-Production Incident Engineering Suite currently contains **one public
-development scenario in one active family**. Its policy requires at least 20
+Production Incident Engineering Suite currently contains **two public
+development scenarios in two active families**. Its policy requires at least 20
 scenario references across five active families, including three held-out
 families, before it may claim leaderboard readiness. The WebUI and `/suites`
-API expose that readiness as `1/5`, `0/3`, and `1/20`; therefore the current
+API expose that readiness as `2/5`, `0/3`, and `2/20`; therefore the current
 release is useful for detailed engineering analysis, but it is **not yet a
 statistically valid general leaderboard**.
 
@@ -56,7 +56,7 @@ request budget.
 If an unexpected terminal exception occurs after Scenario preparation, the
 Runner preserves a downloadable forensic checkpoint before removing the
 container. It contains the event stream, repository diffs/status, bounded
-investigation artifacts, incident audit, resource ledger, and failure summary.
+investigation artifacts, scenario audit, resource ledger, and failure summary.
 This checkpoint is replayable evidence, not a resumable model conversation.
 
 The control plane supports four explicit model protocols: OpenAI Responses,
@@ -124,13 +124,23 @@ Private truth is represented as a graph of causes, conditions, symptoms,
 constraints, invariants, and remediations. A scenario may declare multiple
 acceptable resolution paths—such as a verified forward fix or a safe
 rollback—plus objective hidden checks. The evaluator reports partial causal
-coverage without turning partial evidence into a false pass. Terminal
-Repository 3.0.4 retains the 3.0.3 truth and generated incident structure while
-correcting its execution envelope to 90/180 minutes. The multi-path
-contract is available to subsequent scenario families instead of silently
-changing published truth under the same version.
+coverage without turning partial evidence into a false pass. Platform,
+Suite, and Scenario versions are independent, so adding a new family never
+silently changes a published scenario's truth.
 
-The canonical scenario deliberately prevents a one-file, one-test shortcut.
+## Included scenarios
+
+- **[The Terminal Repository 3.0.4](scenarios/terminal-repository/DESIGN.md)** —
+  a cross-repository protocol regression with a dirty database, polluted CI,
+  intermittent runtime behavior, eight incident tickets, seven independent
+  relay defects, and a 90/180-minute execution envelope.
+- **[The Counterfeit Release 1.0.0](scenarios/counterfeit-release/DESIGN.md)** —
+  a software-supply-chain recovery where clean source, Git tags, OCI artifacts,
+  SBOM, provenance, signatures, transparency records, and deployed runtime
+  disagree. It accepts either a verified rollback or an exact clean forward
+  rebuild and uses a 60/120-minute execution envelope.
+
+The Terminal Repository deliberately prevents a one-file, one-test shortcut.
 Its relevant regression is buried beneath substantial later Git history;
 README, issues, comments, TODOs, logs, CI output, database descriptions, and
 Browser results conflict with one another; the second repository and commit
@@ -139,7 +149,7 @@ with a stale SQLite cache. The offline mirror is available only through
 `browser.search`, `browser.open`, and `browser.find`, so a candidate cannot
 bypass Browser behavior by scanning a copied mirror directory.
 
-Scenario 3.0.4 makes the apparent bulk material. Five live relay chains contain
+Terminal Repository 3.0.4 makes the apparent bulk material. Five live relay chains contain
 704 executable opaque cells; seven independent corruptions are jointly
 required, and fixing six still fails. The two repositories contain exactly
 5,000 tracked files and 2,000 commits, 40 semantic custody checkpoints, seven
@@ -174,7 +184,7 @@ validates the patch against fresh state, mutations, replay, security rules, and
 the scenario's private Truth Graph. Satisfying the gate proves coverage, not
 correctness.
 
-The canonical completion contract has no minimum call-count padding. It
+The Terminal Repository completion contract has no minimum call-count padding. It
 requires 14 hypotheses including six rejected hypotheses, 60 evidence records,
 Git/database/Browser/runtime/cross-repository/incident coverage, 40 distinct
 service-signal-window observations across triage, containment, repair and
@@ -189,7 +199,7 @@ Candidate sandboxes default to 0.5 CPU, 256 MiB RAM, 256 PIDs and a 1.5 GiB
 ephemeral workspace. A one-sample quick check may lie; hidden grading reruns
 static scope, regression, mutation, runtime and fresh-database golden replay.
 
-The canonical difficulty target is to remain discriminating throughout a
+The scenario difficulty target is to remain discriminating throughout a
 long-running strong-Agent investigation. This is a calibration target, not a
 wall-clock promise: EvilBench never pads a run with `sleep`, random delay, or
 an artificial timer. Difficulty must come from necessary evidence work,
@@ -233,8 +243,8 @@ opaque file layout, runtime cells, histories, corpus and incident replay while
 remaining deterministic; the seed is archived for replay but is not copied
 into the candidate workspace. Reuse the same seed across compared models.
 
-Scenario maintainers can run the same oracle, near-miss, dirty-database,
-binary-forensics and resource-envelope checks used by CI:
+Scenario maintainers can run the same oracle, near-miss, database,
+binary/artifact-forensics and resource-envelope checks used by CI:
 
 ```bash
 make scenario-validate
@@ -347,10 +357,18 @@ infra/sandbox/             Networkless candidate image
 docs/                      Architecture, threat model, and authoring docs
 ```
 
-The open design specification lives in [`DESIGN.md`](DESIGN.md), with a
-[Simplified Chinese edition](DESIGN.zh-CN.md). It is part of the project—not
-an internal planning artifact. Architecture changes are expected to update
-both editions in the same pull request.
+The shared platform specification lives in [`DESIGN.md`](DESIGN.md), with a
+[Simplified Chinese edition](DESIGN.zh-CN.md). Each scenario owns a separate
+versioned design next to its implementation:
+
+- [Terminal Repository design](scenarios/terminal-repository/DESIGN.md)
+  ([简体中文](scenarios/terminal-repository/DESIGN.zh-CN.md))
+- [Counterfeit Release design](scenarios/counterfeit-release/DESIGN.md)
+  ([简体中文](scenarios/counterfeit-release/DESIGN.zh-CN.md))
+
+These files are open project artifacts, not internal planning notes. Shared
+architecture changes update both platform editions; scenario changes update
+both editions in that scenario directory.
 
 Further reading:
 

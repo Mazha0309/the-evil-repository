@@ -12,20 +12,31 @@ layout of the same causal task is still the same family.
 
 ```text
 scenarios/example/
+├── DESIGN.md
+├── DESIGN.zh-CN.md
 ├── metadata.yaml
 ├── scenario.py
+├── generator.py                         # optional
 ├── repos/repositories.yaml
-├── database/{init,dirty,hidden}.sql
-├── injections/
-├── failures/{filesystem,command,browser}.yaml
+├── database/{init,dirty,hidden}.sql      # optional
+├── injections/                          # optional
+├── failures/
 ├── grading/{public.yaml,hidden.py,replay.py}
-└── mirror/
+└── mirror/                              # authored or generated
 ```
 
 `metadata.yaml` declares the immutable slug/version, entrypoint, seed, opening
 prompt, repository contract, enabled tools, budgets, component paths, context
 targets, and score weights. Component paths must remain beneath the scenario
-root.
+root. Database, failure, and Browser components are optional; a scenario must
+not create fake empty components merely to fit another scenario's shape.
+
+The two design files are part of the scenario contract. They describe the
+world, threat model, evidence surfaces, acceptable recovery paths, completion,
+grading, security, and calibration in English and Simplified Chinese. Shared
+Runner, isolation, account, API, and UI design stays in the root platform
+design. Changing scenario truth requires a scenario version bump and both
+scenario design editions in the same change.
 
 Budgets distinguish active seconds, candidate tool calls, raw Provider HTTP
 requests (including retries), and optional Provider-reported total Tokens.
@@ -33,9 +44,12 @@ Every enabled budget needs an ordered soft/hard pair. Do not invent a portable
 dollar-cost budget from input/output Tokens; cache, reasoning, tier, discount,
 and compatible-API semantics are not normalized.
 
-`scenario.py` subclasses `Scenario` and implements `prepare()` and `grade()`.
-The default `run()` and `archive()` may be overridden only when the scenario
-needs an auditable protocol extension.
+`scenario.py` subclasses `Scenario` and implements `prepare()`,
+`collect_artifacts()`, and `grade()`. It may return trusted
+`verification_checks()` so the Worker can run scenario-specific checks without
+knowing repository names or expected behavior. The default `run()` and
+`archive()` may be overridden only when the scenario needs an auditable
+protocol extension.
 
 ## Lifecycle contract
 
@@ -56,6 +70,21 @@ workspace.
 Use the injected executor so a scenario remains provider-agnostic. Tool,
 hypothesis, evidence, fault, policy, and resource events must use normalized
 event forms.
+
+### `collect_artifacts()`
+
+Collect only candidate outputs required by the scenario, such as repository
+diff/status, a report, a generated plan, or a bounded diagnostic transcript.
+Do not assume every scenario has a writable patch repository. Artifact
+collection failures must be explicit and must not leak private truth.
+
+### `verification_checks()`
+
+Return named `ScenarioCheck` callbacks for host-side source contracts,
+repository integrity, runtime replay, provenance, report requirements, or
+other objective gates. Checks execute after artifact collection and before the
+private grader. Keep expected values in `PreparedScenario.private_state`, not
+in Worker code or the candidate workspace.
 
 ### `grade()`
 
@@ -119,6 +148,19 @@ are deterministic analogues of common operating-system tools, not host
 passthrough. Their output must derive from the versioned Incident Director
 state and include collector/clock provenance. Never expose a host PID, socket,
 packet, service manager, or tracing capability.
+
+Software-supply-chain scenarios may opt into the Release Director tools:
+`release_status`, `registry_inspect`, `provenance_query`,
+`attestation_verify`, `runtime_probe`, `release_snapshot`, `release_action`,
+`release_verify`, and `submit_release_decision`. Artifact digests, signers,
+trusted roots, recovery targets, and accepted paths remain private. The public
+`release` metadata declares only observable coverage, containment/snapshot
+requirements, decisions, and verification sequence.
+
+Do not expose a real registry, orchestrator, Docker daemon, network, signing
+key, or host trust store. The Director must be deterministic from scenario
+seed and action sequence, audit denied actions, and make irreversible choices
+explicit.
 
 ## Grading checklist
 

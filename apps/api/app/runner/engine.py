@@ -18,6 +18,7 @@ from app.runner.providers import ModelClient, tool_message
 from app.runner.sandbox import DockerSandbox
 from app.scenario.browser import OfflineBrowser
 from app.scenario.incident import IncidentDirector
+from app.scenario.release import RELEASE_TOOLS, ReleaseDirector
 from app.scenario.sdk import PreparedScenario, ScenarioRunResult
 
 
@@ -45,6 +46,9 @@ class AgentEngine:
         self.faults = faults
         self.browser = OfflineBrowser(prepared.browser_index) if prepared.browser_index else None
         self.incident = IncidentDirector.from_prepared_state(prepared.private_state)
+        self.release = ReleaseDirector.from_prepared_state(
+            prepared.private_state
+        )
         self.read_counts: Counter[str] = Counter()
         self.write_counts: Counter[str] = Counter()
         self.started = time.monotonic()
@@ -256,6 +260,17 @@ class AgentEngine:
                                 "logical_time": checkpoint["logical_time"],
                             },
                         )
+                if self.release:
+                    checkpoint = self.release.advance(call.name, result.status)
+                    result.metadata["release_state"] = checkpoint
+                    if checkpoint["new_reports"]:
+                        self._event(
+                            "release.report",
+                            {
+                                "tickets": checkpoint["new_reports"],
+                                "logical_time": checkpoint["logical_time"],
+                            },
+                        )
                 tool_duration_ms = round((time.monotonic() - tool_started) * 1_000)
                 self._event(
                     "tool.result",
@@ -311,6 +326,7 @@ class AgentEngine:
                 "soft_budget_warnings": sorted(self.soft_budget_warnings),
                 "hard_budget_reasons": self.hard_budget_reasons,
                 "incident_audit": self.incident.audit() if self.incident else {},
+                "release_audit": self.release.audit() if self.release else {},
             },
         )
 
@@ -342,6 +358,7 @@ class AgentEngine:
                 "soft_budget_warnings": sorted(self.soft_budget_warnings),
                 "hard_budget_reasons": self.hard_budget_reasons,
                 "incident_audit": self.incident.audit() if self.incident else {},
+                "release_audit": self.release.audit() if self.release else {},
                 "failure": {
                     "type": type(error).__name__,
                     "message": str(error)[:4_000],
@@ -411,6 +428,49 @@ class AgentEngine:
                     "- verification order: "
                     + " -> ".join(incident.required_verification_sequence)
                 )
+        release = self.prepared.metadata.release
+        if release.enabled:
+            lines.extend(
+                [
+                    (
+                        "- release replay coverage: at least "
+                        f"{release.min_unique_observations} distinct registry, "
+                        "provenance, attestation or runtime observations"
+                    ),
+                    (
+                        "- release logical progress: reach at least tick "
+                        f"{release.min_logical_ticks}/{release.horizon_ticks}"
+                    ),
+                    "- submit release dispositions for: "
+                    + ", ".join(release.required_decisions),
+                    (
+                        "- release verification modes: "
+                        + ", ".join(release.required_verification_modes)
+                    ),
+                ]
+            )
+            if release.require_containment:
+                lines.append(
+                    "- contain the incident by pausing rollout and quarantining "
+                    "the suspect digest"
+                )
+            if release.require_snapshot_before_irreversible:
+                lines.append(
+                    "- preserve a release snapshot before the one-shot "
+                    "promotion or rollback action"
+                )
+            if release.required_successful_verification_modes:
+                lines.append(
+                    "- successful release verification modes: "
+                    + ", ".join(
+                        release.required_successful_verification_modes
+                    )
+                )
+            if release.required_verification_sequence:
+                lines.append(
+                    "- release verification order: "
+                    + " -> ".join(release.required_verification_sequence)
+                )
         return "\n".join(lines)
 
     def _completion_gaps(self) -> list[str]:
@@ -470,6 +530,10 @@ class AgentEngine:
             gaps.extend(
                 self.incident.completion_gaps(self.prepared.metadata.incident)
             )
+        if self.release:
+            gaps.extend(
+                self.release.completion_gaps(self.prepared.metadata.release)
+            )
         return gaps
 
     def _execute(self, call: ToolCall) -> ToolResult:
@@ -480,7 +544,10 @@ class AgentEngine:
             if call.name in {"list_files", "read_file", "write_file", "exec_command"}:
                 command = str(call.arguments.get("command", ""))
                 path = str(call.arguments.get("path", ""))
-                if call.name == "write_file" and protected_write_path(path):
+                if call.name == "write_file" and scenario_protected_write_path(
+                    self.prepared,
+                    path,
+                ):
                     result = ToolResult(
                         call_id=call.call_id,
                         name=call.name,
@@ -571,6 +638,25 @@ class AgentEngine:
                         call,
                         patch_valid=patch_valid,
                         scope_valid=scope_valid,
+                        known_evidence_keys=known_evidence_keys,
+                    )
+            elif call.name in RELEASE_TOOLS:
+                if self.release is None:
+                    result = ToolResult(
+                        call_id=call.call_id,
+                        name=call.name,
+                        status="denied",
+                        output="This Scenario does not expose a release replay.",
+                    )
+                else:
+                    known_evidence_keys = (
+                        self._known_evidence_keys()
+                        if call.name
+                        in {"release_action", "submit_release_decision"}
+                        else set()
+                    )
+                    result = self.release.execute(
+                        call,
                         known_evidence_keys=known_evidence_keys,
                     )
             else:
@@ -975,11 +1061,48 @@ def completion_actions_from_events(events: list[dict[str, Any]]) -> set[str]:
             actions.add("incident_decision")
         if name == "incident_verify":
             actions.add("recovery_verification")
+        if name == "registry_inspect":
+            actions.add("registry_investigation")
+        if name == "provenance_query":
+            actions.add("provenance_chain")
+        if name == "attestation_verify":
+            actions.add("attestation_verification")
+        if name == "runtime_probe":
+            actions.add("release_runtime_probe")
+        if name == "release_snapshot":
+            actions.add("release_snapshot")
+        if name == "submit_release_decision":
+            actions.add("release_decision")
+        if name == "release_verify":
+            actions.add("release_self_verification")
+        if name == "release_action":
+            action = str(
+                (event.get("arguments") or {}).get("action", "")
+            ).casefold()
+            if action in {
+                "pause_rollout",
+                "quarantine_digest",
+                "preserve_evidence",
+            }:
+                actions.add("release_containment")
+            if action in {
+                "clean_rebuild",
+                "promote_digest",
+                "rollback_to_digest",
+            }:
+                actions.add("release_recovery")
         if name != "exec_command":
             continue
         command = str((event.get("arguments") or {}).get("command", "")).casefold()
         cwd = str((event.get("arguments") or {}).get("cwd", "")).casefold()
-        if "palimpsest" in command or "palimpsest" in cwd:
+        if any(
+            repository in command or repository in cwd
+            for repository in (
+                "palimpsest",
+                "foundry-control",
+                "witness-ledger",
+            )
+        ):
             actions.add("cross_repository")
         if re.search(
             r"\bgit\b[^\n;&|]*(?:log|show|blame|bisect|rev-list|reflog)\b",
@@ -1032,6 +1155,9 @@ def completion_actions_from_events(events: list[dict[str, Any]]) -> set[str]:
                 "self:verify",
                 "property failed",
                 "mutation matrix",
+                "source-contract",
+                "verify_chain.py",
+                "audit-release.py",
             )
         ):
             actions.add("self_verification")
@@ -1112,6 +1238,36 @@ def protected_write_path(path: str) -> bool:
         ".runtime",
     )
     return any(fragment in normalized for fragment in protected_fragments)
+
+
+def scenario_protected_write_path(
+    prepared: PreparedScenario,
+    path: str,
+) -> bool:
+    normalized = path.casefold().lstrip("./")
+    report_paths = {
+        str(value).casefold().lstrip("./")
+        for value in prepared.metadata.metadata.get(
+            "candidate_report_paths",
+            ["INVESTIGATION.md"],
+        )
+    }
+    if normalized in report_paths:
+        return False
+    read_only_repositories = {
+        str(value).casefold().strip("/")
+        for value in prepared.metadata.metadata.get(
+            "read_only_repositories",
+            [],
+        )
+    }
+    if any(
+        normalized == repository
+        or normalized.startswith(f"{repository}/")
+        for repository in read_only_repositories
+    ):
+        return True
+    return protected_write_path(path)
 
 
 def permission_escalation(command: str) -> bool:

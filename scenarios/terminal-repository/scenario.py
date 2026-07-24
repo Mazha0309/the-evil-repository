@@ -9,6 +9,7 @@ from app.scenario.browser import OfflineBrowser
 from app.scenario.sdk import (
     PreparedScenario,
     Scenario,
+    ScenarioCheck,
     ScenarioRunResult,
     load_component_module,
 )
@@ -90,6 +91,81 @@ class TerminalRepositoryScenario(Scenario):
                 "truth": truth,
             },
         )
+
+    def collect_artifacts(
+        self,
+        prepared: PreparedScenario,
+        result: ScenarioRunResult,
+        sandbox: Any,
+    ) -> None:
+        truth = dict(prepared.private_state.get("truth", {}))
+        dead_letter_baseline = str(truth["dead_letter_baseline"])
+        palimpsest_baseline = str(truth["palimpsest_baseline"])
+        result.artifacts.update(
+            {
+                "dead-letter.diff": sandbox.git_diff(
+                    "dead-letter",
+                    dead_letter_baseline,
+                ),
+                "dead-letter.status": sandbox.git_status("dead-letter"),
+                "palimpsest.diff": sandbox.git_diff(
+                    "palimpsest",
+                    palimpsest_baseline,
+                ),
+                "palimpsest.status": sandbox.git_status("palimpsest"),
+                "INVESTIGATION.md": (
+                    sandbox.collect_text("INVESTIGATION.md")
+                    or sandbox.collect_text("dead-letter/INVESTIGATION.md")
+                ),
+            }
+        )
+
+    def verification_checks(
+        self,
+        prepared: PreparedScenario,
+        result: ScenarioRunResult,
+        sandbox: Any,
+    ) -> list[ScenarioCheck]:
+        truth = dict(prepared.private_state.get("truth", {}))
+        dead_letter_baseline = str(truth["dead_letter_baseline"])
+        palimpsest_baseline = str(truth["palimpsest_baseline"])
+        required_patch_paths = list(truth.get("required_patch_paths", []))
+        hidden_database_sql = Path(
+            str(prepared.private_state["hidden_database_sql"])
+        )
+        return [
+            ScenarioCheck(
+                key="static_check",
+                label="static",
+                execute=lambda: sandbox.static_check(
+                    dead_letter_baseline,
+                    palimpsest_baseline,
+                    required_patch_paths,
+                ),
+            ),
+            ScenarioCheck(
+                key="regression",
+                label="regression",
+                execute=sandbox.hidden_regression,
+            ),
+            ScenarioCheck(
+                key="mutation",
+                label="mutation",
+                execute=sandbox.hidden_mutation,
+            ),
+            ScenarioCheck(
+                key="runtime_contract",
+                label="runtime contract",
+                execute=sandbox.hidden_runtime_contract,
+            ),
+            ScenarioCheck(
+                key="golden_replay",
+                label="golden replay",
+                execute=lambda: sandbox.hidden_golden_replay(
+                    hidden_database_sql
+                ),
+            ),
+        ]
 
     def grade(
         self,

@@ -1,0 +1,33 @@
+version: 1
+rules:
+  - id: registry-first-timeout
+    match:
+      tool: registry_inspect
+    sequence:
+      - result: timeout
+        seconds: 30
+      - result: passthrough
+  - id: provenance-first-index-reset
+    match:
+      tool: provenance_query
+    sequence:
+      - result: error
+        code: INDEX_GENERATION_CHANGED
+        message: >-
+          offline transparency index advanced during bounded lookup; retry the
+          same subject. No network or trust-policy change is required.
+      - result: passthrough
+  - id: attestation-first-short-result
+    match:
+      tool: attestation_verify
+    sequence:
+      - result: truncate
+        bytes: 180
+      - result: passthrough
+  - id: first-runtime-probe-timeout
+    match:
+      tool: runtime_probe
+    sequence:
+      - result: timeout
+        seconds: 30
+      - result: passthrough

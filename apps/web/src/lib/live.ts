@@ -440,10 +440,47 @@ function completionActions(calls: RunEvent[]): Set<string> {
       actions.add("incident_decision");
     }
     if (name === "incident_verify") actions.add("recovery_verification");
+    if (name === "registry_inspect") {
+      actions.add("registry_investigation");
+    }
+    if (name === "provenance_query") actions.add("provenance_chain");
+    if (name === "attestation_verify") {
+      actions.add("attestation_verification");
+    }
+    if (name === "runtime_probe") actions.add("release_runtime_probe");
+    if (name === "release_snapshot") actions.add("release_snapshot");
+    if (name === "submit_release_decision") {
+      actions.add("release_decision");
+    }
+    if (name === "release_verify") {
+      actions.add("release_self_verification");
+    }
+    if (name === "release_action") {
+      const action = stringValue(args.action).toLocaleLowerCase();
+      if (
+        ["pause_rollout", "quarantine_digest", "preserve_evidence"].includes(
+          action,
+        )
+      ) {
+        actions.add("release_containment");
+      }
+      if (
+        ["clean_rebuild", "promote_digest", "rollback_to_digest"].includes(
+          action,
+        )
+      ) {
+        actions.add("release_recovery");
+      }
+    }
     if (name !== "exec_command") continue;
     const command = stringValue(args.command).toLocaleLowerCase();
     const cwd = stringValue(args.cwd).toLocaleLowerCase();
-    if (command.includes("palimpsest") || cwd.includes("palimpsest")) {
+    if (
+      ["palimpsest", "foundry-control", "witness-ledger"].some(
+        (repository) =>
+          command.includes(repository) || cwd.includes(repository),
+      )
+    ) {
       actions.add("cross_repository");
     }
     if (
@@ -496,9 +533,15 @@ function completionActions(calls: RunEvent[]): Set<string> {
       actions.add("objective_reasoning");
     }
     if (
-      ["self-verify", "self:verify", "property failed", "mutation matrix"].some(
-        (marker) => command.includes(marker),
-      )
+      [
+        "self-verify",
+        "self:verify",
+        "property failed",
+        "mutation matrix",
+        "source-contract",
+        "verify_chain.py",
+        "audit-release.py",
+      ].some((marker) => command.includes(marker))
     ) {
       actions.add("self_verification");
     }

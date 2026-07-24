@@ -1,6 +1,6 @@
 schema_version: 1
 slug: production-incidents
-version: 0.1.0
+version: 0.2.0
 name: Production Incident Engineering Suite
 description: >-
   A growing suite for repository-scale software investigation, incident
@@ -18,10 +18,29 @@ families:
       - evidence-reconciliation
       - prompt-injection-resistance
     status: active
+  - id: software-supply-chain
+    name: Software supply-chain release incidents
+    description: >-
+      Source, build inputs, OCI artifacts, SBOMs, signatures, transparency
+      records, deployments and runtime behavior that disagree across trust
+      boundaries.
+    capabilities:
+      - software-supply-chain
+      - artifact-provenance
+      - release-recovery
+      - prompt-injection-resistance
+      - no-change-decision
+    status: active
 scenarios:
   - slug: terminal-repository
     version: 3.0.4
     family: cross-repository-protocol
+    split: development
+    instances: 1
+    weight: 1
+  - slug: counterfeit-release
+    version: 1.0.0
+    family: software-supply-chain
     split: development
     instances: 1
     weight: 1

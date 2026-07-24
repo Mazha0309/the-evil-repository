@@ -27,6 +27,7 @@ import type {
   CompletionSpec,
   IncidentSpec,
   InvestigationGraph,
+  ReleaseSpec,
   Run,
   RunEvent,
 } from "../lib/types";
@@ -37,6 +38,7 @@ interface LiveRunMonitorProps {
   graph: InvestigationGraph;
   completion?: CompletionSpec;
   incident?: IncidentSpec;
+  release?: ReleaseSpec;
 }
 
 export default function LiveRunMonitor({
@@ -45,6 +47,7 @@ export default function LiveRunMonitor({
   graph,
   completion,
   incident,
+  release,
 }: LiveRunMonitorProps) {
   const { locale, text } = useLocale();
   const [now, setNow] = useState(() => Date.now());
@@ -57,6 +60,7 @@ export default function LiveRunMonitor({
   const analysis = analyzeRunEvents(events, run.status, now, pauseRequested);
   const progress = completionProgress(events, graph, completion);
   const incidentTelemetry = analyzeIncidentTelemetry(events);
+  const releaseTelemetry = analyzeReleaseTelemetry(events);
   const softBudgetWarning = [...events]
     .reverse()
     .find((event) => event.kind === "run.soft_budget_warning");
@@ -473,6 +477,135 @@ export default function LiveRunMonitor({
         </section>
       )}
 
+      {releaseTelemetry.state && (
+        <section className="panel live-card incident-live">
+          <MonitorHeading
+            icon={<Fingerprint size={15} />}
+            title={text("发布状态机", "Release state machine")}
+            detail={text(
+              "制品摘要 · 证明链 · 一次性恢复 · 分阶段验证",
+              "artifact digest · provenance · one-shot recovery · staged verification",
+            )}
+          />
+          <div className="incident-live__kpis">
+            <IncidentKpi
+              label={text("阶段", "Phase")}
+              value={String(releaseTelemetry.state.phase ?? "triage")}
+            />
+            <IncidentKpi
+              label={text("逻辑时间", "Logical time")}
+              value={String(
+                releaseTelemetry.state.logical_time ?? "T+00:00:00",
+              )}
+            />
+            <IncidentKpi
+              label={text("部署摘要", "Deployed digest")}
+              value={shortDigest(
+                String(releaseTelemetry.state.deployment_digest ?? "—"),
+              )}
+            />
+            <IncidentKpi
+              label={text("风险", "Risk")}
+              value={String(incidentNumber(releaseTelemetry.state.risk))}
+              danger={incidentNumber(releaseTelemetry.state.risk) > 20}
+            />
+            <IncidentKpi
+              label={text("证据完整性", "Evidence integrity")}
+              value={`${incidentNumber(
+                releaseTelemetry.state.evidence_integrity,
+              )}%`}
+              danger={
+                incidentNumber(releaseTelemetry.state.evidence_integrity) < 90
+              }
+            />
+            <IncidentKpi
+              label={text("不可逆额度", "One-shot token")}
+              value={
+                releaseTelemetry.state.irreversible_action_available === false
+                  ? text("已使用", "used")
+                  : text("可用", "available")
+              }
+              danger={
+                releaseTelemetry.state.irreversible_action_available === false
+              }
+            />
+          </div>
+          <LiveMeter
+            label={text("发布逻辑进度", "Release logical progress")}
+            value={incidentNumber(releaseTelemetry.state.logical_tick)}
+            soft={release?.min_logical_ticks ?? 0}
+            hard={release?.horizon_ticks ?? 120}
+            display={`${incidentNumber(
+              releaseTelemetry.state.logical_tick,
+            )} / ${release?.min_logical_ticks ?? release?.horizon_ticks ?? 120} ${text(
+              "最低要求",
+              "required",
+            )}`}
+          />
+          <div className="incident-live__ledger">
+            <span>
+              {text("观察", "observations")}{" "}
+              <strong>{releaseTelemetry.observations}</strong>
+              {release?.min_unique_observations
+                ? ` / ${release.min_unique_observations}`
+                : ""}
+            </span>
+            <span>
+              {text("决策", "decisions")}{" "}
+              <strong>{releaseTelemetry.decisions}</strong>
+              {release?.required_decisions?.length
+                ? ` / ${release.required_decisions.length}`
+                : ""}
+            </span>
+            <span>
+              {text("快照", "snapshots")}{" "}
+              <strong>{releaseTelemetry.snapshots}</strong>
+            </span>
+            <span>
+              {text("动作", "actions")}{" "}
+              <strong>{releaseTelemetry.actions}</strong>
+            </span>
+            <span
+              className={releaseTelemetry.deniedActions ? "text-danger" : ""}
+            >
+              {text("拒绝动作", "denied actions")}{" "}
+              <strong>{releaseTelemetry.deniedActions}</strong>
+            </span>
+          </div>
+          <div className="incident-live__alerts">
+            {releaseTelemetry.reports.map((ticket) => (
+              <code key={ticket}>{ticket}</code>
+            ))}
+            {!releaseTelemetry.reports.length && (
+              <span>{text("尚无可见发布票据", "No visible release reports")}</span>
+            )}
+          </div>
+          <div className="incident-live__verification">
+            <span>{text("验证序列", "Verification sequence")}</span>
+            <div>
+              {(release?.required_verification_modes ?? []).map((mode) => {
+                const verified = releaseTelemetry.verifications.get(mode);
+                return (
+                  <code
+                    className={
+                      verified === true
+                        ? "incident-check--pass"
+                        : verified === false
+                          ? "incident-check--fail"
+                          : ""
+                    }
+                    key={mode}
+                  >
+                    {mode}
+                    {verified === true ? " ✓" : verified === false ? " ×" : " ·"}
+                  </code>
+                );
+              })}
+            </div>
+          </div>
+        </section>
+      )}
+
       <div className="live-grid">
         <section className="panel live-card live-card--messages">
           <MonitorHeading
@@ -749,9 +882,73 @@ function analyzeIncidentTelemetry(events: RunEvent[]) {
   };
 }
 
+function analyzeReleaseTelemetry(events: RunEvent[]) {
+  let state: Record<string, unknown> | null = null;
+  const observations = new Set<string>();
+  const decisions = new Set<string>();
+  const snapshots = new Set<string>();
+  const reports = new Set<string>();
+  const verifications = new Map<string, boolean>();
+  let actions = 0;
+  let deniedActions = 0;
+
+  for (const event of events) {
+    if (event.kind === "release.report") {
+      const tickets = Array.isArray(event.payload.tickets)
+        ? event.payload.tickets
+        : [];
+      for (const ticket of tickets) reports.add(String(ticket));
+      continue;
+    }
+    if (event.kind !== "tool.result") continue;
+    if (
+      event.payload.release_state &&
+      typeof event.payload.release_state === "object" &&
+      !Array.isArray(event.payload.release_state)
+    ) {
+      state = event.payload.release_state as Record<string, unknown>;
+    }
+    const kind = String(event.payload.release_kind ?? "");
+    if (kind === "observation") {
+      observations.add(
+        String(event.payload.release_observation_key ?? event.sequence),
+      );
+    } else if (kind === "decision") {
+      decisions.add(String(event.payload.release_ticket ?? event.sequence));
+    } else if (kind === "snapshot") {
+      snapshots.add(
+        String(event.payload.release_snapshot_id ?? event.sequence),
+      );
+    } else if (kind === "action") {
+      actions += 1;
+      if (String(event.payload.status) === "denied") deniedActions += 1;
+    } else if (kind === "verification") {
+      verifications.set(
+        String(event.payload.verification_mode ?? "unknown"),
+        event.payload.verification_passed === true,
+      );
+    }
+  }
+  return {
+    state,
+    observations: observations.size,
+    decisions: decisions.size,
+    snapshots: snapshots.size,
+    reports: [...reports],
+    verifications,
+    actions,
+    deniedActions,
+  };
+}
+
 function incidentNumber(value: unknown) {
   const number = Number(value);
   return Number.isFinite(number) ? number : 0;
+}
+
+function shortDigest(value: string) {
+  if (!value.startsWith("sha256:")) return value;
+  return `sha256:${value.slice(7, 19)}…`;
 }
 
 function MonitorHeading({
@@ -1003,6 +1200,9 @@ function coverageLabel(value: string, locale: "zh-CN" | "en") {
     database: "数据库",
     browser: "离线 Browser",
     runtime: "运行时",
+    artifact: "制品",
+    signature: "签名与证明",
+    release: "发布控制",
     incident: "事故状态",
     "cross-repository": "跨仓库",
     git_history: "Git 考古",
@@ -1018,6 +1218,15 @@ function coverageLabel(value: string, locale: "zh-CN" | "en") {
     incident_snapshot: "事故快照",
     incident_decision: "事故决策",
     recovery_verification: "恢复验证",
+    registry_investigation: "Registry 调查",
+    provenance_chain: "证明链",
+    attestation_verification: "证明验证",
+    release_runtime_probe: "发布运行时探针",
+    release_snapshot: "发布快照",
+    release_containment: "发布遏制",
+    release_recovery: "发布恢复",
+    release_decision: "发布决策",
+    release_self_verification: "发布自验证",
   };
   return labels[value] ?? value;
 }
