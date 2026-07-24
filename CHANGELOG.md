@@ -3,6 +3,31 @@
 All notable platform changes are recorded here. The project follows Semantic
 Versioning while individual benchmark scenarios retain independent versions.
 
+## [0.12.1] - 2026-07-25
+
+### Added
+
+- A deterministic finalization window for long candidate investigations. When
+  active time, tool calls, Provider requests, or configured Token usage enters
+  the final 20% of its hard budget, the Runner sends one trusted convergence
+  prompt containing the remaining resources and current completion-contract
+  gaps.
+- Live and exported observability for the automatic nudge through
+  `run.finalization_nudge`, a dedicated WebUI warning, telemetry summary
+  counters, the stage timeline, and
+  `telemetry/finalization-nudges.jsonl`.
+- Terminal Repository 3.0.5 doubles its active-time envelope from 90/180 to
+  180/360 minutes after additional strong-Agent runs were right-censored at
+  the former hard boundary. Its Truth Graph, completion contract, tool,
+  Provider-request, and scoring budgets are unchanged. Production Incident
+  Engineering Suite 0.2.1 now references the recalibrated Scenario.
+
+### Fixed
+
+- Synchronized the packaged API, runtime manifest, WebUI, and repository
+  version metadata, which still reported v0.11.0 in several runtime paths
+  after the v0.12.0 release.
+
 ## [0.12.0] - 2026-07-24
 
 ### Added

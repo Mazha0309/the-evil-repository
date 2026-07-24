@@ -276,6 +276,13 @@ is right-censored (`budget_exhausted`): partial evidence and score remain
 available, but the run is excluded from success-rate and completion-time
 calibration.
 
+The Runner also owns a deterministic, one-shot finalization window. Once any
+tracked resource reaches the later of its soft threshold or 80% of its hard
+threshold, it injects a trusted message with the remaining budget and current
+completion-gate gaps. This asks the candidate to converge and self-verify
+without changing the gate, score, or hard boundary. The injection is recorded
+as `run.finalization_nudge` and is visible in live telemetry and archives.
+
 ## 9. Grading and truth
 
 The deterministic scenario score is the only leaderboard score. A typical

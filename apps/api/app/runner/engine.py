@@ -51,6 +51,8 @@ MAX_CONTEXT_RECOVERY_ATTEMPTS = 2
 MAX_POLICY_RECOVERY_ATTEMPTS = 1
 MAX_CONTEXT_CHECKPOINT_CHARACTERS = 48_000
 POLICY_RECOVERY_MARKER = "RUNNER_PROVIDER_POLICY_RECOVERY_V1"
+FINALIZATION_BUDGET_NUMERATOR = 4
+FINALIZATION_BUDGET_DENOMINATOR = 5
 
 
 class AgentEngine:
@@ -104,6 +106,7 @@ class AgentEngine:
         self.completion_gaps: list[str] = []
         self.paused_seconds = 0.0
         self.soft_budget_warnings: set[str] = set()
+        self.finalization_nudge_sent = False
         self.hard_budget_reasons: list[str] = []
         self.context_soft_characters = context_soft_characters
         self.context_target_characters = context_target_characters
@@ -160,6 +163,9 @@ class AgentEngine:
             soft_warning = self._soft_budget_warning()
             if soft_warning:
                 messages.append({"role": "user", "content": soft_warning})
+            finalization_nudge = self._finalization_nudge()
+            if finalization_nudge:
+                messages.append({"role": "user", "content": finalization_nudge})
             turn_number += 1
             self.current_turn = turn_number
             self.client.logical_turn = turn_number
@@ -443,6 +449,7 @@ class AgentEngine:
                 "invalid_tool_calls": self.invalid_tool_calls,
                 "paused_seconds": self.paused_seconds,
                 "soft_budget_warnings": sorted(self.soft_budget_warnings),
+                "finalization_nudge_sent": self.finalization_nudge_sent,
                 "hard_budget_reasons": self.hard_budget_reasons,
                 "context_management": self._context_ledger(),
                 "incident_audit": self.incident.audit() if self.incident else {},
@@ -476,6 +483,7 @@ class AgentEngine:
                 "invalid_tool_calls": self.invalid_tool_calls,
                 "paused_seconds": self.paused_seconds,
                 "soft_budget_warnings": sorted(self.soft_budget_warnings),
+                "finalization_nudge_sent": self.finalization_nudge_sent,
                 "hard_budget_reasons": self.hard_budget_reasons,
                 "context_management": self._context_ledger(),
                 "incident_audit": self.incident.audit() if self.incident else {},
@@ -1522,6 +1530,109 @@ class AgentEngine:
             "verification."
         )
 
+    def _finalization_nudge(self) -> str | None:
+        """Issue one trusted convergence prompt in the final 20% of any budget."""
+
+        if self.finalization_nudge_sent:
+            return None
+
+        budget = self.prepared.metadata.budget
+        active_seconds = self._active_elapsed()
+        total_tokens = self.input_tokens + self.output_tokens
+        usage = {
+            "active_time": active_seconds,
+            "tool_calls": self.tool_calls,
+            "provider_requests": self.provider_requests,
+        }
+        soft = {
+            "active_time": budget.soft_seconds,
+            "tool_calls": budget.soft_tool_calls,
+            "provider_requests": budget.soft_provider_requests,
+        }
+        hard = {
+            "active_time": budget.hard_seconds,
+            "tool_calls": budget.hard_tool_calls,
+            "provider_requests": budget.hard_provider_requests,
+        }
+        if (
+            budget.soft_total_tokens is not None
+            and budget.hard_total_tokens is not None
+        ):
+            usage["total_tokens"] = total_tokens
+            soft["total_tokens"] = budget.soft_total_tokens
+            hard["total_tokens"] = budget.hard_total_tokens
+
+        thresholds = {
+            name: max(
+                soft[name],
+                hard[name]
+                * FINALIZATION_BUDGET_NUMERATOR
+                / FINALIZATION_BUDGET_DENOMINATOR,
+            )
+            for name in usage
+        }
+        triggered_by = [
+            name for name, value in usage.items() if value >= thresholds[name]
+        ]
+        if not triggered_by:
+            return None
+
+        remaining = {
+            name: max(0, round(hard[name] - value))
+            for name, value in usage.items()
+        }
+        outstanding = self._completion_gaps()
+        self.finalization_nudge_sent = True
+        self._event(
+            "run.finalization_nudge",
+            {
+                "triggered_by": triggered_by,
+                "threshold_fraction": (
+                    FINALIZATION_BUDGET_NUMERATOR
+                    / FINALIZATION_BUDGET_DENOMINATOR
+                ),
+                "usage": {
+                    name: round(value, 3) for name, value in usage.items()
+                },
+                "remaining": remaining,
+                "hard_limits": hard,
+                "completion_gaps": outstanding,
+                "completion_gap_count": len(outstanding),
+                "tool_calls": self.tool_calls,
+                "active_seconds": round(active_seconds, 3),
+                "provider_requests": self.provider_requests,
+                "total_tokens": total_tokens,
+            },
+        )
+
+        remaining_lines = [
+            f"- active time: about {remaining['active_time']} seconds",
+            f"- tool calls: {remaining['tool_calls']}",
+            f"- Provider requests: {remaining['provider_requests']}",
+        ]
+        if "total_tokens" in remaining:
+            remaining_lines.append(
+                f"- total tokens: {remaining['total_tokens']}"
+            )
+        if outstanding:
+            gap_lines = "\n".join(f"- {gap}" for gap in outstanding)
+        else:
+            gap_lines = "- none currently reported by the deterministic gate"
+
+        return (
+            "FINALIZATION WINDOW — trusted Runner notice. One or more hard "
+            "resource budgets have entered their final 20%. Stop broad exploration "
+            "and low-value repetition. Preserve the strongest evidence-backed "
+            "patch, close only the highest-value outstanding requirements, run "
+            "the necessary final self-verification, update the required "
+            "investigation artifacts, and submit a concise final answer before "
+            "the hard boundary. Do not invent success or weaken checks merely "
+            "to finish.\n\nApproximate remaining budget:\n"
+            + "\n".join(remaining_lines)
+            + "\n\nCurrent completion-gate gaps:\n"
+            + gap_lines
+        )
+
     def _on_provider_request(self, request: dict[str, Any]) -> None:
         next_request = int(request["request_number"])
         if next_request > self.prepared.metadata.budget.hard_provider_requests:
@@ -1644,6 +1755,7 @@ class AgentEngine:
             "context_management": self._context_ledger(),
             "budgets": budget.model_dump(mode="json"),
             "soft_limits_crossed": sorted(self.soft_budget_warnings),
+            "finalization_nudge_sent": self.finalization_nudge_sent,
             "hard_limits_crossed": self.hard_budget_reasons,
             "provider_wait_ms_total": sum(self.provider_durations_ms),
             "provider_wait_ms_max": max(self.provider_durations_ms, default=0),

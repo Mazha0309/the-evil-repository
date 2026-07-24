@@ -1630,8 +1630,8 @@ function NewRunPage() {
     orderedTasks.find((task) => task.id === selectedTaskId) ?? orderedTasks[0];
   const selectedBudget = selectedTask?.manifest.budget;
   const budgetDefaults = {
-    softSeconds: selectedBudget?.soft_seconds ?? 5_400,
-    hardSeconds: selectedBudget?.hard_seconds ?? 10_800,
+    softSeconds: selectedBudget?.soft_seconds ?? 10_800,
+    hardSeconds: selectedBudget?.hard_seconds ?? 21_600,
     softToolCalls: selectedBudget?.soft_tool_calls ?? 600,
     hardToolCalls: selectedBudget?.hard_tool_calls ?? 2_200,
     softProviderRequests: selectedBudget?.soft_provider_requests ?? 300,

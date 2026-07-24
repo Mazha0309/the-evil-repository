@@ -352,14 +352,161 @@ def test_soft_budget_warnings_fire_once_per_threshold(
     assert "600 tool calls" in call_warning
     assert engine._soft_budget_warning() is None
 
-    clock[0] += 5_400
+    clock[0] += 10_800
     time_warning = engine._soft_budget_warning()
     assert time_warning is not None
-    assert "5400 active seconds" in time_warning
+    assert "10800 active seconds" in time_warning
     assert [event["crossed"] for event in engine.events] == [
         ["tool_calls"],
         ["active_time"],
     ]
+
+
+def test_finalization_nudge_fires_once_in_last_budget_fifth(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    scenario = load_scenario(SCENARIO_ROOT)
+    prepared = PreparedScenario(
+        scenario_root=SCENARIO_ROOT,
+        workspace=tmp_path,
+        metadata=scenario.metadata,
+    )
+    clock = [100.0]
+    monkeypatch.setattr(engine_module.time, "monotonic", lambda: clock[0])
+    engine = AgentEngine(
+        run_id=uuid.uuid4(),
+        client=FinalAnswerClient(),
+        sandbox=SimpleNamespace(),
+        prepared=prepared,
+        faults=FaultController([]),
+    )
+    monkeypatch.setattr(
+        engine,
+        "_completion_gaps",
+        lambda: ["run the final replay", "update INVESTIGATION.md"],
+    )
+    monkeypatch.setattr(
+        engine,
+        "_event",
+        lambda kind, payload: engine.events.append({"kind": kind, **payload}),
+    )
+
+    clock[0] += 17_279
+    assert engine._finalization_nudge() is None
+
+    clock[0] += 1
+    nudge = engine._finalization_nudge()
+    assert nudge is not None
+    assert "FINALIZATION WINDOW" in nudge
+    assert "about 4320 seconds" in nudge
+    assert "run the final replay" in nudge
+    assert engine._finalization_nudge() is None
+    assert engine.finalization_nudge_sent is True
+    assert engine.events == [
+        {
+            "kind": "run.finalization_nudge",
+            "triggered_by": ["active_time"],
+            "threshold_fraction": 0.8,
+            "usage": {
+                "active_time": 17_280.0,
+                "tool_calls": 0,
+                "provider_requests": 0,
+            },
+            "remaining": {
+                "active_time": 4_320,
+                "tool_calls": 2_200,
+                "provider_requests": 720,
+            },
+            "hard_limits": {
+                "active_time": 21_600,
+                "tool_calls": 2_200,
+                "provider_requests": 720,
+            },
+            "completion_gaps": [
+                "run the final replay",
+                "update INVESTIGATION.md",
+            ],
+            "completion_gap_count": 2,
+            "tool_calls": 0,
+            "active_seconds": 17_280.0,
+            "provider_requests": 0,
+            "total_tokens": 0,
+        }
+    ]
+
+
+def test_finalization_nudge_can_be_triggered_by_non_time_budget(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    scenario = load_scenario(SCENARIO_ROOT)
+    prepared = PreparedScenario(
+        scenario_root=SCENARIO_ROOT,
+        workspace=tmp_path,
+        metadata=scenario.metadata,
+    )
+    engine = AgentEngine(
+        run_id=uuid.uuid4(),
+        client=FinalAnswerClient(),
+        sandbox=SimpleNamespace(),
+        prepared=prepared,
+        faults=FaultController([]),
+    )
+    engine.tool_calls = 1_760
+    monkeypatch.setattr(engine, "_completion_gaps", lambda: [])
+    monkeypatch.setattr(engine, "_event", lambda *_: None)
+
+    nudge = engine._finalization_nudge()
+
+    assert nudge is not None
+    assert "tool calls: 440" in nudge
+
+
+def test_finalization_nudge_is_delivered_to_the_next_model_turn(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    scenario = load_scenario(SCENARIO_ROOT)
+    prepared = PreparedScenario(
+        scenario_root=SCENARIO_ROOT,
+        workspace=tmp_path,
+        metadata=scenario.metadata,
+    )
+    clock = [100.0]
+    monkeypatch.setattr(engine_module.time, "monotonic", lambda: clock[0])
+    client = FinalAnswerClient()
+    captured: list[list[dict]] = []
+    complete = client.complete
+
+    def capture(messages: list[dict], tools: list[dict]) -> AssistantTurn:
+        captured.append([dict(message) for message in messages])
+        return complete(messages, tools)
+
+    monkeypatch.setattr(client, "complete", capture)
+    engine = AgentEngine(
+        run_id=uuid.uuid4(),
+        client=client,
+        sandbox=SimpleNamespace(),
+        prepared=prepared,
+        faults=FaultController([]),
+    )
+    monkeypatch.setattr(engine, "_wait_for_resume", lambda: True)
+    monkeypatch.setattr(engine, "_completion_gaps", lambda: [])
+    monkeypatch.setattr(
+        engine,
+        "_event",
+        lambda kind, payload: engine.events.append({"kind": kind, **payload}),
+    )
+    clock[0] += 17_280
+
+    result = engine.run(prepared)
+
+    assert result.final_response == "Investigation complete."
+    assert any(
+        "FINALIZATION WINDOW" in str(message.get("content", ""))
+        for message in captured[0]
+    )
 
 
 def test_resource_ledger_counts_requests_and_enforces_hard_token_budget(

@@ -123,12 +123,12 @@ def test_suite_is_honest_about_current_leaderboard_readiness() -> None:
         PROJECT_ROOT / "scenarios",
     )
 
-    assert suite.version == "0.2.0"
+    assert suite.version == "0.2.1"
     assert {
         (scenario.slug, scenario.version)
         for scenario in suite.scenarios
     } == {
-        ("terminal-repository", "3.0.4"),
+        ("terminal-repository", "3.0.5"),
         ("counterfeit-release", "1.0.0"),
     }
     assert suite.readiness == {

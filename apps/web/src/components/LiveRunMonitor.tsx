@@ -64,6 +64,9 @@ export default function LiveRunMonitor({
   const softBudgetWarning = [...events]
     .reverse()
     .find((event) => event.kind === "run.soft_budget_warning");
+  const finalizationNudge = [...events]
+    .reverse()
+    .find((event) => event.kind === "run.finalization_nudge");
   const latestProtocolRepair = [...events]
     .reverse()
     .find((event) => event.kind === "provider.tool_call_invalid");
@@ -219,6 +222,12 @@ export default function LiveRunMonitor({
                 "The event stream has not advanced for 45 seconds; the Provider, a tool timeout, or the Runner may be blocking.",
               )}
             </span>
+          </div>
+        )}
+        {finalizationNudge && (
+          <div className="live-warning live-warning--finalization">
+            <TimerReset size={14} />
+            <span>{finalizationNudgeDetail(finalizationNudge, locale)}</span>
           </div>
         )}
         {softBudgetWarning && (
@@ -1564,6 +1573,39 @@ function softBudgetDetail(event: RunEvent, locale: "zh-CN" | "en") {
   return locale === "zh-CN"
     ? `已触发软预算（${details.join("，") || "阈值已越过"}）；运行继续，但应停止低价值重复并收敛验证。`
     : `Soft budget reached (${details.join(", ") || "threshold crossed"}); the run continues, but should stop low-value repetition and converge on verification.`;
+}
+
+function finalizationNudgeDetail(
+  event: RunEvent,
+  locale: "zh-CN" | "en",
+) {
+  const rawRemaining = event.payload.remaining;
+  const remaining =
+    rawRemaining && typeof rawRemaining === "object"
+      ? (rawRemaining as Record<string, unknown>)
+      : {};
+  const details = [
+    locale === "zh-CN"
+      ? `时间约 ${formatDuration(Number(remaining.active_time ?? 0) * 1_000, locale)}`
+      : `about ${formatDuration(Number(remaining.active_time ?? 0) * 1_000, locale)} time`,
+    locale === "zh-CN"
+      ? `工具 ${String(remaining.tool_calls ?? "—")} 次`
+      : `${String(remaining.tool_calls ?? "—")} tools`,
+    locale === "zh-CN"
+      ? `Provider ${String(remaining.provider_requests ?? "—")} 次`
+      : `${String(remaining.provider_requests ?? "—")} Provider requests`,
+  ];
+  if (remaining.total_tokens != null) {
+    details.push(
+      locale === "zh-CN"
+        ? `Token ${String(remaining.total_tokens)}`
+        : `${String(remaining.total_tokens)} tokens`,
+    );
+  }
+  const gaps = Number(event.payload.completion_gap_count ?? 0);
+  return locale === "zh-CN"
+    ? `Runner 已自动向模型发送最终收尾催促。剩余：${details.join("，")}；当前仍有 ${gaps} 个完成契约缺口。`
+    : `The Runner automatically sent the finalization nudge. Remaining: ${details.join(", ")}; ${gaps} completion-contract gaps are still open.`;
 }
 
 function compact(value: number) {

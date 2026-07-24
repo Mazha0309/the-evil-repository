@@ -85,6 +85,13 @@ The resource ledger separates logical model turns from raw Provider requests
 and counts retry attempts. It preserves Provider-reported input/output Tokens
 but intentionally does not estimate normalized dollar cost.
 
+At safe model-turn boundaries, the Runner also evaluates the active-time,
+tool-call, Provider-request, and optional Token envelopes. Crossing the later
+of a soft threshold or 80% of its hard threshold emits one
+`run.finalization_nudge` and appends a trusted convergence message with
+remaining resources and completion gaps. Paused time is excluded and the
+message cannot extend a budget or bypass the deterministic completion gate.
+
 ## Candidate plane
 
 Each run gets a new container with:

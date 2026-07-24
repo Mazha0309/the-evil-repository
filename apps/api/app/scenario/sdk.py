@@ -239,6 +239,7 @@ class Scenario(ABC):
             "telemetry/stage-timeline.jsonl   scenario and judge stage transitions\n"
             "telemetry/resource-snapshots.jsonl periodic Agent resource snapshots\n"
             "telemetry/context-compactions.jsonl bounded transcript rollovers and recoveries\n"
+            "telemetry/finalization-nudges.jsonl trusted end-window prompts and remaining budgets\n"
             "telemetry/errors.jsonl           Provider, tool, Runner and judge failures\n"
             "investigation/graph.json         hypotheses, revisions, evidence and edges\n"
             "artifacts/index.json             artifact size and SHA-256 inventory\n"
@@ -272,6 +273,9 @@ class Scenario(ABC):
             ),
             "telemetry/context-compactions.jsonl": jsonl_bytes(
                 telemetry["context_compactions"]
+            ),
+            "telemetry/finalization-nudges.jsonl": jsonl_bytes(
+                telemetry["finalization_nudges"]
             ),
             "telemetry/errors.jsonl": jsonl_bytes(telemetry["error_events"]),
             "investigation/graph.json": json_bytes(investigation_graph),

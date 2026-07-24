@@ -11,7 +11,7 @@ SCENARIO_ROOT = PROJECT_ROOT / "scenarios" / "terminal-repository"
 def test_scenario_loads_and_components_are_confined() -> None:
     scenario = load_scenario(SCENARIO_ROOT)
     assert scenario.metadata.slug == "terminal-repository"
-    assert scenario.metadata.version == "3.0.4"
+    assert scenario.metadata.version == "3.0.5"
     assert sum(scenario.metadata.scoring.values()) == 1_200
     assert scenario.component_path("database/init.sql").is_file()
 
@@ -27,7 +27,7 @@ def test_budget_exhaustion_is_censored_and_never_calibration_evidence(
     )
     result = ScenarioRunResult(
         final_response="Hard scenario budget reached before a final response.",
-        elapsed_seconds=10_800,
+        elapsed_seconds=21_600,
         tool_calls=900,
         events=[],
         private_state={
@@ -186,6 +186,7 @@ def test_archive_contains_replayable_event_stream(tmp_path: Path) -> None:
         "telemetry/tool-lifecycle.jsonl",
         "telemetry/stage-timeline.jsonl",
         "telemetry/resource-snapshots.jsonl",
+        "telemetry/finalization-nudges.jsonl",
         "telemetry/errors.jsonl",
         "investigation/graph.json",
         "artifacts/index.json",
