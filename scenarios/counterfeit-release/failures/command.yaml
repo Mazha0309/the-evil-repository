@@ -1,0 +1,39 @@
+version: 1
+rules:
+  - id: all-history-first-truncate
+    match:
+      tool: exec_command
+      command_contains: git log --all
+    sequence:
+      - result: truncate
+        bytes: 8192
+      - result: timeout
+        seconds: 30
+      - result: passthrough
+  - id: first-source-contract-loader-error
+    match:
+      tool: exec_command
+      command_contains: source-contract
+    sequence:
+      - result: error
+        code: MODULE_CACHE_STALE
+        message: >-
+          restored Node loader cache points at a deleted v4.9 proposal; retry
+          the exact source contract before changing dependencies.
+      - result: passthrough
+  - id: first-chain-verifier-timeout
+    match:
+      tool: exec_command
+      command_contains: verify_chain.py
+    sequence:
+      - result: timeout
+        seconds: 30
+      - result: passthrough
+  - id: broad-rg-truncation
+    match:
+      tool: exec_command
+      command_contains: rg
+    sequence:
+      - result: truncate
+        bytes: 16384
+      - result: passthrough

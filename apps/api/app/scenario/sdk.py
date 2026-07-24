@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import hashlib
 import importlib.util
 import io
@@ -8,21 +10,25 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import ModuleType
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import yaml
 from pydantic import BaseModel, Field
 
 from app.challenge.spec import BudgetSpec, RepositorySpec
+from app.runner.protocol import ToolResult
 from app.version import VERSION
+
+if TYPE_CHECKING:
+    from app.runner.sandbox import DockerSandbox
 
 
 class ScenarioComponents(BaseModel):
     repositories: str
-    database: dict[str, str]
-    failures: list[str]
+    database: dict[str, str] = Field(default_factory=dict)
+    failures: list[str] = Field(default_factory=list)
     grading: dict[str, str]
-    mirror: str
+    mirror: str = "mirror/"
 
 
 class ContextPressure(BaseModel):
@@ -74,6 +80,27 @@ class IncidentRequirements(BaseModel):
     required_verification_sequence: list[str] = Field(default_factory=list)
 
 
+class ReleaseRequirements(BaseModel):
+    """Public contract for a deterministic software-release replay.
+
+    Artifact identities, trusted roots and acceptable recovery digests stay in
+    ``PreparedScenario.private_state``.  The manifest only exposes the amount
+    of investigation and recovery coverage required before a final answer.
+    """
+
+    enabled: bool = False
+    logical_tick_seconds: int = 60
+    horizon_ticks: int = 120
+    min_logical_ticks: int = 0
+    min_unique_observations: int = 0
+    required_decisions: list[str] = Field(default_factory=list)
+    require_snapshot_before_irreversible: bool = True
+    require_containment: bool = True
+    required_verification_modes: list[str] = Field(default_factory=list)
+    required_successful_verification_modes: list[str] = Field(default_factory=list)
+    required_verification_sequence: list[str] = Field(default_factory=list)
+
+
 class ScenarioMetadata(BaseModel):
     slug: str
     version: str
@@ -91,6 +118,7 @@ class ScenarioMetadata(BaseModel):
     calibration: CalibrationPolicy = Field(default_factory=CalibrationPolicy)
     completion: CompletionRequirements = Field(default_factory=CompletionRequirements)
     incident: IncidentRequirements = Field(default_factory=IncidentRequirements)
+    release: ReleaseRequirements = Field(default_factory=ReleaseRequirements)
     scoring: dict[str, int]
     localizations: dict[str, dict[str, str]] = Field(default_factory=dict)
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -115,6 +143,15 @@ class ScenarioRunResult:
     private_state: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class ScenarioCheck:
+    """One trusted, scenario-owned hidden verification phase."""
+
+    key: str
+    label: str
+    execute: Callable[[], ToolResult]
+
+
 class Scenario(ABC):
     """Trusted host-side plugin. Scenario code is never copied into a candidate sandbox."""
 
@@ -123,7 +160,7 @@ class Scenario(ABC):
         self.metadata = metadata
 
     @classmethod
-    def load(cls, root: Path) -> "Scenario":
+    def load(cls, root: Path) -> Scenario:
         return load_scenario(root)
 
     @abstractmethod
@@ -143,6 +180,24 @@ class Scenario(ABC):
     ) -> ScenarioRunResult:
         """Run through an injected executor so the SDK stays provider-agnostic."""
         return executor(prepared)
+
+    @abstractmethod
+    def collect_artifacts(
+        self,
+        prepared: PreparedScenario,
+        result: ScenarioRunResult,
+        sandbox: DockerSandbox,
+    ) -> None:
+        """Collect scenario-specific candidate outputs before hidden grading."""
+
+    def verification_checks(
+        self,
+        prepared: PreparedScenario,
+        result: ScenarioRunResult,
+        sandbox: DockerSandbox,
+    ) -> list[ScenarioCheck]:
+        """Return trusted checks without coupling Worker to repository names."""
+        return []
 
     @abstractmethod
     def grade(

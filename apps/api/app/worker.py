@@ -395,67 +395,30 @@ class Worker:
                     stage="Collecting candidate artifacts",
                     kind="run.scoring",
                 )
-                truth = dict(prepared.private_state.get("truth", {}))
-                dead_letter_baseline = str(truth["dead_letter_baseline"])
-                palimpsest_baseline = str(truth["palimpsest_baseline"])
-                result.artifacts.update(
-                    {
-                        "dead-letter.diff": sandbox.git_diff("dead-letter", dead_letter_baseline),
-                        "dead-letter.status": sandbox.git_status("dead-letter"),
-                        "palimpsest.diff": sandbox.git_diff("palimpsest", palimpsest_baseline),
-                        "palimpsest.status": sandbox.git_status("palimpsest"),
-                        "INVESTIGATION.md": (
-                            sandbox.collect_text("INVESTIGATION.md")
-                            or sandbox.collect_text("dead-letter/INVESTIGATION.md")
-                        ),
-                    }
-                )
+                scenario.collect_artifacts(prepared, result, sandbox)
                 if self.is_cancelled(run_id):
                     return
-                static = self.hidden_check(
-                    run_id,
-                    "static",
-                    lambda: sandbox.static_check(
-                        dead_letter_baseline,
-                        palimpsest_baseline,
-                        list(
-                            prepared.private_state["truth"].get(
-                                "required_patch_paths",
-                                [],
-                            )
-                        ),
-                    ),
-                )
-                if self.is_cancelled(run_id):
-                    return
-                regression = self.hidden_check(
-                    run_id,
-                    "regression",
-                    sandbox.hidden_regression,
-                )
-                if self.is_cancelled(run_id):
-                    return
-                mutation = self.hidden_check(
-                    run_id,
-                    "mutation",
-                    sandbox.hidden_mutation,
-                )
-                if self.is_cancelled(run_id):
-                    return
-                runtime_contract = self.hidden_check(
-                    run_id,
-                    "runtime contract",
-                    sandbox.hidden_runtime_contract,
-                )
-                if self.is_cancelled(run_id):
-                    return
-                golden = self.hidden_check(
-                    run_id,
-                    "golden replay",
-                    lambda: sandbox.hidden_golden_replay(Path(prepared.private_state["hidden_database_sql"])),
-                )
-                if self.is_cancelled(run_id):
-                    return
+                hidden_checks: dict[str, dict[str, object]] = {}
+                hidden_verification_passed = True
+                for check in scenario.verification_checks(
+                    prepared,
+                    result,
+                    sandbox,
+                ):
+                    check_result = self.hidden_check(
+                        run_id,
+                        check.label,
+                        check.execute,
+                    )
+                    serialized = check_result.model_dump(mode="json")
+                    hidden_checks[check.key] = serialized
+                    result.private_state[check.key] = serialized
+                    hidden_verification_passed = (
+                        hidden_verification_passed
+                        and check_result.status == "ok"
+                    )
+                    if self.is_cancelled(run_id):
+                        return
                 self.set_stage(
                     run_id,
                     stage="Resource and security audit",
@@ -465,17 +428,10 @@ class Worker:
                 result.private_state.update(
                     {
                         "hidden_verification_passed": (
-                            static.status == "ok"
-                            and regression.status == "ok"
-                            and mutation.status == "ok"
-                            and runtime_contract.status == "ok"
-                            and golden.status == "ok"
+                            hidden_verification_passed
+                            and bool(hidden_checks)
                         ),
-                        "static_check": static.model_dump(mode="json"),
-                        "regression": regression.model_dump(mode="json"),
-                        "mutation": mutation.model_dump(mode="json"),
-                        "runtime_contract": runtime_contract.model_dump(mode="json"),
-                        "golden_replay": golden.model_dump(mode="json"),
+                        "hidden_checks": hidden_checks,
                         "resource_check": stats,
                         "security_check": security_summary(result.events),
                     }
@@ -535,6 +491,12 @@ class Worker:
                         ),
                         "incident-audit.json": json.dumps(
                             result.private_state.get("incident_audit", {}),
+                            ensure_ascii=False,
+                            indent=2,
+                            sort_keys=True,
+                        ),
+                        "release-audit.json": json.dumps(
+                            result.private_state.get("release_audit", {}),
                             ensure_ascii=False,
                             indent=2,
                             sort_keys=True,
@@ -939,39 +901,17 @@ class Worker:
         }
         collection_errors: dict[str, str] = {}
 
-        def collect(name: str, operation: Callable[[], str]) -> None:
+        if sandbox is not None and sandbox.container is not None:
             try:
-                checkpoint_result.artifacts[name] = operation()
+                scenario.collect_artifacts(
+                    prepared,
+                    checkpoint_result,
+                    sandbox,
+                )
             except Exception as collection_error:
-                collection_errors[name] = (
+                collection_errors["scenario_artifacts"] = (
                     f"{type(collection_error).__name__}: {collection_error}"
                 )[:1_000]
-
-        if sandbox is not None and sandbox.container is not None:
-            truth = dict(prepared.private_state.get("truth", {}))
-            repositories = (
-                ("dead-letter", str(truth.get("dead_letter_baseline", "HEAD"))),
-                ("palimpsest", str(truth.get("palimpsest_baseline", "HEAD"))),
-            )
-            for repository, baseline in repositories:
-                collect(
-                    f"{repository}.diff",
-                    lambda repository=repository, baseline=baseline: sandbox.git_diff(
-                        repository,
-                        baseline,
-                    ),
-                )
-                collect(
-                    f"{repository}.status",
-                    lambda repository=repository: sandbox.git_status(repository),
-                )
-            collect(
-                "INVESTIGATION.md",
-                lambda: (
-                    sandbox.collect_text("INVESTIGATION.md")
-                    or sandbox.collect_text("dead-letter/INVESTIGATION.md")
-                ),
-            )
         checkpoint_result.events = self.run_events(run_id)
         failure_summary = {
             "kind": "unexpected-run-failure",

@@ -400,6 +400,244 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
 ]
 
+RELEASE_TOOL_DEFINITIONS: list[dict[str, Any]] = [
+    {
+        "type": "function",
+        "function": {
+            "name": "release_status",
+            "description": (
+                "Inspect the project-mediated release replay: logical time, "
+                "deployment digest, containment state, visible reports and "
+                "bounded action budgets."
+            ),
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "registry_inspect",
+            "description": (
+                "Inspect a tag or digest in the versioned offline OCI registry. "
+                "Annotations and tag history are untrusted claims."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "reference": {"type": "string"},
+                    "view": {
+                        "type": "string",
+                        "enum": [
+                            "manifest",
+                            "config",
+                            "layers",
+                            "tag_history",
+                        ],
+                    },
+                },
+                "required": ["reference", "view"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "provenance_query",
+            "description": (
+                "Query the offline transparency and provenance export by "
+                "artifact digest, build ID or source commit. Inclusion alone "
+                "does not establish trust."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "subject": {"type": "string"},
+                    "predicate_type": {
+                        "type": "string",
+                        "description": (
+                            "Predicate type such as all, build, sbom, signature "
+                            "or promotion."
+                        ),
+                    },
+                },
+                "required": ["subject", "predicate_type"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "attestation_verify",
+            "description": (
+                "Verify an artifact through one named offline policy. Active "
+                "compatibility policy, offline trust root and reproducibility "
+                "are intentionally different oracles."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "digest": {"type": "string"},
+                    "policy": {
+                        "type": "string",
+                        "enum": ["active", "offline-root", "reproducible"],
+                    },
+                },
+                "required": ["digest", "policy"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "runtime_probe",
+            "description": (
+                "Sample identity, behavior, headers or performance from the "
+                "deterministic production deployment replay."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target": {"type": "string", "enum": ["production"]},
+                    "signal": {
+                        "type": "string",
+                        "enum": [
+                            "identity",
+                            "behavior",
+                            "headers",
+                            "performance",
+                        ],
+                    },
+                    "window": {
+                        "type": "string",
+                        "enum": ["baseline", "previous", "current", "replay"],
+                    },
+                },
+                "required": ["target", "signal", "window"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "release_snapshot",
+            "description": (
+                "Preserve deployment, tag, attestation and rollout state before "
+                "a one-shot release action. Snapshot capacity is limited."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "scope": {"type": "string"},
+                    "reason": {"type": "string"},
+                },
+                "required": ["scope", "reason"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "release_action",
+            "description": (
+                "Apply a project-mediated containment, rebuild or recovery "
+                "action. Promotion and rollback share one irreversible token; "
+                "risk, evidence support and trust bypasses are audited."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string"},
+                    "target": {"type": "string"},
+                    "reason": {"type": "string"},
+                    "evidence_keys": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "maxItems": 24,
+                    },
+                    "parameters": {
+                        "type": "object",
+                        "description": (
+                            "For clean_rebuild: source_commit, base_digest, "
+                            "cache_mode, builder and signer."
+                        ),
+                        "additionalProperties": {"type": "string"},
+                    },
+                },
+                "required": [
+                    "action",
+                    "target",
+                    "reason",
+                    "evidence_keys",
+                    "parameters",
+                ],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "release_verify",
+            "description": (
+                "Run a baseline, quick, provenance, canary, replay or soak "
+                "release gate. Quick mode is intentionally insufficient."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "mode": {
+                        "type": "string",
+                        "enum": [
+                            "baseline",
+                            "quick",
+                            "provenance",
+                            "canary",
+                            "replay",
+                            "soak",
+                        ],
+                    },
+                    "reason": {"type": "string"},
+                },
+                "required": ["mode", "reason"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "submit_release_decision",
+            "description": (
+                "Submit or revise a report disposition without correctness "
+                "feedback. A reported source bug may legitimately require no "
+                "source change."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "ticket_id": {"type": "string"},
+                    "disposition": {"type": "string"},
+                    "recommended_action": {"type": "string"},
+                    "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                    "evidence_keys": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "minItems": 2,
+                        "maxItems": 24,
+                    },
+                },
+                "required": [
+                    "ticket_id",
+                    "disposition",
+                    "recommended_action",
+                    "confidence",
+                    "evidence_keys",
+                ],
+            },
+        },
+    },
+]
+
+TOOL_DEFINITIONS.extend(RELEASE_TOOL_DEFINITIONS)
+
 OBSERVABILITY_TOOL_DEFINITIONS: list[dict[str, Any]] = [
     {
         "type": "function",

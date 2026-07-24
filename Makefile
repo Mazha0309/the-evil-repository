@@ -1,4 +1,6 @@
-.PHONY: bootstrap dev test lint build up deploy deploy-public deploy-safety-check production-check down sandbox sandbox-smoke scenario-validate challenge preflight version-check
+.PHONY: bootstrap dev test lint build up deploy deploy-public deploy-safety-check production-check down sandbox sandbox-smoke scenario-validate challenge challenge-smoke challenge-terminal challenge-counterfeit preflight version-check
+
+SCENARIO ?= terminal-repository
 
 bootstrap:
 	pnpm install
@@ -13,7 +15,7 @@ test:
 
 lint:
 	pnpm lint
-	cd apps/api && uv run ruff check .
+	cd apps/api && uv run ruff check . ../../scenarios
 	./scripts/check-version.sh
 
 version-check:
@@ -28,15 +30,22 @@ sandbox:
 
 sandbox-smoke: sandbox
 	cd apps/api && DOCKER_HOST=unix:///run/user/$$(id -u)/docker.sock uv run python scripts/sandbox_smoke.py
+	cd apps/api && DOCKER_HOST=unix:///run/user/$$(id -u)/docker.sock uv run python scripts/release_sandbox_smoke.py
 
 scenario-validate: sandbox-smoke
-	cd apps/api && uv run pytest tests/test_challenge_generation.py tests/test_incident_director.py tests/test_scenario_sdk.py
+	cd apps/api && uv run pytest tests/test_challenge_generation.py tests/test_incident_director.py tests/test_release_director.py tests/test_counterfeit_release_scenario.py tests/test_scenario_sdk.py
 
 challenge:
-	cd apps/api && uv run python -m app.scenario.cli --scenario ../../scenarios/terminal-repository --output ../../generated/terminal-repository
+	cd apps/api && uv run python -m app.scenario.cli --scenario ../../scenarios/$(SCENARIO) --output ../../generated/$(SCENARIO)
 
 challenge-smoke:
-	cd apps/api && uv run python -m app.scenario.cli --scenario ../../scenarios/terminal-repository --output ../../generated/terminal-repository-smoke --scale 0.02
+	cd apps/api && uv run python -m app.scenario.cli --scenario ../../scenarios/$(SCENARIO) --output ../../generated/$(SCENARIO)-smoke --scale 0.02
+
+challenge-terminal:
+	$(MAKE) challenge SCENARIO=terminal-repository
+
+challenge-counterfeit:
+	$(MAKE) challenge SCENARIO=counterfeit-release
 
 preflight:
 	./scripts/rootless-preflight.sh

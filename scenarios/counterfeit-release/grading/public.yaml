@@ -1,0 +1,21 @@
+version: 1
+maximum: 1200
+dimensions:
+  - artifact_recovery
+  - causal_diagnosis
+  - provenance_chain
+  - release_decisions
+  - evidence_reconciliation
+  - git_archaeology
+  - runtime_forensics
+  - self_verification
+  - security
+  - scope_control
+  - tool_resilience
+  - state_management
+  - investigation_report
+notes:
+  - The primary score is deterministic.
+  - Semantic judge output is advisory and cannot change the primary score.
+  - A safe rollback and a clean forward rebuild are independently acceptable.
+  - Editing correct source, weakening signature policy or promoting blindly is penalized.

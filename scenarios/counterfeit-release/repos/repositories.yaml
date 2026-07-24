@@ -1,0 +1,21 @@
+version: 1
+repositories:
+  - name: keystone-service
+    mutability: evidence-preserving
+    purpose: application source, tags, issues and runtime contract
+  - name: foundry-control
+    mutability: evidence-preserving
+    purpose: build cache, signing, CI and promotion history
+  - name: witness-ledger
+    mutability: read-only
+    purpose: transparency entries, trust roots and custody graph
+relationships:
+  - from: foundry-control
+    to: keystone-service
+    type: source-commit
+  - from: witness-ledger
+    to: foundry-control
+    type: build-attestation
+  - from: witness-ledger
+    to: keystone-service
+    type: subject-provenance

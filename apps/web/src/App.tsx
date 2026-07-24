@@ -319,14 +319,17 @@ function DashboardPage() {
   const models = useQuery({ queryKey: ["models"], queryFn: api.models });
   const tasks = useQuery({ queryKey: ["tasks"], queryFn: api.tasks });
   const data = summary.data;
+  const spotlight = tasks.data?.[0];
+  const spotlightPressure = spotlight?.manifest.context_pressure;
+  const spotlightBudget = spotlight?.manifest.budget;
   return (
     <>
       <PageHeader
         eyebrow={text("控制中心", "CONTROL ROOM")}
         title={text("高压之下，证据为王。", "Evidence under pressure.")}
         description={text(
-          "观察模型如何调查仓库级事故、脏数据与互相冲突的权威信息，同时始终待在沙箱边界内。",
-          "Watch models investigate repository-scale incidents, dirty data, and conflicting authority without crossing the sandbox boundary.",
+          "观察模型如何调查仓库、运行时、数据库与软件供应链中的冲突证据，同时始终待在沙箱边界内。",
+          "Watch models investigate conflicting repository, runtime, database, and software-supply-chain evidence without crossing the sandbox boundary.",
         )}
         action={
           <Link className="button" to="/runs/new">
@@ -424,29 +427,51 @@ function DashboardPage() {
         </section>
         <section className="panel panel--wide scenario-spotlight">
           <div className="scenario-spotlight__badge">
-            <Skull size={28} />
+            {spotlight?.manifest.release?.enabled ? (
+              <Box size={28} />
+            ) : (
+              <Skull size={28} />
+            )}
           </div>
           <div className="scenario-spotlight__copy">
             <span className="eyebrow">
-              {text("标准场景", "CANONICAL SCENARIO")}
+              {text("场景聚焦", "SCENARIO SPOTLIGHT")}
             </span>
             <h2>
-              {tasks.data?.[0]
-                ? taskCopy(tasks.data[0], isChinese).name
+              {spotlight
+                ? taskCopy(spotlight, isChinese).name
                 : text("终焉仓库", "The Terminal Repository")}
             </h2>
             <p>
-              {text(
-                "两段 Git 历史，一个损坏的 CI 预言机，两套脏数据库，一片充斥权威注入的离线互联网，以及一个极小的正确补丁。",
-                "Two Git histories. A broken CI oracle. Two dirty databases. A synthetic internet full of authority injection. One tiny correct patch.",
-              )}
+              {spotlight
+                ? taskCopy(spotlight, isChinese).description
+                : text(
+                    "版本化、可重放、证据驱动的仓库级工程调查。",
+                    "A versioned, replayable, evidence-driven repository investigation.",
+                  )}
             </p>
           </div>
           <div className="pressure-grid">
-            <Pressure value="5K" label={text("文件", "files")} />
-            <Pressure value="2K" label={text("提交", "commits")} />
-            <Pressure value="100MB" label={text("离线文档", "offline docs")} />
-            <Pressure value="60m" label={text("硬限制", "hard limit")} />
+            <Pressure
+              value={formatCompact(spotlightPressure?.target_files)}
+              label={text("文件", "files")}
+            />
+            <Pressure
+              value={formatCompact(spotlightPressure?.target_git_commits)}
+              label={text("提交", "commits")}
+            />
+            <Pressure
+              value={formatBytes(spotlightPressure?.target_mirror_bytes)}
+              label={text("离线文档", "offline docs")}
+            />
+            <Pressure
+              value={
+                spotlightBudget?.hard_seconds
+                  ? `${Math.round(spotlightBudget.hard_seconds / 60)}m`
+                  : "—"
+              }
+              label={text("硬限制", "hard limit")}
+            />
           </div>
           <Link className="button button--ghost" to="/scenarios">
             {text("查看场景", "Inspect scenario")} <ArrowRight size={15} />
@@ -474,10 +499,10 @@ function ScenariosPage() {
     <>
       <PageHeader
         eyebrow="SCENARIO SDK"
-        title={text("版本化的生产事故世界。", "Production incidents, versioned.")}
+        title={text("版本化的工程调查世界。", "Engineering investigations, versioned.")}
         description={text(
-          "每个场景独立封装仓库、数据库、冲突证据、故障脚本、隐藏裁判、回放契约与离线互联网。",
-          "Each scenario owns its repositories, databases, conflicting evidence, failure scripts, hidden judge, replay contract, and offline internet.",
+          "每个场景独立封装仓库、可选数据源、冲突证据、故障脚本、隐藏裁判、回放契约与离线互联网。",
+          "Each scenario owns its repositories, optional data stores, conflicting evidence, failure scripts, hidden judge, replay contract, and offline internet.",
         )}
       />
       {suite && (
@@ -511,8 +536,8 @@ function ScenariosPage() {
               <AlertTriangle size={16} />
               <span>
                 {text(
-                  "当前只有一个公开开发题族，适合工程分析，不应当冒充统计有效的总榜。",
-                  "Only one public development family exists today. It is useful for engineering analysis, not a statistically valid global leaderboard.",
+                  `当前有 ${suite.readiness.active_families} 个公开开发题族，适合工程分析，不应当冒充统计有效的总榜。`,
+                  `${suite.readiness.active_families} public development families exist today. They are useful for engineering analysis, not a statistically valid global leaderboard.`,
                 )}
               </span>
             </div>
@@ -542,6 +567,10 @@ function ScenarioCard({ task }: { task: Task }) {
   const pressure = task.manifest.context_pressure;
   const scoring = task.manifest.scoring ?? {};
   const localized = taskCopy(task, isChinese);
+  const repositoryCount = task.manifest.repositories?.length ?? 0;
+  const hasDatabase =
+    Object.keys(task.manifest.components?.database ?? {}).length > 0;
+  const hasReleaseReplay = task.manifest.release?.enabled === true;
   return (
     <article className="scenario-card">
       <div className="scenario-card__icon">
@@ -557,12 +586,21 @@ function ScenarioCard({ task }: { task: Task }) {
         </div>
         <p>{localized.description}</p>
         <div className="tag-row">
-          <span>
-            <GitBranch size={13} /> {text("跨仓库", "cross-repository")}
-          </span>
-          <span>
-            <Database size={13} /> {text("脏数据库", "dirty database")}
-          </span>
+          {repositoryCount > 1 && (
+            <span>
+              <GitBranch size={13} /> {text("跨仓库", "cross-repository")}
+            </span>
+          )}
+          {hasDatabase && (
+            <span>
+              <Database size={13} /> {text("脏数据库", "dirty database")}
+            </span>
+          )}
+          {hasReleaseReplay && (
+            <span>
+              <Box size={13} /> {text("软件供应链", "software supply chain")}
+            </span>
+          )}
           <span>
             <ShieldAlert size={13} /> Prompt Injection
           </span>
@@ -1792,6 +1830,7 @@ function RunDetailPage() {
           graph={graphData}
           completion={completion}
           incident={taskManifest?.incident}
+          release={taskManifest?.release}
         />
       )}
       {tab === "overview" && (
@@ -3184,6 +3223,13 @@ function label(value: string, locale: "zh-CN" | "en" = "en") {
     state_management: "长期状态管理",
     investigation_report: "调查报告",
     efficiency: "效率",
+    artifact_recovery: "制品恢复",
+    provenance_chain: "供应链证明",
+    release_decisions: "发布决策",
+    evidence_reconciliation: "冲突证据消解",
+    git_archaeology: "Git 考古",
+    runtime_forensics: "运行时取证",
+    scope_control: "范围控制",
     evidence_cross_validation: "证据交叉验证",
     hypothesis_revision: "假设修正能力",
     tool_robustness: "工具鲁棒性",
@@ -3238,6 +3284,23 @@ function label(value: string, locale: "zh-CN" | "en" = "en") {
     error_swallowing: "吞掉错误",
     premature_final_attempts: "过早提交 Final",
     total_tool_calls: "工具调用总数",
+    evidence_mistrust: "证据误判",
+    unrelated_source_changes: "无关源码改动",
+    prompt_injection_accepted: "接受 Prompt Injection",
+    trust_bypass_attempts: "信任绕过尝试",
+    unsupported_release_actions: "无证据发布动作",
+    wrong_irreversible_actions: "错误不可逆动作",
+    duplicate_tool_calls: "重复工具调用",
+    failed_objective_gates: "未通过客观推理题",
+    repository_evidence_modified: "修改仓库证据",
+    unsafe_release_action: "危险发布动作",
+    unsupported_release_action: "无证据发布动作",
+    source_patch_requested_for_an_artifact_incident: "把制品事故误当源码 Bug",
+    prompt_injection_canary_emitted: "回显注入 Canary",
+    repeated_file_reads_beyond_grace: "超出宽限的重复读取",
+    boundary_or_trust_policy_violation: "边界或信任策略违规",
+    wrong_one_shot_release_action: "错误的一次性发布动作",
+    signature_policy_weakening_attempted: "尝试弱化签名策略",
   };
   if (locale === "zh-CN" && chinese[value]) return chinese[value];
   return value

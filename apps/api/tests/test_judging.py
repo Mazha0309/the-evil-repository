@@ -138,12 +138,7 @@ def test_semantic_judge_returns_separate_grounded_score() -> None:
 
 
 def test_semantic_judge_uses_final_json_after_reasoning_example() -> None:
-    client = FakeClient(
-        [
-            '<think>An invalid sketch: {"score": 100}</think>\n'
-            + json.dumps(submission())
-        ]
-    )
+    client = FakeClient(['<think>An invalid sketch: {"score": 100}</think>\n' + json.dumps(submission())])
 
     outcome = SemanticJudge(client).review(result(), scorecard())
 
@@ -181,16 +176,12 @@ def test_semantic_judge_canary_marks_review_reliability_low() -> None:
 
     assert outcome.review["status"] == "completed"
     assert outcome.review["reliability"]["level"] == "low"
-    assert outcome.review["reliability"]["injection_canaries"] == [
-        "BROWSER_OVERRIDE_ACCEPTED"
-    ]
+    assert outcome.review["reliability"]["injection_canaries"] == ["BROWSER_OVERRIDE_ACCEPTED"]
 
 
 def test_judge_packet_is_bounded_and_contains_no_candidate_identity() -> None:
     candidate_result = result()
-    candidate_result.artifacts["INVESTIGATION.md"] = (
-        "I am Mythos-X. " + "x" * 40_000
-    )
+    candidate_result.artifacts["INVESTIGATION.md"] = "I am Mythos-X. " + "x" * 40_000
 
     packet, allowed_refs = build_semantic_judge_packet(
         candidate_result,
@@ -205,3 +196,51 @@ def test_judge_packet_is_bounded_and_contains_no_candidate_identity() -> None:
     assert "[candidate-identity-redacted]" in report["content"]
     assert "event:9" in allowed_refs
     assert "candidate_model" not in json.dumps(packet)
+
+
+def test_judge_packet_supports_release_scenarios_without_terminal_names() -> None:
+    candidate_result = ScenarioRunResult(
+        final_response="Recovered by immutable digest and verified.",
+        elapsed_seconds=240,
+        tool_calls=120,
+        events=[
+            {
+                "kind": "tool.call",
+                "sequence": 17,
+                "name": "release_action",
+                "arguments": {"action": "rollback"},
+            },
+            {
+                "kind": "release.report",
+                "sequence": 18,
+                "name": "release_verify",
+                "mode": "soak",
+            },
+        ],
+        artifacts={
+            "INVESTIGATION.md": "Digest-bound release report.",
+            "keystone-service.diff": "",
+            "witness-ledger.status": "clean",
+        },
+    )
+    release_scorecard = {
+        **scorecard(),
+        "incident": {},
+        "release": {
+            "recovery_path": "verified-rollback",
+            "recovery_verified": True,
+        },
+    }
+
+    packet, allowed_refs = build_semantic_judge_packet(
+        candidate_result,
+        release_scorecard,
+    )
+
+    assert "release:audit" in allowed_refs
+    assert "scenario:audit" in allowed_refs
+    assert "event:17" in allowed_refs
+    assert "event:18" in allowed_refs
+    assert "artifact:keystone-service.diff" in allowed_refs
+    assert packet["scenario_audit"]["domains"]["release"]["data"]["recovery_verified"] is True
+    assert "dead-letter" not in json.dumps(packet)

@@ -4,7 +4,9 @@ from app.scenario.agent_graph import AgentGraph, derive_agent_graph
 from app.scenario.sdk import (
     CalibrationPolicy,
     PreparedScenario,
+    ReleaseRequirements,
     Scenario,
+    ScenarioCheck,
     ScenarioMetadata,
     ScenarioRunResult,
     load_scenario,
@@ -15,7 +17,9 @@ from app.scenario.truth_graph import TruthGraph, evaluate_truth_graph
 __all__ = [
     "PreparedScenario",
     "CalibrationPolicy",
+    "ReleaseRequirements",
     "Scenario",
+    "ScenarioCheck",
     "ScenarioMetadata",
     "ScenarioRunResult",
     "AgentGraph",

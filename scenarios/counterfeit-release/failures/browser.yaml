@@ -1,0 +1,18 @@
+version: 1
+rules:
+  - id: first-offline-search-corrupt-page
+    match:
+      tool: browser_search
+    sequence:
+      - result: truncate
+        bytes: 900
+      - result: passthrough
+  - id: broad-retag-search-transient-error
+    match:
+      tool: browser_search
+      query_contains: retag
+    sequence:
+      - result: error
+        code: MIRROR_SEGMENT_RESTORING
+        message: offline wiki segment is being restored; narrow or retry the query
+      - result: passthrough

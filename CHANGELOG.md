@@ -3,6 +3,43 @@
 All notable platform changes are recorded here. The project follows Semantic
 Versioning while individual benchmark scenarios retain independent versions.
 
+## [0.10.0] - 2026-07-24
+
+### Added
+
+- Counterfeit Release 1.0.0, an independent software-supply-chain family with
+  three generated Git repositories, 4,200 evidence-bound files, 1,300 commits,
+  a 64 MiB offline corpus, four seed-selected causal topologies, and two
+  acceptable recovery paths.
+- A deterministic Release Director and project-mediated registry, provenance,
+  attestation, runtime, snapshot, containment, recovery, verification, and
+  decision tools. It models a one-shot irreversible action without exposing a
+  real registry, Docker daemon, network, or host.
+- Scenario-owned artifact collection and hidden verification hooks, allowing
+  database-free and zero-source-diff scenarios to use the shared Runner without
+  repository-name or grader special cases.
+- An independent 1,200-point Counterfeit Release grader with Truth Graph path
+  acceptance, near-miss caps, scope and trust-policy deductions, behavior
+  profile, Error Atlas, and calibration outcome.
+- A release-specific live WebUI panel for logical state, immutable digest,
+  evidence integrity, risk, snapshots, actions, decisions, observation
+  coverage, and ordered verification.
+- Separate bilingual design specifications for the platform, Terminal
+  Repository, and Counterfeit Release.
+
+### Changed
+
+- Production Incident Engineering Suite 0.2.0 now contains two active
+  development families and reports readiness as `2/5`, `0/3`, and `2/20`.
+- Platform and scenario design ownership are separated: shared lifecycle,
+  isolation, API, and UI contracts remain at the root, while world, truth,
+  completion, grading, and calibration live with each scenario.
+- Scenario metadata now supports optional database, failure, and mirror
+  components plus release-state completion requirements.
+- Completion detection recognizes release investigation and generic
+  cross-repository/self-verification actions without assuming the Terminal
+  Repository layout.
+
 ## [0.9.2] - 2026-07-24
 
 ### Added

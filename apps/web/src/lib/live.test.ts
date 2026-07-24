@@ -244,4 +244,94 @@ describe("live run telemetry", () => {
       ]),
     );
   });
+
+  it("tracks release replay investigation and recovery actions", () => {
+    const events = [
+      event(1, "tool.call", {
+        name: "registry_inspect",
+        call_id: "registry",
+        arguments: { reference: "image:release", view: "manifest" },
+      }),
+      event(2, "tool.call", {
+        name: "provenance_query",
+        call_id: "provenance",
+        arguments: { subject: "sha256:bad", predicate_type: "all" },
+      }),
+      event(3, "tool.call", {
+        name: "attestation_verify",
+        call_id: "attestation",
+        arguments: { digest: "sha256:bad", policy: "offline-root" },
+      }),
+      event(4, "tool.call", {
+        name: "runtime_probe",
+        call_id: "runtime",
+        arguments: {
+          target: "production",
+          signal: "identity",
+          window: "current",
+        },
+      }),
+      event(5, "tool.call", {
+        name: "release_snapshot",
+        call_id: "snapshot",
+        arguments: { scope: "production", reason: "preserve" },
+      }),
+      event(6, "tool.call", {
+        name: "release_action",
+        call_id: "contain",
+        arguments: {
+          action: "quarantine_digest",
+          target: "sha256:bad",
+          reason: "rooted rejection",
+          evidence_keys: [],
+          parameters: {},
+        },
+      }),
+      event(7, "tool.call", {
+        name: "release_action",
+        call_id: "recover",
+        arguments: {
+          action: "rollback_to_digest",
+          target: "sha256:good",
+          reason: "last rooted digest",
+          evidence_keys: [],
+          parameters: {},
+        },
+      }),
+      event(8, "tool.call", {
+        name: "submit_release_decision",
+        call_id: "decision",
+        arguments: { ticket_id: "REL-SOURCE" },
+      }),
+      event(9, "tool.call", {
+        name: "release_verify",
+        call_id: "verify",
+        arguments: { mode: "soak", reason: "final" },
+      }),
+    ];
+    const graph: InvestigationGraph = {
+      hypotheses: [],
+      revisions: [],
+      evidence: [],
+      edges: [],
+    };
+
+    const progress = completionProgress(events, graph, {
+      required_actions: [
+        "registry_investigation",
+        "provenance_chain",
+        "attestation_verification",
+        "release_runtime_probe",
+        "release_snapshot",
+        "release_containment",
+        "release_recovery",
+        "release_decision",
+        "release_self_verification",
+      ],
+    });
+
+    expect(progress.requiredActions.every((value) =>
+      progress.observedActions.has(value),
+    )).toBe(true);
+  });
 });
