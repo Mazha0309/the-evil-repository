@@ -97,6 +97,14 @@ def test_telemetry_pairs_provider_turns_and_tool_lifecycle() -> None:
             "characters_removed": 80_000,
             "tool_results_truncated": 4,
         },
+        {
+            "kind": "run.finalization_nudge",
+            "sequence": 11,
+            "created_at": timestamp(14),
+            "triggered_by": ["active_time"],
+            "remaining": {"active_time": 2_160},
+            "completion_gap_count": 2,
+        },
     ]
 
     bundle = build_telemetry_bundle(events)
@@ -117,6 +125,16 @@ def test_telemetry_pairs_provider_turns_and_tool_lifecycle() -> None:
         "provider_policy_retries": 0,
     }
     assert len(bundle["context_compactions"]) == 1
+    assert len(bundle["finalization_nudges"]) == 1
+    assert bundle["summary"]["budget_events"] == {
+        "soft_warnings": 0,
+        "finalization_nudges": 1,
+        "hard_stops": 0,
+    }
+    assert any(
+        event["kind"] == "run.finalization_nudge"
+        for event in bundle["stage_timeline"]
+    )
     assert bundle["summary"]["tools"]["calls"] == 2
     assert bundle["summary"]["tools"]["duplicate_calls"] == 1
     assert bundle["summary"]["tools"]["scripted_faults"] == 1

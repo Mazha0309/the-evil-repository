@@ -5,7 +5,7 @@
 [Counterfeit Release](../counterfeit-release/DESIGN.md)
 
 - **Scenario:** `terminal-repository`
-- **Version:** `3.0.4`
+- **Version:** `3.0.5`
 - **Family:** production incident / cross-repository protocol regression
 - **Maximum score:** 1,200
 - **License:** AGPL-3.0-only
@@ -150,7 +150,7 @@ investigation.
 
 ## 7. Completion contract and budgets
 
-Version 3.0.4 requires:
+Version 3.0.5 requires:
 
 - 14 hypotheses, including at least 6 explicitly rejected;
 - 60 evidence records spanning Git, database, Browser, runtime,
@@ -169,12 +169,14 @@ Execution defaults:
 
 | Resource | Soft | Hard |
 |---|---:|---:|
-| Effective active time | 90 min | 180 min |
+| Effective active time | 180 min | 360 min |
 | Tool calls | 600 | 2,200 |
 | Physical Provider requests | 300 | 720 |
 
 These are observation and safety envelopes, not mandatory waiting times. A hard
 limit produces a right-censored result and cannot qualify as a completed solve.
+The Runner emits the normal convergence warning at 180 minutes and a one-shot
+finalization nudge at 288 minutes, leaving 72 minutes before the hard boundary.
 
 ## 8. Hidden grading
 

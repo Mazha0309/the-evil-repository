@@ -1,6 +1,6 @@
 schema_version: 1
 slug: production-incidents
-version: 0.2.0
+version: 0.2.1
 name: Production Incident Engineering Suite
 description: >-
   A growing suite for repository-scale software investigation, incident
@@ -33,7 +33,7 @@ families:
     status: active
 scenarios:
   - slug: terminal-repository
-    version: 3.0.4
+    version: 3.0.5
     family: cross-repository-protocol
     split: development
     instances: 1

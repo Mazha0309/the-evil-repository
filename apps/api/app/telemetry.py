@@ -64,6 +64,11 @@ def build_telemetry_bundle(events: Iterable[Any]) -> dict[str, Any]:
         for event in normalized
         if event.get("kind") == "context.compacted"
     ]
+    finalization_nudges = [
+        event
+        for event in normalized
+        if event.get("kind") == "run.finalization_nudge"
+    ]
     error_events = _error_events(normalized)
     return {
         "schema_version": 2,
@@ -79,6 +84,7 @@ def build_telemetry_bundle(events: Iterable[Any]) -> dict[str, Any]:
         "stage_timeline": stage_timeline,
         "resource_snapshots": resource_snapshots,
         "context_compactions": context_compactions,
+        "finalization_nudges": finalization_nudges,
         "error_events": error_events,
         "events": normalized,
     }
@@ -329,6 +335,7 @@ def _stage_timeline(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
         "run.scoring",
         "run.hard_budget_exceeded",
         "run.soft_budget_warning",
+        "run.finalization_nudge",
         "run.budget_exhausted",
         "run.completed",
         "run.failed",
@@ -559,6 +566,14 @@ def _summary(
             "requested": event_counts.get("run.pause_requested", 0),
             "paused": event_counts.get("run.paused", 0),
             "resumed": event_counts.get("run.resumed", 0),
+        },
+        "budget_events": {
+            "soft_warnings": event_counts.get("run.soft_budget_warning", 0),
+            "finalization_nudges": event_counts.get(
+                "run.finalization_nudge",
+                0,
+            ),
+            "hard_stops": event_counts.get("run.hard_budget_exceeded", 0),
         },
         "errors": {
             "count": len(error_events),

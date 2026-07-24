@@ -2665,6 +2665,12 @@ pre {
   margin-top: 1px;
 }
 
+.live-warning--finalization {
+  border-top-color: rgba(255, 107, 92, 0.48);
+  color: #ff8c7d;
+  background: rgba(255, 80, 64, 0.085);
+}
+
 .live-grid {
   display: grid;
   grid-template-columns: minmax(0, 1.35fr) minmax(330px, 0.85fr);

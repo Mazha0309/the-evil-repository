@@ -12,8 +12,8 @@ class RepositorySpec(BaseModel):
 
 
 class BudgetSpec(BaseModel):
-    soft_seconds: int = Field(default=5_400, ge=1)
-    hard_seconds: int = Field(default=10_800, ge=2)
+    soft_seconds: int = Field(default=10_800, ge=1)
+    hard_seconds: int = Field(default=21_600, ge=2)
     soft_tool_calls: int = Field(default=600, ge=1)
     hard_tool_calls: int = Field(default=2_200, ge=2)
     soft_provider_requests: int = Field(default=300, ge=1)

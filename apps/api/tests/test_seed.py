@@ -46,11 +46,11 @@ def test_canonical_seed_enables_v3_patch_and_retires_v1(monkeypatch) -> None:
 
     assert [(task.version, task.enabled) for task in tasks] == [
         ("1.0.0", False),
-        ("3.0.4", True),
+        ("3.0.5", True),
     ]
     assert tasks[1].manifest["completion"]["min_tool_calls"] == 0
-    assert tasks[1].manifest["budget"]["soft_seconds"] == 5_400
-    assert tasks[1].manifest["budget"]["hard_seconds"] == 10_800
+    assert tasks[1].manifest["budget"]["soft_seconds"] == 10_800
+    assert tasks[1].manifest["budget"]["hard_seconds"] == 21_600
     assert tasks[1].manifest["budget"]["soft_tool_calls"] == 600
     assert tasks[1].manifest["budget"]["hard_tool_calls"] == 2_200
     assert tasks[1].manifest["budget"]["soft_provider_requests"] == 300

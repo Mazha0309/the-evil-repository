@@ -26,7 +26,7 @@ provider credentials.
 
 ## Status
 
-The platform is currently **v0.12.0** and remains under active construction.
+The platform is currently **v0.12.1** and remains under active construction.
 See [`CHANGELOG.md`](CHANGELOG.md). This release includes two independently
 versioned scenarios, account isolation, administrator controls, server
 monitoring, a live Agent activity console, and the complete execution,
@@ -168,10 +168,10 @@ silently changes a published scenario's truth.
 
 ## Included scenarios
 
-- **[The Terminal Repository 3.0.4](scenarios/terminal-repository/DESIGN.md)** —
+- **[The Terminal Repository 3.0.5](scenarios/terminal-repository/DESIGN.md)** —
   a cross-repository protocol regression with a dirty database, polluted CI,
   intermittent runtime behavior, eight incident tickets, seven independent
-  relay defects, and a 90/180-minute execution envelope.
+  relay defects, and a 180/360-minute execution envelope.
 - **[The Counterfeit Release 1.0.0](scenarios/counterfeit-release/DESIGN.md)** —
   a software-supply-chain recovery where clean source, Git tags, OCI artifacts,
   SBOM, provenance, signatures, transparency records, and deployed runtime
@@ -187,7 +187,7 @@ with a stale SQLite cache. The offline mirror is available only through
 `browser.search`, `browser.open`, and `browser.find`, so a candidate cannot
 bypass Browser behavior by scanning a copied mirror directory.
 
-Terminal Repository 3.0.4 makes the apparent bulk material. Five live relay chains contain
+Terminal Repository 3.0.5 makes the apparent bulk material. Five live relay chains contain
 704 executable opaque cells; seven independent corruptions are jointly
 required, and fixing six still fails. The two repositories contain exactly
 5,000 tracked files and 2,000 commits, 40 semantic custody checkpoints, seven
@@ -210,7 +210,7 @@ equivalents of `ps`, `systemctl`, `journalctl`, `lsof`/socket inspection,
 `strace`, and `perf`. These tools observe only the simulated incident state;
 they never attach to a host process or expose live packets. Their collectors,
 clock domains, useful signals, and decoys remain replayable. Terminal
-Repository 3.0.4 stays frozen and does not retroactively enable this new tool
+Repository 3.0.5 stays frozen and does not retroactively enable this new tool
 pack.
 
 A candidate must build an observable investigation, not merely guess a patch.
@@ -246,10 +246,18 @@ verification. Scenario releases are recalibrated when strong Agents discover
 material shortcuts.
 
 The incident's 180 ticks are deterministic logical replay steps, not 180
-wall-clock minutes. Scenario 3.0.4 defaults to a 90-minute soft warning and a
-180-minute hard observation envelope, with 600/2,200 tool calls and 300/720
+wall-clock minutes. Scenario 3.0.5 defaults to a 180-minute soft warning and a
+360-minute hard observation envelope, with 600/2,200 tool calls and 300/720
 raw Provider requests. The hard limit is a safety boundary, not an intended
 duration or forced wait.
+
+When active time, tool calls, Provider requests, or an enabled Token budget
+enters its final 20%, the Runner sends the candidate exactly one trusted
+finalization notice. It includes the remaining resources and the deterministic
+completion-gate gaps, asking the model to stop broad exploration, preserve its
+best evidence-backed work, perform the highest-value missing verification, and
+finish before the hard boundary. The event is fully auditable and does not
+relax the completion gate or extend the hard budget.
 
 A hard-budget stop is now an explicit **right-censored outcome** rather than a
 completed solution. Its partial score remains available for forensic analysis,
@@ -282,7 +290,8 @@ is active. Normal archives and failure checkpoints also split the same data
 into script-friendly `events.jsonl`, `telemetry/provider-turns.jsonl`,
 `telemetry/tool-lifecycle.jsonl`, stage timelines, periodic resource
 snapshots, `telemetry/context-compactions.jsonl`, an error stream, the complete
-investigation graph, and a SHA-256 artifact inventory. OAuth tokens, API keys,
+investigation graph, `telemetry/finalization-nudges.jsonl`, and a SHA-256
+artifact inventory. OAuth tokens, API keys,
 Authorization headers, passwords, and Gemini thought signatures are excluded
 or redacted.
 
