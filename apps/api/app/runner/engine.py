@@ -92,6 +92,14 @@ class AgentEngine:
         self.started = time.monotonic()
         self.input_tokens = 0
         self.output_tokens = 0
+        self.token_usage_available = (
+            getattr(
+                getattr(self.client.profile, "provider", None),
+                "value",
+                None,
+            )
+            != "antigravity"
+        )
         self.provider_requests = 0
         self.tool_calls = 0
         self.current_turn = 0
@@ -190,6 +198,7 @@ class AgentEngine:
                     "provider_requests_total": self.provider_requests,
                     "input_tokens_total": self.input_tokens,
                     "output_tokens_total": self.output_tokens,
+                    "token_usage_available": self.token_usage_available,
                     "active_seconds": round(self._active_elapsed(), 3),
                 },
             )
@@ -209,6 +218,9 @@ class AgentEngine:
                 break
             self.input_tokens += turn.input_tokens
             self.output_tokens += turn.output_tokens
+            self.token_usage_available = (
+                self.token_usage_available and turn.token_usage_available
+            )
             self._event(
                 "assistant.message",
                 {
@@ -223,6 +235,7 @@ class AgentEngine:
                     "output_tokens": turn.output_tokens,
                     "input_tokens_total": self.input_tokens,
                     "output_tokens_total": self.output_tokens,
+                    "token_usage_available": self.token_usage_available,
                     "response_characters": len(turn.content),
                     "tool_call_count": len(turn.tool_calls),
                     "invalid_tool_call_count": len(turn.invalid_tool_calls),
@@ -1470,13 +1483,15 @@ class AgentEngine:
         ):
             crossed.append("active_time")
         if (
-            self.provider_requests >= budget.soft_provider_requests
+            budget.soft_provider_requests is not None
+            and self.provider_requests >= budget.soft_provider_requests
             and "provider_requests" not in self.soft_budget_warnings
         ):
             crossed.append("provider_requests")
         total_tokens = self.input_tokens + self.output_tokens
         if (
-            budget.soft_total_tokens is not None
+            self.token_usage_available
+            and budget.soft_total_tokens is not None
             and total_tokens >= budget.soft_total_tokens
             and "total_tokens" not in self.soft_budget_warnings
         ):
@@ -1542,20 +1557,25 @@ class AgentEngine:
         usage = {
             "active_time": active_seconds,
             "tool_calls": self.tool_calls,
-            "provider_requests": self.provider_requests,
         }
         soft = {
             "active_time": budget.soft_seconds,
             "tool_calls": budget.soft_tool_calls,
-            "provider_requests": budget.soft_provider_requests,
         }
         hard = {
             "active_time": budget.hard_seconds,
             "tool_calls": budget.hard_tool_calls,
-            "provider_requests": budget.hard_provider_requests,
         }
         if (
-            budget.soft_total_tokens is not None
+            budget.soft_provider_requests is not None
+            and budget.hard_provider_requests is not None
+        ):
+            usage["provider_requests"] = self.provider_requests
+            soft["provider_requests"] = budget.soft_provider_requests
+            hard["provider_requests"] = budget.hard_provider_requests
+        if (
+            self.token_usage_available
+            and budget.soft_total_tokens is not None
             and budget.hard_total_tokens is not None
         ):
             usage["total_tokens"] = total_tokens
@@ -1608,8 +1628,11 @@ class AgentEngine:
         remaining_lines = [
             f"- active time: about {remaining['active_time']} seconds",
             f"- tool calls: {remaining['tool_calls']}",
-            f"- Provider requests: {remaining['provider_requests']}",
         ]
+        if "provider_requests" in remaining:
+            remaining_lines.append(
+                f"- Provider requests: {remaining['provider_requests']}"
+            )
         if "total_tokens" in remaining:
             remaining_lines.append(
                 f"- total tokens: {remaining['total_tokens']}"
@@ -1635,7 +1658,8 @@ class AgentEngine:
 
     def _on_provider_request(self, request: dict[str, Any]) -> None:
         next_request = int(request["request_number"])
-        if next_request > self.prepared.metadata.budget.hard_provider_requests:
+        hard_limit = self.prepared.metadata.budget.hard_provider_requests
+        if hard_limit is not None and next_request > hard_limit:
             raise HardResourceBudgetExceeded
         self.provider_requests = next_request
         self._event(
@@ -1682,6 +1706,7 @@ class AgentEngine:
                 "input_tokens": self.input_tokens,
                 "output_tokens": self.output_tokens,
                 "total_tokens": self.input_tokens + self.output_tokens,
+                "token_usage_available": self.token_usage_available,
                 "unique_paths_read": len(self.read_counts),
                 "repeated_path_reads": sum(
                     max(0, count - 1) for count in self.read_counts.values()
@@ -1716,7 +1741,8 @@ class AgentEngine:
         reasons: list[str] = []
         total_tokens = self.input_tokens + self.output_tokens
         if (
-            budget.hard_total_tokens is not None
+            self.token_usage_available
+            and budget.hard_total_tokens is not None
             and total_tokens >= budget.hard_total_tokens
         ):
             reasons.append("total_tokens")
@@ -1732,6 +1758,7 @@ class AgentEngine:
                 "active_seconds": round(self._active_elapsed(), 3),
                 "provider_requests": self.provider_requests,
                 "total_tokens": self.input_tokens + self.output_tokens,
+                "token_usage_available": self.token_usage_available,
                 "hard_tool_calls": budget.hard_tool_calls,
                 "hard_seconds": budget.hard_seconds,
                 "hard_provider_requests": budget.hard_provider_requests,
@@ -1750,6 +1777,7 @@ class AgentEngine:
             "input_tokens": self.input_tokens,
             "output_tokens": self.output_tokens,
             "total_tokens": self.input_tokens + self.output_tokens,
+            "token_usage_available": self.token_usage_available,
             "invalid_tool_call_batches": self.invalid_tool_call_batches,
             "invalid_tool_calls": self.invalid_tool_calls,
             "context_management": self._context_ledger(),

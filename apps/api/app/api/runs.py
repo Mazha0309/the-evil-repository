@@ -18,6 +18,7 @@ from app.model_identity import model_snapshot, task_snapshot
 from app.models import (
     BenchmarkRun,
     ModelProfile,
+    ModelProvider,
     RunArtifact,
     RunEvent,
     RunStatus,
@@ -84,6 +85,17 @@ def create_run(
         not can_access_model(session, user, judge) or not judge.enabled or judge.archived_at is not None
     ):
         raise HTTPException(status_code=400, detail="Unknown judge model")
+    if (
+        candidate.provider == ModelProvider.antigravity
+        and payload.soft_total_tokens is not None
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Antigravity CLI does not expose machine-readable token usage; "
+                "use time, tool-call, and Provider-request budgets instead"
+            ),
+        )
     completion = task.manifest.get("completion", {})
     minimum_calls = int(completion.get("min_tool_calls", 0))
     if payload.hard_tool_calls < minimum_calls:
@@ -95,6 +107,11 @@ def create_run(
         mode="json",
         exclude={"task_id", "candidate_model_id", "judge_model_id"},
     )
+    scenario_budget = task.manifest.get("budget", {})
+    provider_fields = {"soft_provider_requests", "hard_provider_requests"}
+    if not provider_fields.intersection(payload.model_fields_set):
+        for field in provider_fields:
+            run_config[field] = scenario_budget.get(field)
     run_config["candidate_model_snapshot"] = model_snapshot(candidate)
     run_config["task_snapshot"] = task_snapshot(task)
     if judge is not None:

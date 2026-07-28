@@ -411,17 +411,14 @@ def test_finalization_nudge_fires_once_in_last_budget_fifth(
             "usage": {
                 "active_time": 17_280.0,
                 "tool_calls": 0,
-                "provider_requests": 0,
             },
             "remaining": {
                 "active_time": 4_320,
                 "tool_calls": 2_200,
-                "provider_requests": 720,
             },
             "hard_limits": {
                 "active_time": 21_600,
                 "tool_calls": 2_200,
-                "provider_requests": 720,
             },
             "completion_gaps": [
                 "run the final replay",
@@ -589,6 +586,36 @@ def test_provider_request_at_exact_hard_cap_is_allowed(
     assert result.private_state["provider_requests"] == 1
     assert result.private_state["hard_budget_reasons"] == []
     assert any(event["kind"] == "provider.request" for event in engine.events)
+
+
+def test_provider_request_counter_remains_observable_when_cap_is_disabled(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    scenario = load_scenario(SCENARIO_ROOT)
+    assert scenario.metadata.budget.hard_provider_requests is None
+    prepared = PreparedScenario(
+        scenario_root=SCENARIO_ROOT,
+        workspace=tmp_path,
+        metadata=scenario.metadata,
+    )
+    engine = AgentEngine(
+        run_id=uuid.uuid4(),
+        client=MeteredFinalAnswerClient(),
+        sandbox=SimpleNamespace(),
+        prepared=prepared,
+        faults=FaultController([]),
+    )
+    monkeypatch.setattr(
+        engine,
+        "_event",
+        lambda kind, payload: engine.events.append({"kind": kind, **payload}),
+    )
+
+    engine._on_provider_request({"request_number": 50_000})
+
+    assert engine.provider_requests == 50_000
+    assert engine.events[-1]["kind"] == "provider.request"
 
 
 def test_pause_waits_at_safe_boundary_and_excludes_paused_time(

@@ -1,16 +1,20 @@
+import base64
 import io
 import os
-import posixpath
 import shlex
 import tarfile
+from contextlib import suppress
 from pathlib import Path, PurePosixPath
 
 import docker
 from docker.models.containers import Container
 from docker.models.volumes import Volume
+from docker.types import LogConfig, Ulimit
 
 from app.config import Settings
 from app.runner.protocol import ToolCall, ToolResult
+
+SANDBOX_CONTRACT_LABEL = "org.evil-repository.sandbox.contract"
 
 
 def safe_path(value: str, *, allow_dot: bool = True) -> PurePosixPath:
@@ -35,6 +39,99 @@ def archive_directory(source: Path) -> bytes:
     return buffer.getvalue()
 
 
+def require_rootless_daemon(info: dict) -> None:
+    security_options = info.get("SecurityOptions") or []
+    normalized: set[str] = set()
+    for option in security_options:
+        if isinstance(option, dict):
+            name = option.get("Name") or option.get("name") or ""
+            value = option.get("Options") or option.get("options") or ""
+            normalized.add(f"name={name}".casefold())
+            normalized.add(str(value).casefold())
+        else:
+            normalized.add(str(option).casefold())
+    if not any(
+        option == "name=rootless" or option.startswith("name=rootless,")
+        for option in normalized
+    ):
+        raise RuntimeError(
+            "Candidate execution requires a dedicated Rootless Docker daemon; "
+            "refusing a rootful or unverifiable Docker socket"
+        )
+
+
+def require_sandbox_image_contract(attrs: dict) -> None:
+    labels = (attrs.get("Config") or {}).get("Labels") or {}
+    if str(labels.get(SANDBOX_CONTRACT_LABEL, "")) != "1":
+        raise RuntimeError(
+            "Configured sandbox image does not declare the Evil Repository "
+            "candidate-isolation contract"
+        )
+
+
+def candidate_isolation_violations(
+    attrs: dict,
+    *,
+    expected_volume: str,
+) -> list[str]:
+    config = attrs.get("Config") or {}
+    host = attrs.get("HostConfig") or {}
+    violations: list[str] = []
+
+    def reject(condition: bool, label: str) -> None:
+        if condition:
+            violations.append(label)
+
+    security_options = {
+        str(value).casefold() for value in (host.get("SecurityOpt") or [])
+    }
+    binds = host.get("Binds") or []
+    expected_bind = f"{expected_volume}:/workspace:rw"
+    cap_drop = {str(value).upper() for value in (host.get("CapDrop") or [])}
+
+    reject(config.get("User") != "1000:1000", "candidate user")
+    reject(config.get("NetworkDisabled") is not True, "network disabled flag")
+    reject(host.get("NetworkMode") != "none", "network mode")
+    reject(host.get("ReadonlyRootfs") is not True, "read-only root filesystem")
+    reject(host.get("Privileged") is True, "privileged mode")
+    reject("ALL" not in cap_drop, "capability drop")
+    reject(bool(host.get("CapAdd")), "added capabilities")
+    reject(
+        not any(value.startswith("no-new-privileges") for value in security_options),
+        "no-new-privileges",
+    )
+    reject("seccomp=builtin" not in security_options, "built-in seccomp")
+    reject(host.get("IpcMode") != "private", "private IPC namespace")
+    reject(
+        host.get("UTSMode") not in {"", "private"},
+        "private UTS namespace",
+    )
+    reject(host.get("CgroupnsMode") != "private", "private cgroup namespace")
+    reject(host.get("Init") is not True, "init process")
+    reject(int(host.get("PidsLimit") or 0) <= 0, "PID limit")
+    reject(int(host.get("Memory") or 0) <= 0, "memory limit")
+    reject(int(host.get("NanoCpus") or 0) <= 0, "CPU limit")
+    reject(
+        int(host.get("MemorySwap") or 0) != int(host.get("Memory") or 0),
+        "swap disabled",
+    )
+    reject(binds != [expected_bind], "exclusive named workspace volume")
+    reject(bool(host.get("Devices")), "device mappings")
+    reject(bool(host.get("DeviceRequests")), "device requests")
+    reject(bool(host.get("PortBindings")), "published ports")
+    reject(bool(host.get("Links")), "container links")
+    reject(bool(host.get("VolumesFrom")), "volumes-from")
+    reject(
+        (host.get("RestartPolicy") or {}).get("Name") not in {"", "no"},
+        "restart policy",
+    )
+    reject(
+        (host.get("LogConfig") or {}).get("Type") != "none",
+        "container log driver",
+    )
+    return violations
+
+
 class DockerSandbox:
     def __init__(self, settings: Settings, run_id: str) -> None:
         self.settings = settings
@@ -45,6 +142,9 @@ class DockerSandbox:
 
     def start(self, workspace: Path) -> None:
         self.client.ping()
+        require_rootless_daemon(self.client.info())
+        image = self.client.images.get(self.settings.sandbox_image)
+        require_sandbox_image_contract(image.attrs)
         suffix = "".join(character for character in self.run_id if character.isalnum())[:24]
         volume_name = f"evil-workspace-{suffix}"
         self.volume = self.client.volumes.create(
@@ -63,18 +163,29 @@ class DockerSandbox:
         )
         mounts = {volume_name: {"bind": "/workspace", "mode": "rw"}}
         staging: Container | None = None
+        candidate: Container | None = None
         try:
             staging = self.client.containers.create(
                 self.settings.sandbox_image,
                 command=["sleep", "infinity"],
                 name=f"evil-stage-{suffix}",
                 network_mode="none",
-                read_only=False,
+                network_disabled=True,
+                read_only=True,
                 cap_drop=["ALL"],
                 cap_add=["CHOWN"],
-                security_opt=["no-new-privileges"],
+                security_opt=["no-new-privileges:true", "seccomp=builtin"],
+                pids_limit=64,
+                mem_limit=134_217_728,
+                memswap_limit=134_217_728,
+                nano_cpus=self.settings.sandbox_nano_cpus,
+                ipc_mode="private",
+                cgroupns="private",
+                log_config=LogConfig(type="none"),
+                restart_policy={"Name": "no"},
                 user="0:0",
                 volumes=mounts,
+                use_config_proxy=False,
                 labels={
                     "org.evil-repository.run": self.run_id,
                     "org.evil-repository.ephemeral": "true",
@@ -91,27 +202,69 @@ class DockerSandbox:
             )
             if ownership.exit_code != 0:
                 raise RuntimeError("Could not assign candidate workspace ownership")
-            self.container = self.client.containers.run(
+            runtime = self.settings.sandbox_runtime.strip()
+            candidate = self.client.containers.create(
                 self.settings.sandbox_image,
-                detach=True,
+                command=["sleep", "infinity"],
                 name=f"evil-run-{suffix}",
                 network_mode="none",
+                network_disabled=True,
                 read_only=True,
                 cap_drop=["ALL"],
-                security_opt=["no-new-privileges"],
+                security_opt=["no-new-privileges:true", "seccomp=builtin"],
                 pids_limit=self.settings.sandbox_pids_limit,
                 mem_limit=self.settings.sandbox_memory,
+                memswap_limit=self.settings.sandbox_memory,
                 nano_cpus=self.settings.sandbox_nano_cpus,
+                ipc_mode="private",
+                cgroupns="private",
+                init=True,
+                shm_size=33_554_432,
+                ulimits=[
+                    Ulimit(name="core", soft=0, hard=0),
+                    Ulimit(name="nofile", soft=1024, hard=1024),
+                ],
+                log_config=LogConfig(type="none"),
+                restart_policy={"Name": "no"},
                 user="1000:1000",
                 tmpfs={
                     "/tmp": "rw,noexec,nosuid,nodev,size=128m",
                 },
                 volumes=mounts,
+                runtime=runtime or None,
+                use_config_proxy=False,
                 labels={
                     "org.evil-repository.run": self.run_id,
                     "org.evil-repository.ephemeral": "true",
+                    "org.evil-repository.purpose": "untrusted-candidate",
                 },
             )
+            violations = candidate_isolation_violations(
+                candidate.attrs,
+                expected_volume=volume_name,
+            )
+            if violations:
+                raise RuntimeError(
+                    "Candidate container failed closed before start: "
+                    + ", ".join(violations)
+                )
+            candidate.start()
+            candidate.reload()
+            violations = candidate_isolation_violations(
+                candidate.attrs,
+                expected_volume=volume_name,
+            )
+            if violations:
+                raise RuntimeError(
+                    "Candidate container isolation changed after start: "
+                    + ", ".join(violations)
+                )
+            self.container = candidate
+        except BaseException:
+            if candidate is not None and self.container is None:
+                with suppress(docker.errors.NotFound):
+                    candidate.remove(force=True)
+            raise
         finally:
             if staging:
                 staging.remove(force=True)
@@ -178,23 +331,93 @@ class DockerSandbox:
     def write_file(self, call: ToolCall) -> ToolResult:
         path = safe_path(str(call.arguments.get("path", "")), allow_dot=False)
         content = str(call.arguments.get("content", ""))
-        parent = posixpath.dirname(str(path)) or "."
-        self._exec_argv(["mkdir", "-p", f"/workspace/{parent}"])
-        buffer = io.BytesIO()
-        with tarfile.open(fileobj=buffer, mode="w") as archive:
-            data = content.encode()
-            info = tarfile.TarInfo(name=posixpath.basename(str(path)))
-            info.size = len(data)
-            info.mode = 0o644
-            archive.addfile(info, io.BytesIO(data))
-        assert self.container is not None
-        ok = self.container.put_archive(f"/workspace/{parent}", buffer.getvalue())
-        return ToolResult(
+        data = content.encode()
+        if len(data) > 65_536:
+            return ToolResult(
+                call_id=call.call_id,
+                name=call.name,
+                status="denied",
+                output="Write exceeds the 64 KiB per-call limit",
+            )
+        encoded = base64.b64encode(data).decode("ascii")
+        script = """
+import base64
+import os
+import secrets
+import sys
+
+parts = sys.argv[1].split("/")
+directory_fd = os.open("/workspace", os.O_RDONLY | os.O_DIRECTORY)
+opened = [directory_fd]
+temporary = ""
+try:
+    for part in parts[:-1]:
+        try:
+            os.mkdir(part, 0o755, dir_fd=directory_fd)
+        except FileExistsError:
+            pass
+        next_fd = os.open(
+            part,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+            dir_fd=directory_fd,
+        )
+        opened.append(next_fd)
+        directory_fd = next_fd
+    temporary = f".evil-write-{secrets.token_hex(12)}"
+    output_fd = os.open(
+        temporary,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+        0o644,
+        dir_fd=directory_fd,
+    )
+    try:
+        payload = base64.b64decode(sys.argv[2], validate=True)
+        view = memoryview(payload)
+        while view:
+            written = os.write(output_fd, view)
+            view = view[written:]
+    finally:
+        os.close(output_fd)
+    os.replace(
+        temporary,
+        parts[-1],
+        src_dir_fd=directory_fd,
+        dst_dir_fd=directory_fd,
+    )
+    temporary = ""
+finally:
+    if temporary:
+        try:
+            os.unlink(temporary, dir_fd=directory_fd)
+        except FileNotFoundError:
+            pass
+    for descriptor in reversed(opened):
+        os.close(descriptor)
+"""
+        result = self._exec_argv(
+            ["python3", "-c", script, str(path), encoded],
             call_id=call.call_id,
             name=call.name,
-            status="ok" if ok else "error",
-            output=f"wrote {len(content.encode())} bytes to {path}" if ok else "write failed",
         )
+        if result.status == "ok":
+            result.output = f"wrote {len(data)} bytes to {path}"
+        return result
+
+    def security_posture(self) -> dict[str, object]:
+        return {
+            "rootless_daemon": True,
+            "candidate_user": "1000:1000",
+            "network_mode": "none",
+            "read_only_root": True,
+            "capabilities": "none",
+            "no_new_privileges": True,
+            "seccomp": "builtin",
+            "private_namespaces": ["ipc", "uts", "cgroup"],
+            "host_bind_mounts": 0,
+            "device_mappings": 0,
+            "docker_socket_mounted": False,
+            "runtime": self.settings.sandbox_runtime.strip() or "default",
+        }
 
     def exec_command(self, call: ToolCall) -> ToolResult:
         command = str(call.arguments.get("command", ""))

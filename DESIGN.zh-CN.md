@@ -93,6 +93,14 @@ flowchart LR
 宿主机绑定挂载、Provider 凭据和外部网络。生产风格能力全部由确定性的项目工具
 中转，不等于访问真实宿主机。
 
+候选创建采用拒绝式策略。Runner 会在启动前后分别验证 Rootless Daemon 模式、
+沙箱镜像契约标签和最终 Docker 配置。强制属性包括 UID/GID 1000、只读根目录、
+网络 `none`、能力集全部删除、`no-new-privileges`、内置 Seccomp、私有
+IPC/UTS/cgroup Namespace、受限内存/CPU/PID、禁用 Swap、无设备/端口/宿主挂载，
+以及唯一的单运行命名 tmpfs 工作区。Docker Client 的代理环境继承被关闭。
+模型发起的文件写入以候选 UID 执行，通过基于目录描述符且带 `O_NOFOLLOW` 的
+相对路径逐层打开；候选启动后绝不借用 Docker 归档解包写文件。
+
 可信控制平面的调用流程是：
 
 1. 请求所配置模型生成下一轮；
@@ -154,12 +162,15 @@ suites/<suite>/suite.yaml
     version
     family
     split: development | validation | held_out
-  leaderboard_policy
+  publication:
+    status: experimental | calibrated
+    note
 ```
 
-Loader 会验证每个 slug/version 引用，并根据活跃题族、held-out 题族和场景引用
-数量计算就绪状态。planned 内容不算 active。API 与 UI 必须展示真实就绪结果，
-不能通过文案把开发套件包装成排行榜。
+Loader 会验证每个 slug/version 引用，并报告实际题族、Split、场景和配置实例
+覆盖。发布成熟度是由校准证据支持、随 Suite 版本发布的显式维护者决策，不再由
+固定题数公式决定。API 与 UI 同时展示覆盖数据和发布说明。只有提供因果上独立且
+可客观评分任务的新 Scenario 才应加入；数量永远不是验收门槛。
 
 ## 6. 确定性、故障与离线信息
 
@@ -297,11 +308,12 @@ Cohort 版本的派生产物。
 
 ## 11. Provider 与执行模型
 
-控制平面明确支持六种不同适配器：
+控制平面明确支持七种不同适配器：
 
 - OpenAI Responses API；
 - Anthropic Messages API 或官方 Claude Agent SDK；
 - Codex 订阅版 Responses；
+- 官方 Antigravity CLI；
 - Google Gemini 原生 `generateContent`；
 - OpenAI-compatible Chat Completions；
 - Ollama Chat。
@@ -311,9 +323,11 @@ Cohort 版本的派生产物。
 最大输出和有界高级 JSON。
 
 认证是独立的按 Owner 隔离实体。`ProviderCredential` 保存加密 Payload、类型、
-非敏感账户提示、到期与验证状态；模型 Profile 只引用其 ID。支持静态 API Key、
-Claude Code OAuth、Codex OAuth 与 Gemini OAuth 四种类型。API 响应永远不序列化
-密文。旧版由 Profile 独占的 API Key 会在启动时幂等迁移成 Owner 级凭据。
+非敏感账户提示、到期与验证状态；模型 Profile 只引用其 ID。当前有效类型包括
+静态 API Key、Claude Code OAuth、Codex OAuth 与不含密文的 Antigravity CLI
+会话引用。API 响应永远不序列化密文。旧版由 Profile 独占的 API Key 会在启动时
+幂等迁移成 Owner 级凭据。历史 Gemini OAuth 枚举只为安全读取旧数据库而保留；
+新导入会在不发起网络请求的情况下被拒绝。
 
 Claude Code OAuth 只接受官方 `claude setup-token` 命令输出的长期令牌；平台不实现
 Claude.ai 授权端点。令牌只通过子进程环境变量交给镜像内置的官方 Python Agent
@@ -323,15 +337,26 @@ SDK。每个真实 Provider Turn 都使用全新的空配置目录，并强制 `
 候选工作区、故障脚本、暂停/取消边界、预算与遥测的唯一执行者。因此 Claude Code
 拿不到 Docker Socket、仓库挂载、Browser 网络或未被记录的备用工具路径。
 
-Codex OAuth 支持导入 Codex CLI `auth.json` 或绑定当前用户的设备登录；Gemini
-OAuth 支持导入 Gemini CLI `oauth_creds.json`，API Key 模式则使用标准 Generative
-Language 端点。刷新导入的 Gemini Token 所需 OAuth 客户端凭据只允许由部署环境
-配置，不会内置在源码中。Refresh Token 轮换在行锁下落库；认证被拒后最多强制
-刷新并重试一次。Codex 刷新请求使用官方 JSON 协议，并原子保存轮换后的 Refresh
-Token；导入的 `auth.json` 只是快照，不能当作多个客户端可安全共享的 Token
-存储。Codex OAuth Token 只能发往 OpenAI 认证域名或固定的
-`chatgpt.com/backend-api/codex`；Gemini OAuth Token 只能发往 Google OAuth 或
-固定 Code Assist 端点。Profile BaseURL 不能把两类 OAuth Token 重定向走。
+Codex OAuth 支持导入 Codex CLI `auth.json` 或绑定当前用户的设备登录。Refresh
+Token 轮换在行锁下落库；认证被拒后最多强制刷新并重试一次。Codex 刷新请求使用
+官方 JSON 协议，并原子保存轮换后的 Refresh Token；导入的 `auth.json` 只是快照，
+不能当作多个客户端可安全共享的 Token 存储。Codex OAuth Token 只能发往 OpenAI
+认证域名或固定的 `chatgpt.com/backend-api/codex`。原生 Gemini 只支持 API Key，
+并调用公开 Generative Language 端点。
+
+Antigravity 把官方 `agy` 可执行文件作为进程边界，而不是重新实现或反代它的私有
+传输协议。控制镜像按 `amd64` / `arm64` 下载锁定版本并校验 SHA-256；登录、刷新、
+账户模型目录与全部 Provider 请求都只由官方二进制负责。账户状态保存在专用
+Docker Named Volume 中；平台只保存不含密文的部署会话引用，绝不读取、解析、
+导出或复制 CLI Token。
+
+每次非交互推理前，平台只重写自己管理的安全设置与无工具 Agent 定义：
+`tools: []`、Strict 权限、文件/命令/URL/Unsandboxed/MCP 全拒绝列表、空工作区与
+最小子进程环境，防止 `agy` 形成不可观察的第二套工具平面。子进程不会继承
+`APP_SECRET`、`DATABASE_URL`、`DOCKER_HOST` 等控制面密钥。Runner 在容器内以
+Root 连接 Rootless Docker Socket 时，会先把 `agy` 降权到 `evil` 用户；超时会
+终止整个 CLI 进程组。候选可见的仓库、Browser、Git、数据库和事故动作仍只能走
+可审计的 Runner 工具。
 
 Codex OAuth Provisioning 还包含账户模型发现：控制平面使用账户 Access Token 与
 ChatGPT Account ID 请求固定的官方 `/backend-api/codex/models`，只接受
@@ -340,6 +365,12 @@ ChatGPT Account ID 请求固定的官方 `/backend-api/codex/models`，只接受
 稳定 Codex Client 版本通过无凭据 GitHub Release 请求按小时缓存，失败时使用随
 平台版本验证的回退值。OAuth 导入和设备登录由 WebUI 自动触发同步，认证中心保留
 显式重试入口。
+
+Antigravity Provisioning 则执行部署会话的公开 `agy models` 命令，并幂等创建
+匹配 Profile。每次运行首轮前都会做一次目录/认证预检，因此未登录或登录失效会
+快速失败，不会白白消耗多轮 Provider 重试。由于公开 Print 模式目前不返回机器
+可读 Token 用量，Antigravity 会明确把 Token 标记为不可用并拒绝 Token 预算；
+比较仍使用时间、工具调用和可选的真实 Provider 请求预算，不伪造估算值。
 
 Claude Code OAuth 会幂等创建官方 `opus`、`sonnet`、`haiku` 运行时别名，因为
 Anthropic Agent SDK 不提供公开的账户级模型目录；别名解析与套餐权限仍由
@@ -352,8 +383,8 @@ Profile 可以切换兼容凭据。删除模型配置会解除凭据引用并归
 运行里保留冻结的非敏感模型身份。凭据删除是独立破坏性操作：覆盖加密 Payload、
 归档记录，而且只要仍有 Profile 引用就必须拒绝。
 
-损坏工具参数绝不能按 `{}` 执行。可重试传输错误使用有界退避，每次真实 HTTP
-尝试都消耗 Provider 请求预算。
+损坏工具参数绝不能按 `{}` 执行。可重试传输错误使用有界退避；每次真实 HTTP
+尝试都会被计数，并在启用了成对请求限制时消耗该预算。
 
 Runner 是带有界进程内线程池的单例调度器。管理员可以在 1–16 之间动态修改并发，
 不会杀死活跃槽位。每个已领取运行独占沙箱、场景状态、Provider Client、对话、
@@ -390,7 +421,7 @@ Runner 对部署制品目录拥有写权限；API 只读挂载同一目录，让
 中英双语 React 控制台通过标准化 `/api/v1` 实体提供：
 
 - 登录、账户、注册和管理员后台；
-- Suite 就绪状态与场景目录；
+- Suite 发布状态、真实覆盖数据与场景目录；
 - 可编辑模型配置和详细参数；
 - 并发创建运行、暂停/继续、确认取消和结果软删除；
 - 实时 Agent 活动、当前工具/结果预览、事件新鲜度、预算、Completion 缺口和
@@ -408,7 +439,7 @@ UI 不能声称读取私有思维链。`model.request` 只表示 Runner 正在�
 平台、Suite、Scenario、SDK 与分析器版本相互独立：
 
 - 平台版本覆盖共享控制平面、Runner、API、UI 与 SDK 行为；
-- Suite 版本覆盖成员、Split 与就绪策略；
+- Suite 版本覆盖成员、Split、覆盖数据与发布状态；
 - Scenario 版本覆盖题目世界、真相、故障、工具、评分、Completion 和校准；
 - 分析器版本覆盖派生行为规则。
 

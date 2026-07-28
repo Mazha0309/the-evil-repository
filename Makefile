@@ -1,4 +1,4 @@
-.PHONY: bootstrap dev test lint build up deploy deploy-public deploy-safety-check production-check down sandbox sandbox-smoke scenario-validate challenge challenge-smoke challenge-terminal challenge-counterfeit preflight version-check
+.PHONY: bootstrap dev test lint build up deploy deploy-public deploy-safety-check production-check down sandbox sandbox-smoke scenario-validate challenge challenge-smoke challenge-terminal challenge-counterfeit preflight version-check antigravity-login antigravity-models
 
 SCENARIO ?= terminal-repository
 
@@ -72,3 +72,9 @@ deploy-public: preflight deploy-safety-check sandbox production-check
 
 down: deploy-safety-check
 	docker compose down
+
+antigravity-login:
+	docker compose exec --user evil runner python -m app.antigravity_cli login
+
+antigravity-models:
+	docker compose exec --user evil runner python -m app.antigravity_cli models

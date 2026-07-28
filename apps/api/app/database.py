@@ -32,14 +32,16 @@ def create_schema() -> None:
     if engine.dialect.name == "postgresql":
         connection = engine.connect().execution_options(isolation_level="AUTOCOMMIT")
         try:
-            for value in ("openai_responses", "anthropic", "codex", "gemini"):
+            for value in (
+                "openai_responses",
+                "anthropic",
+                "antigravity",
+                "codex",
+                "gemini",
+            ):
                 connection.execute(text(f"ALTER TYPE modelprovider ADD VALUE IF NOT EXISTS '{value}'"))
-            connection.execute(
-                text(
-                    "ALTER TYPE credentialkind "
-                    "ADD VALUE IF NOT EXISTS 'anthropic_oauth'"
-                )
-            )
+            connection.execute(text("ALTER TYPE credentialkind ADD VALUE IF NOT EXISTS 'antigravity_cli'"))
+            connection.execute(text("ALTER TYPE credentialkind ADD VALUE IF NOT EXISTS 'anthropic_oauth'"))
             connection.execute(text("ALTER TABLE model_profiles DROP CONSTRAINT IF EXISTS model_profiles_name_key"))
             connection.execute(
                 text(

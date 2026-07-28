@@ -30,8 +30,9 @@ services:
       SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-false}
       SESSION_TTL_HOURS: ${SESSION_TTL_HOURS:-168}
       SETUP_TOKEN: ${SETUP_TOKEN:-}
-      GEMINI_OAUTH_CLIENT_ID: ${GEMINI_OAUTH_CLIENT_ID:-}
-      GEMINI_OAUTH_CLIENT_SECRET: ${GEMINI_OAUTH_CLIENT_SECRET:-}
+      ANTIGRAVITY_BINARY: /usr/local/bin/agy
+      ANTIGRAVITY_HOME: /var/lib/evil-repository/antigravity-home
+      ANTIGRAVITY_WORKSPACE: /var/lib/evil-repository/antigravity-work
       RUNNER_ENABLED: "false"
       SCENARIOS_ROOT: /scenarios
     depends_on:
@@ -46,6 +47,7 @@ services:
       - "${API_BIND_HOST:-127.0.0.1}:${API_BIND_PORT:-8080}:8080"
     volumes:
       - ./artifacts:/var/lib/evil-repository/artifacts:ro
+      - antigravity-data:/var/lib/evil-repository/antigravity-home
     networks:
       - control
     restart: unless-stopped
@@ -57,8 +59,9 @@ services:
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://evil_repository:change-me@postgres:5432/evil_repository}
       APP_SECRET: ${APP_SECRET:-development-only-secret-change-me}
-      GEMINI_OAUTH_CLIENT_ID: ${GEMINI_OAUTH_CLIENT_ID:-}
-      GEMINI_OAUTH_CLIENT_SECRET: ${GEMINI_OAUTH_CLIENT_SECRET:-}
+      ANTIGRAVITY_BINARY: /usr/local/bin/agy
+      ANTIGRAVITY_HOME: /var/lib/evil-repository/antigravity-home
+      ANTIGRAVITY_WORKSPACE: /var/lib/evil-repository/antigravity-work
       DOCKER_HOST: unix:///var/run/docker.sock
       RUNNER_ENABLED: "true"
       SCENARIOS_ROOT: /scenarios
@@ -69,6 +72,7 @@ services:
       RUNNER_CONTEXT_EMERGENCY_CHARACTERS: ${RUNNER_CONTEXT_EMERGENCY_CHARACTERS:-120000}
       SEMANTIC_JUDGE_TIMEOUT: ${SEMANTIC_JUDGE_TIMEOUT:-120}
       SANDBOX_IMAGE: ${SANDBOX_IMAGE:-evil-repository-sandbox:local}
+      SANDBOX_RUNTIME: ${SANDBOX_RUNTIME:-}
       SANDBOX_MEMORY: ${SANDBOX_MEMORY:-268435456}
       SANDBOX_WORKSPACE_SIZE: ${SANDBOX_WORKSPACE_SIZE:-1536m}
       SANDBOX_NANO_CPUS: ${SANDBOX_NANO_CPUS:-500000000}
@@ -81,6 +85,7 @@ services:
     volumes:
       - ${ROOTLESS_DOCKER_SOCKET:-/run/user/1000/docker.sock}:/var/run/docker.sock
       - ./artifacts:/var/lib/evil-repository/artifacts
+      - antigravity-data:/var/lib/evil-repository/antigravity-home
     networks:
       - control
       - providers
@@ -114,3 +119,4 @@ networks:
 
 volumes:
   platform-data:
+  antigravity-data:

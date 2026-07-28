@@ -35,8 +35,9 @@ class Settings(BaseSettings):
     session_cookie_secure: bool = False
     session_ttl_hours: int = 168
     setup_token: str | None = None
-    gemini_oauth_client_id: str | None = None
-    gemini_oauth_client_secret: str | None = None
+    antigravity_binary: Path = Path("/usr/local/bin/agy")
+    antigravity_home: Path = Path("/var/lib/evil-repository/antigravity-home")
+    antigravity_workspace: Path = Path("/var/lib/evil-repository/antigravity-work")
     runner_enabled: bool = False
     runner_poll_seconds: float = 2.0
     runner_concurrency: int = Field(default=2, ge=1, le=16)
@@ -47,6 +48,7 @@ class Settings(BaseSettings):
 
     docker_host: str = "unix:///var/run/docker.sock"
     sandbox_image: str = "evil-repository-sandbox:local"
+    sandbox_runtime: str = ""
     sandbox_memory: int = 268_435_456
     sandbox_workspace_size: str = "1536m"
     sandbox_nano_cpus: int = 500_000_000

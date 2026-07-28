@@ -1,14 +1,15 @@
 """Versioned benchmark-suite manifests.
 
-A suite groups independent scenario families and public/held-out splits.  It
-does not duplicate scenario packages and it refuses to claim leaderboard
-readiness until the configured diversity thresholds are actually met.
+A suite groups independent scenario families and public/held-out splits. It
+does not duplicate scenario packages or turn an arbitrary scenario quota into
+a claim of statistical validity.
 """
 
 from __future__ import annotations
 
 from enum import StrEnum
 from pathlib import Path
+from typing import Literal
 
 import yaml
 from pydantic import BaseModel, Field, computed_field, model_validator
@@ -45,21 +46,25 @@ class SuiteScenarioReference(BaseModel):
     weight: float = Field(default=1.0, gt=0)
 
 
-class LeaderboardPolicy(BaseModel):
-    minimum_active_families: int = Field(default=5, ge=1)
-    minimum_held_out_families: int = Field(default=3, ge=1)
-    minimum_scenarios: int = Field(default=20, ge=1)
+class SuitePublicationStatus(StrEnum):
+    experimental = "experimental"
+    calibrated = "calibrated"
+
+
+class SuitePublication(BaseModel):
+    status: SuitePublicationStatus = SuitePublicationStatus.experimental
+    note: str
 
 
 class BenchmarkSuite(BaseModel):
-    schema_version: int = Field(default=1, ge=1)
+    schema_version: Literal[2] = 2
     slug: str = Field(pattern=r"^[a-z0-9][a-z0-9-]{2,127}$")
     version: str
     name: str
     description: str
     families: list[ScenarioFamily]
     scenarios: list[SuiteScenarioReference]
-    leaderboard: LeaderboardPolicy = Field(default_factory=LeaderboardPolicy)
+    publication: SuitePublication
     localizations: dict[str, dict[str, str]] = Field(default_factory=dict)
 
     @model_validator(mode="after")
@@ -83,7 +88,7 @@ class BenchmarkSuite(BaseModel):
 
     @computed_field
     @property
-    def readiness(self) -> dict[str, int | bool]:
+    def coverage(self) -> dict[str, int]:
         active = {
             family.id
             for family in self.families
@@ -96,19 +101,20 @@ class BenchmarkSuite(BaseModel):
             for item in self.scenarios
             if item.split == ScenarioSplit.held_out and item.family in active
         }
-        eligible = (
-            len(active_referenced) >= self.leaderboard.minimum_active_families
-            and len(held_out) >= self.leaderboard.minimum_held_out_families
-            and len(self.scenarios) >= self.leaderboard.minimum_scenarios
-        )
         return {
             "active_families": len(active_referenced),
             "held_out_families": len(held_out),
             "scenario_references": len(self.scenarios),
-            "required_active_families": self.leaderboard.minimum_active_families,
-            "required_held_out_families": self.leaderboard.minimum_held_out_families,
-            "required_scenarios": self.leaderboard.minimum_scenarios,
-            "leaderboard_eligible": eligible,
+            "development_references": sum(
+                item.split == ScenarioSplit.development for item in self.scenarios
+            ),
+            "validation_references": sum(
+                item.split == ScenarioSplit.validation for item in self.scenarios
+            ),
+            "held_out_references": sum(
+                item.split == ScenarioSplit.held_out for item in self.scenarios
+            ),
+            "configured_instances": sum(item.instances for item in self.scenarios),
         }
 
 

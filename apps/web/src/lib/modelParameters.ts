@@ -50,14 +50,18 @@ export function decomposeModelParameters(
 ): ModelParameterDraft {
   const rest = cloneObject(parameters);
   const draft = emptyModelParameterDraft();
-  draft.temperature = takeNumber(rest, "temperature");
-  draft.topP = takeNumber(rest, "top_p");
-  draft.maxOutputTokens = takeNumber(rest, maxTokensKey(provider));
+  if (provider !== "codex" && provider !== "antigravity") {
+    draft.temperature = takeNumber(rest, "temperature");
+    draft.topP = takeNumber(rest, "top_p");
+    draft.maxOutputTokens = takeNumber(rest, maxTokensKey(provider));
+  }
 
   if (provider === "openai_responses" || provider === "codex") {
     draft.reasoningEffort = takeNestedString(rest, "reasoning", "effort");
   } else if (provider === "anthropic") {
     draft.reasoningEffort = takeNestedString(rest, "output_config", "effort");
+  } else if (provider === "antigravity") {
+    draft.reasoningEffort = takeString(rest, "effort");
   } else if (provider === "gemini") {
     draft.reasoningEffort = takeNestedString(
       rest,
@@ -77,7 +81,11 @@ export function decomposeModelParameters(
     }
   }
 
-  if (provider !== "ollama" && provider !== "gemini") {
+  if (
+    provider !== "ollama" &&
+    provider !== "gemini" &&
+    provider !== "antigravity"
+  ) {
     draft.serviceTier = takeString(rest, "service_tier");
   }
   draft.advanced = JSON.stringify(rest, null, 2);
@@ -95,8 +103,11 @@ export function buildModelParameters(
       throw new Error(`"${key}" is managed by the Runner`);
     }
   }
+  if (provider === "antigravity" && Object.keys(parameters).length) {
+    throw new Error("Official agy supports only the reasoning effort field");
+  }
 
-  if (provider !== "codex") {
+  if (provider !== "codex" && provider !== "antigravity") {
     assignNumber(parameters, "temperature", draft.temperature, 0, 2);
     assignNumber(parameters, "top_p", draft.topP, 0, 1);
     assignInteger(parameters, maxTokensKey(provider), draft.maxOutputTokens, 1);
@@ -111,6 +122,8 @@ export function buildModelParameters(
       parameters.output_config = mergeNested(parameters.output_config, {
         effort: draft.reasoningEffort,
       });
+    } else if (provider === "antigravity") {
+      parameters.effort = draft.reasoningEffort;
     } else if (provider === "openai_compatible") {
       parameters.reasoning_effort = draft.reasoningEffort;
     } else if (provider === "gemini") {
@@ -130,7 +143,8 @@ export function buildModelParameters(
   if (
     draft.serviceTier &&
     provider !== "ollama" &&
-    provider !== "gemini"
+    provider !== "gemini" &&
+    provider !== "antigravity"
   ) {
     parameters.service_tier = draft.serviceTier;
   }
@@ -164,6 +178,9 @@ export function reasoningOptions(provider: ModelProvider): ParameterOption[] {
   if (provider === "ollama") {
     return ["off", "on", "low", "medium", "high"].map(option);
   }
+  if (provider === "antigravity") {
+    return ["low", "medium", "high"].map(option);
+  }
   if (provider === "gemini") {
     return ["minimal", "low", "medium", "high"].map(option);
   }
@@ -176,7 +193,12 @@ export function serviceTierOptions(provider: ModelProvider): ParameterOption[] {
   if (provider === "anthropic") {
     return ["standard", "priority"].map(option);
   }
-  if (provider === "ollama" || provider === "gemini") return [];
+  if (
+    provider === "ollama" ||
+    provider === "gemini" ||
+    provider === "antigravity"
+  )
+    return [];
   return ["auto", "default", "flex", "priority"].map(option);
 }
 
@@ -186,11 +208,13 @@ export function parameterFieldNames(provider: ModelProvider) {
       ? "reasoning.effort"
       : provider === "anthropic"
         ? "output_config.effort"
-        : provider === "gemini"
-          ? "thinking_config.thinkingLevel"
-        : provider === "openai_compatible"
-          ? "reasoning_effort"
-          : "think";
+        : provider === "antigravity"
+          ? "effort"
+          : provider === "gemini"
+            ? "thinking_config.thinkingLevel"
+            : provider === "openai_compatible"
+              ? "reasoning_effort"
+              : "think";
   return {
     effort,
     maxOutputTokens: maxTokensKey(provider),

@@ -27,9 +27,6 @@ CODEX_DEVICE_VERIFY_URL = "https://auth.openai.com/codex/device"
 CODEX_DEVICE_REDIRECT_URI = "https://auth.openai.com/deviceauth/callback"
 CODEX_TOKEN_URL = "https://auth.openai.com/oauth/token"
 
-GEMINI_TOKEN_URL = "https://oauth2.googleapis.com/token"
-GEMINI_CODE_ASSIST_URL = "https://cloudcode-pa.googleapis.com/v1internal"
-
 MAX_IMPORT_BYTES = 65_536
 TOKEN_REFRESH_WINDOW = timedelta(minutes=5)
 OAUTH_TIMEOUT_SECONDS = 20
@@ -112,7 +109,10 @@ def normalize_import(
     if kind == CredentialKind.codex_oauth:
         return normalize_codex_auth_document(document)
     if kind == CredentialKind.gemini_oauth:
-        return normalize_gemini_auth_document(document)
+        raise CredentialError(
+            "gemini_oauth_import_retired",
+            "Gemini CLI OAuth import was retired; sign in with the official Antigravity CLI bundled in the deployment",
+        )
     raise CredentialError(
         "credential_import_kind_invalid",
         "This credential kind must be entered as a secret rather than imported as JSON",
@@ -157,31 +157,6 @@ def normalize_codex_auth_document(
         "last_refresh": _optional_string(document.get("last_refresh")),
     }
     return payload, email or mask_identifier(account_id), expires_at
-
-
-def normalize_gemini_auth_document(
-    document: dict[str, Any],
-) -> tuple[dict[str, Any], str | None, datetime | None]:
-    access_token = _optional_string(document.get("access_token"))
-    refresh_token = _optional_string(document.get("refresh_token"))
-    if not refresh_token:
-        raise CredentialError(
-            "gemini_refresh_token_missing",
-            "Gemini oauth_creds.json does not contain refresh_token",
-        )
-    expires_at = parse_gemini_expiry(document.get("expiry_date"))
-    payload = {
-        "access_token": access_token,
-        "refresh_token": refresh_token,
-        "token_type": _optional_string(document.get("token_type")) or "Bearer",
-        "scope": _optional_string(document.get("scope")),
-        "expiry_date": (int(expires_at.timestamp() * 1000) if expires_at is not None else None),
-        "project_id": _optional_string(
-            document.get("project_id") or document.get("quota_project_id") or document.get("cloudaicompanionProject")
-        ),
-    }
-    hint = _optional_string(document.get("email"))
-    return payload, hint, expires_at
 
 
 def resolve_model_credential(
@@ -244,7 +219,11 @@ def mark_model_credential_needs_reauth(
         if (
             credential is None
             or credential.archived_at is not None
-            or credential.kind != CredentialKind.anthropic_oauth
+            or credential.kind
+            not in {
+                CredentialKind.anthropic_oauth,
+                CredentialKind.antigravity_cli,
+            }
         ):
             return
         credential.status = CredentialStatus.needs_reauth
@@ -283,6 +262,31 @@ def resolve_credential(
         credential.last_error_code = None
         return ResolvedCredential(kind=credential.kind, token=token)
 
+    if credential.kind == CredentialKind.antigravity_cli:
+        if payload.get("session_scope") != "deployment":
+            raise CredentialError(
+                "antigravity_session_invalid",
+                "The Antigravity CLI session reference is invalid",
+            )
+        credential.status = CredentialStatus.ready
+        credential.last_validated_at = datetime.now(UTC)
+        credential.last_error_code = None
+        # Authentication stays inside agy's persistent home. This empty value
+        # is an internal transport marker, never a bearer token.
+        return ResolvedCredential(kind=credential.kind, token="")
+
+    if credential.kind == CredentialKind.gemini_oauth:
+        _mark_credential_error(
+            credential,
+            CredentialStatus.needs_reauth,
+            "gemini_oauth_import_retired",
+        )
+        raise CredentialError(
+            "gemini_oauth_import_retired",
+            "Imported Gemini CLI OAuth credentials are no longer used; attach "
+            "the official Antigravity CLI session instead",
+        )
+
     if force_refresh or credential_needs_refresh(credential, payload):
         payload = refresh_oauth_credential(
             credential,
@@ -314,22 +318,9 @@ def resolve_credential(
             account_id=account_id,
         )
 
-    project_id = _optional_string(payload.get("project_id"))
-    if not project_id:
-        project_id = discover_gemini_project(token, client=client)
-        payload["project_id"] = project_id
-        credential.encrypted_payload = encode_payload(payload)
-        credential.last_validated_at = datetime.now(UTC)
-        credential.status = CredentialStatus.ready
-        credential.last_error_code = None
-    else:
-        credential.last_validated_at = datetime.now(UTC)
-        credential.status = CredentialStatus.ready
-        credential.last_error_code = None
-    return ResolvedCredential(
-        kind=credential.kind,
-        token=token,
-        project_id=project_id,
+    raise CredentialError(
+        "oauth_kind_unsupported",
+        "This OAuth credential kind is not supported",
     )
 
 
@@ -383,19 +374,6 @@ def refresh_oauth_credential(
                     "Accept": "application/json",
                     "Content-Type": "application/json",
                 },
-            )
-        elif credential.kind == CredentialKind.gemini_oauth:
-            client_id, client_secret = gemini_oauth_client_credentials()
-            form = {
-                "grant_type": "refresh_token",
-                "refresh_token": refresh_token,
-                "client_id": client_id,
-                "client_secret": client_secret,
-            }
-            response = http.post(
-                GEMINI_TOKEN_URL,
-                data=form,
-                headers={"Accept": "application/json"},
             )
         else:
             raise CredentialError(
@@ -486,9 +464,6 @@ def refresh_oauth_credential(
         if isinstance(expires_in, (int, float)) and not isinstance(expires_in, bool)
         else jwt_expiry(access_token)
     )
-    if credential.kind == CredentialKind.gemini_oauth and expires_at is not None:
-        payload["expiry_date"] = int(expires_at.timestamp() * 1000)
-
     credential.encrypted_payload = encode_payload(payload)
     credential.expires_at = expires_at
     credential.last_refreshed_at = now
@@ -496,62 +471,6 @@ def refresh_oauth_credential(
     credential.status = CredentialStatus.ready
     credential.last_error_code = None
     return payload
-
-
-def discover_gemini_project(
-    access_token: str,
-    *,
-    client: httpx.Client | None = None,
-) -> str:
-    owns_client = client is None
-    http = client or httpx.Client(timeout=OAUTH_TIMEOUT_SECONDS)
-    try:
-        response = http.post(
-            f"{GEMINI_CODE_ASSIST_URL}:loadCodeAssist",
-            headers={
-                "Authorization": f"Bearer {access_token}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "metadata": {
-                    "ideType": "IDE_UNSPECIFIED",
-                    "platform": "PLATFORM_UNSPECIFIED",
-                    "pluginType": "GEMINI",
-                }
-            },
-        )
-    except httpx.TransportError as exc:
-        raise CredentialError(
-            "gemini_code_assist_unreachable",
-            "Gemini Code Assist could not be reached",
-        ) from exc
-    finally:
-        if owns_client:
-            http.close()
-    if response.status_code in {401, 403}:
-        raise CredentialError(
-            "gemini_oauth_rejected",
-            "Gemini rejected the imported OAuth credential",
-        )
-    if not 200 <= response.status_code < 300:
-        raise CredentialError(
-            f"gemini_code_assist_http_{response.status_code}",
-            f"Gemini Code Assist returned HTTP {response.status_code}",
-        )
-    try:
-        body = response.json()
-    except ValueError as exc:
-        raise CredentialError(
-            "gemini_code_assist_response_invalid",
-            "Gemini Code Assist returned invalid JSON",
-        ) from exc
-    project_id = _optional_string(body.get("cloudaicompanionProject"))
-    if project_id:
-        return project_id
-    raise CredentialError(
-        "gemini_onboarding_required",
-        "Open Gemini CLI once to complete account onboarding, then reimport oauth_creds.json",
-    )
 
 
 def validate_credential_compatibility(
@@ -563,13 +482,15 @@ def validate_credential_compatibility(
             "credential_kind_mismatch",
             "Codex subscription profiles require a Codex OAuth credential",
         )
-    if provider == ModelProvider.gemini and kind not in {
-        CredentialKind.api_key,
-        CredentialKind.gemini_oauth,
-    }:
+    if provider == ModelProvider.antigravity and kind != CredentialKind.antigravity_cli:
         raise CredentialError(
             "credential_kind_mismatch",
-            "Gemini profiles require an API key or Gemini OAuth credential",
+            "Antigravity profiles require the deployment's official CLI session",
+        )
+    if provider == ModelProvider.gemini and kind != CredentialKind.api_key:
+        raise CredentialError(
+            "credential_kind_mismatch",
+            "Gemini native API profiles require an API key",
         )
     if provider == ModelProvider.anthropic and kind not in {
         CredentialKind.api_key,
@@ -579,11 +500,16 @@ def validate_credential_compatibility(
             "credential_kind_mismatch",
             "Anthropic profiles require an API key or Claude Code OAuth credential",
         )
-    if provider not in {
-        ModelProvider.anthropic,
-        ModelProvider.codex,
-        ModelProvider.gemini,
-    } and kind != CredentialKind.api_key:
+    if (
+        provider
+        not in {
+            ModelProvider.anthropic,
+            ModelProvider.antigravity,
+            ModelProvider.codex,
+            ModelProvider.gemini,
+        }
+        and kind != CredentialKind.api_key
+    ):
         raise CredentialError(
             "credential_kind_mismatch",
             "This Provider protocol requires an API key credential",
@@ -749,24 +675,17 @@ def poll_codex_device_flow(
     return "complete", payload, hint, token_expires_at
 
 
-def gemini_oauth_client_credentials() -> tuple[str, str]:
-    settings = get_settings()
-    client_id = (settings.gemini_oauth_client_id or "").strip()
-    client_secret = (settings.gemini_oauth_client_secret or "").strip()
-    if not client_id or not client_secret:
-        raise CredentialError(
-            "gemini_oauth_client_not_configured",
-            "Gemini OAuth refresh requires GEMINI_OAUTH_CLIENT_ID and "
-            "GEMINI_OAUTH_CLIENT_SECRET on both the API and Runner",
-        )
-    return client_id, client_secret
-
-
 def create_api_key_payload(secret: str) -> dict[str, str]:
     value = secret.strip()
     if not value:
         raise CredentialError("api_key_missing", "API key cannot be empty")
     return {"secret": value}
+
+
+def create_antigravity_cli_payload() -> dict[str, str]:
+    """Create a non-secret reference to the deployment-owned agy session."""
+
+    return {"session_scope": "deployment"}
 
 
 def create_anthropic_oauth_payload(secret: str) -> dict[str, str]:
@@ -826,20 +745,6 @@ def decode_jwt_claims(token: str | None) -> dict[str, Any] | None:
     except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
         return None
     return claims if isinstance(claims, dict) else None
-
-
-def parse_gemini_expiry(value: Any) -> datetime | None:
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, (int, float)):
-        timestamp = float(value)
-        if timestamp > 10_000_000_000:
-            timestamp /= 1000
-        try:
-            return datetime.fromtimestamp(timestamp, UTC)
-        except (OverflowError, OSError, ValueError):
-            return None
-    return _parse_datetime(value)
 
 
 def _decode_flow_token(value: str) -> dict[str, Any]:

@@ -21,16 +21,16 @@ Graph、行为画像、离散错误统计、资源账本、Agent 执行图和调
 
 ## 当前状态
 
-平台当前版本为 **v0.12.1**，仍在积极开发，发布记录见
+平台当前版本为 **v0.13.0**，仍在积极开发，发布记录见
 [`CHANGELOG.md`](CHANGELOG.md)。本版包含两个独立版本的场景、账户隔离、
 管理员控制台、服务器监控、实时 Agent 活动控制台，以及完整的执行、遥测、评分、
 行为分析和可视化链路。
 
 仓库内置的「生产事故工程套件」目前拥有
-**两个公开开发场景、两个活跃题族**。其策略要求至少 20 个场景引用、五个活跃
-题族，并包含三个 held-out 题族后，才允许宣称具备排行榜资格。WebUI 与
-`/suites` API 会如实显示 `2/5`、`0/3`、`2/20`。因此当前版本适合做深入工程
-分析，但**还不是统计上有效的通用模型总榜**。
+**两个公开开发场景、两个活跃题族**，并明确标为实验性小样本套件。WebUI 与
+`/suites` API 展示真实的题族、Split、场景和实例覆盖，不再设置任意的场景数量
+指标。对外结果应注明准确版本、种子和重复次数；只有新题提供独立、可客观评分的
+因果工作时才加入，不能为了凑数降低质量。
 
 长时间调查可以在 Provider/工具安全边界暂停并继续，不会丢弃候选工作区或对话；
 暂停时间不消耗配置的硬运行预算。暂停状态仍由当前 Runner 进程保管，并不意味着
@@ -40,7 +40,7 @@ Graph、行为画像、离散错误统计、资源账本、Agent 执行图和调
 不会偷偷按空参数调用工具。整批混合工具调用都会被隔离，写入可审计的
 `provider.tool_call_invalid` 事件，再要求模型用全新调用修复。Provider 的读取
 超时、连接错误与传输协议错误采用有界退避重试；每次真实 HTTP 尝试仍计入
-Provider 请求预算。
+已启用的 Provider 请求预算。关闭限制后，请求次数仍会完整记录。
 
 长任务上下文会在传输前受控收缩。达到软字符阈值时，Runner 会根据候选模型显式
 记录的 Hypothesis/Evidence Graph、操作账本以及最近一组协议配对完整的工具消息，
@@ -57,12 +57,13 @@ Provider 内容策略拒绝也会与传输错误、上下文超限分开处理�
 再清理容器。检查点包含完整事件流、仓库 Diff/Status、限长调查产物、场景审计、
 资源账本和失败摘要。它是可回放证据，不是可继续生成的模型对话。
 
-当前控制平面支持六种明确的模型协议：
+当前控制平面支持七种明确的模型协议：
 
 - OpenAI Responses API；
 - Anthropic Messages API（Console API Key）或官方 Claude Agent SDK
   （Claude Code OAuth）；
 - Codex 订阅版 Responses；
+- 官方 Antigravity CLI；
 - Google Gemini 原生 `generateContent`；
 - OpenAI-compatible Chat Completions；
 - Ollama Chat。
@@ -70,18 +71,16 @@ Provider 内容策略拒绝也会与传输错误、上下文超限分开处理�
 品牌相似不代表协议相同；Runner 会按真实 Wire Contract 分别转换消息、工具调用、
 错误、推理参数和 Token 用量。
 
-Provider 认证现在是按账户隔离的独立凭据中心。一份加密 API Key 可以供多个模型
-配置复用；Anthropic 可以使用 Console API Key，或粘贴
-`claude setup-token` 生成的长期令牌；Codex 可以导入 Codex CLI 的 `auth.json`，
-也可以直接使用设备登录；Gemini 可以使用 API Key，或导入 Gemini CLI 的
-`oauth_creds.json`。OAuth 密文绝不会进入候选容器、事件、工具结果和运行归档。
-Claude Code Token 只交给镜像内置的官方 Agent SDK；Codex Token 只能发往 OpenAI
-官方认证/Codex 域名，Gemini Token 只能发往 Google OAuth/Code Assist 域名。
+Provider 认证通常保存在按账户隔离的凭据中心。一份加密 API Key 可以供多个模型
+配置复用；Anthropic 可以使用 Console API Key 或 `claude setup-token` 生成的
+长期令牌；Codex 可以导入 Codex CLI 的 `auth.json` 或直接设备登录；原生 Gemini
+使用 API Key。Antigravity 是刻意保留的例外：整个部署只有一份管理员持有的会话，
+且只由官方 `agy` 二进制保存在持久化 Docker 数据卷中。平台不导入、不解析、不刷新
+该 Token，也不会自己反代私有 Code Assist 接口。
 
-Codex OAuth 登录或导入完成后，控制平面会从账户级官方模型目录获取当前可选模型，
-并幂等创建启用的模型配置；隐藏模型不会进入测试选择器。认证中心也提供“同步模型”
-操作，用于获取后续新增模型。模型目录请求使用最新稳定 Codex Client 版本并在版本
-查询不可用时回退到随发布验证过的版本。
+Codex 登录后，控制平面会从账户级官方模型目录获取当前可选模型并幂等创建 Profile；
+Antigravity 同步则直接执行已登录会话的 `agy models`。隐藏或当前账户不可用的模型
+不会进入测试选择器。
 
 模型配置创建后可以继续编辑，并可切换兼容的已保存凭据。中英双语参数面板可配置
 温度、Top P、最大输出 Token、推理/思考挡位与服务挡位，并按所选协议映射到正确
@@ -135,7 +134,7 @@ Runner 现在可同时执行多次彼此独立的测试，默认提供两个槽�
 
 ## 内置场景
 
-- **[终焉仓库 3.0.5](scenarios/terminal-repository/DESIGN.zh-CN.md)** —
+- **[终焉仓库 3.0.6](scenarios/terminal-repository/DESIGN.zh-CN.md)** —
   跨仓库协议回归，包含脏数据库、污染 CI、间歇运行时、八张事故票据、七个独立
   Relay 缺陷和 180/360 分钟执行包络。
 - **[赝品发布 1.0.0](scenarios/counterfeit-release/DESIGN.zh-CN.md)** —
@@ -150,7 +149,7 @@ Browser 结果互相冲突；第二个仓库与关键提交提供独立来源；
 `browser.open`、`browser.find` 使用，候选模型不能通过遍历复制到工作区的
 Mirror 目录绕过 Browser 行为评测。
 
-终焉仓库 3.0.5 让规模本身进入有效调查面：五条真实中继链包含 704 个不透明执行
+终焉仓库 3.0.6 让规模本身进入有效调查面：五条真实中继链包含 704 个不透明执行
 Cell，七个独立损坏必须同时修复，修六个仍然失败。双仓库精确包含 5,000 个跟踪
 文件、2,000 次提交、40 个语义托管 Checkpoint、七道客观推理门、新旧依赖冲突、
 一个未知恢复二进制、损坏缓存，以及约 100 MiB 离线材料。所有关键过渡都会修改
@@ -165,7 +164,7 @@ Cell，七个独立损坏必须同时修复，修六个仍然失败。双仓库�
 后续场景还可以显式启用 `ps`、`systemctl`、`journalctl`、`lsof`/socket 检查、
 `strace` 与 `perf` 的确定性项目中转等价工具。它们只观察模拟事故状态，绝不附加
 真实宿主机进程或暴露真实网络包；采集器、时钟域、有效信号和干扰项都可重放。
-「终焉仓库 3.0.5」保持冻结，不会被追加入这些新工具。
+「终焉仓库 3.0.6」保持冻结，不会被追加入这些新工具。
 
 候选模型必须留下可观察的调查过程，不能只猜一个补丁就交卷。Scenario completion
 gate 会在接受普通 Final 之前，要求显式假设、至少一个已否决假设、相互链接的证据、
@@ -191,12 +190,13 @@ Mutation、Runtime 与全新数据库 Golden Replay。
 难度必须来自不可省略的证据工作、冲突来源、对脚本化故障的有界恢复和隐藏验收。
 一旦强 Agent 找到实质捷径，就应升级场景版本并重新校准。
 
-事故中的 180 tick 是确定性逻辑回放步数，不是 180 分钟墙上时间。真实执行默认
-现为 180 分钟软告警、360 分钟硬观察包络，并提供 600/2,200 次工具调用与
-300/720 次真实 Provider 请求。硬限制是安全边界，不是目标时长，更不会强迫模型
-等待。
+事故中的 180 tick 是确定性逻辑回放步数，不是 180 分钟墙上时间。终焉仓库
+3.0.6 默认采用 180 分钟软告警、360 分钟硬观察包络和 600/2,200 次工具调用。
+真实 Provider 请求仍会完整计数，但默认不限量；需要容量保护时，部署者可为单次
+运行重新填写成对的软/硬请求限制。其余硬限制是安全边界，不是目标时长，更不会
+强迫模型等待。
 
-当有效时间、工具调用、Provider 请求或已启用的 Token 预算任一进入硬限制的最后
+当有效时间、工具调用，或已启用的 Provider 请求/Token 预算任一进入硬限制的最后
 20% 时，Runner 会向候选模型发送且只发送一次可信的最终收尾催促。消息会明确给出
 剩余资源和当前完成契约缺口，要求模型停止扩散调查、保存最强的证据与修复、完成
 最高价值的缺失验证并在硬截止前提交。该事件完整可审计，不会放宽完成门或延长
@@ -279,7 +279,8 @@ Provider 请求；小型主机或 API 限流较低时应主动调低。HTTP 408/
 
 Node.js 22+、pnpm、Python 3.12+ 和 uv 只在宿主机参与开发时需要；一键部署会在
 容器内构建应用依赖。控制镜像已经包含官方 Claude Agent SDK 与原生运行时，使用
-Claude Code OAuth 不要求服务器额外安装 Claude 或 Node。
+Claude Code OAuth 不要求服务器额外安装 Claude 或 Node；镜像也已经内置并锁定
+官方 `agy`，使用 Antigravity 不要求宿主机另装 CLI。
 
 全新数据库首次打开时会进入初始管理员创建页面。如果初始化期间服务可能被其他人
 访问，请在启动前设置 `SETUP_TOKEN`。公开注册默认关闭，管理员可在后台即时开关，
@@ -324,29 +325,39 @@ WebUI 默认使用简体中文，可以从右上角切换到英文。UI 和 API 
   会轮换；导入快照后若 Codex CLI 继续使用自己的副本，两边之后可能互相使对方
   失效。长期独立运行建议使用设备登录。导入成功后同样自动同步可选模型；认证
   中心可随时安全重试目录同步。
-- **Gemini JSON 导入：** 先在 Gemini CLI 完成 OAuth 与账户 Onboarding，再上传
-  `~/.gemini/oauth_creds.json`。新版 Gemini CLI 可能把凭据放进系统 Keychain，
-  因而没有 JSON 文件；除非手里确实有可导入文件，否则直接使用 Gemini API Key。
-  导入的 Refresh Token 还要求部署者配置签发该 Token 时使用的
-  `GEMINI_OAUTH_CLIENT_ID` 与 `GEMINI_OAUTH_CLIENT_SECRET`；项目不会内置或公开
-  第三方 OAuth 客户端凭据。
+- **官方 Antigravity CLI：** 部署镜像构建完成后，在服务器上执行
+  `make antigravity-login`，打开官方 `agy` 打印的地址，并把网页返回的授权码
+  粘贴回终端。随后进入**认证中心 → Antigravity CLI**，挂接该部署会话并同步
+  可用模型；`make antigravity-models` 可执行只读目录检查。这是一份全部署共享、
+  仅管理员可挂接的会话，不是每个 WebUI 账户各自登录。镜像锁定官方 `agy`
+  1.1.7，支持 `amd64` / `arm64`，构建时会校验发布包 SHA-256。参考 Google
+  [CLI 认证说明](https://antigravity.google/docs/cli/install)与
+  [官方发布仓库](https://github.com/google-antigravity/antigravity-cli)。
 
-Claude Code 与 Codex OAuth 自动生成的模型配置都会直接出现在新建测试的候选
-模型与裁判列表中，无需再手工输入模型 ID。Claude Code OAuth 通过官方 Agent SDK
+Claude Code、Codex OAuth 与 Antigravity 自动生成的模型配置都会直接出现在新建
+测试的候选模型与裁判列表中，无需再手工输入模型 ID。Claude Code OAuth 通过官方 Agent SDK
 运行，并禁用全部内置工具、设置来源、Skill、Plugin、MCP 与会话持久化；它只能
 输出符合 Schema 的下一步动作，仓库、Git、数据库、Browser 与事故工具仍全部由
-EvilBench 执行和审计。Gemini OAuth 选择 **Google Gemini 原生 API**并绑定匹配
-凭据；Gemini API Key 使用标准 Generative Language 端点，Gemini OAuth 使用
-Code Assist 端点，并可能要求 Gemini CLI 已经完成账户初始化。UI 与 API 都会
-拒绝不兼容组合。
+EvilBench 执行和审计。Antigravity 使用空工作区、`tools: []` 管理 Agent 与
+本地权限全拒绝配置；只有结构化的下一步动作能返回 Runner。登录、Token 刷新、
+模型目录与全部 Provider 请求都由官方 CLI 自己完成。原生 Gemini API Key 仍调用
+公开 Generative Language 端点；旧 Gemini OAuth JSON 导入会被拒绝，历史凭据行
+只会安全标记为需要重新认证，不再发起网络请求。
 
-Setup Token、`auth.json` 与 `oauth_creds.json` 的安全等级都等同密码。只能保存
-到你自己控制的 EvilBench 实例；必须长期保管同一份 `APP_SECRET`，远程部署必须
-使用 HTTPS。Anthropic 虽然把 `claude setup-token` 用于 CI 与脚本，但也
+官方 `agy` 的 Print 模式目前不提供机器可读 Token 用量，所以 Antigravity 运行会
+明确显示 Token“不可用”，也不能配置 Token 预算；时间和工具调用预算仍正常执行，
+实际 Provider 请求限制为可选。平台不会伪造 Token 估算值。
+
+Setup Token 与 `auth.json` 的安全等级都等同密码。虽然平台不会读取 Antigravity
+会话数据卷，它仍应按密码级资产保护。只能保存到你自己控制的 EvilBench 实例；
+必须长期保管同一份 `APP_SECRET`，远程部署必须使用 HTTPS。Anthropic 虽然把
+`claude setup-token` 用于 CI 与脚本，但也
 [明确禁止第三方服务提供 Claude.ai 登录，或代用户转发 Free/Pro/Max 凭据](https://code.claude.com/docs/en/legal-and-compliance)。
 因此该集成只面向个人自托管或组织内部部署；公开第三方服务必须改用 Anthropic
 Console API Key 或受支持云 Provider。Codex 订阅认证与 Platform API Key 同样是
-两种不同能力，部署者仍需确认账户与组织策略。
+两种不同能力，部署者仍需确认账户与组织策略。Antigravity 订阅会话同样受 Google
+当前账户和服务条款约束；不要把个人的全部署会话挂到面向不可信用户的公开多租户
+服务。
 
 ## 对外部署
 
@@ -370,9 +381,11 @@ make deploy-public
 make down
 ```
 
-该命令会停止并移除应用容器与 Compose 网络，但保留 PostgreSQL 数据卷。以后再次
-执行 `make deploy`，现有账户、设置和 Benchmark 数据仍会保留。存在排队或活跃
-任务时该命令会拒绝执行；只有明确准备放弃这些任务时，才使用
+该命令会停止并移除应用容器与 Compose 网络，但保留 PostgreSQL 与
+`antigravity-data` 数据卷。以后再次执行 `make deploy`，现有账户、设置、
+Benchmark 数据和官方 CLI 登录都会保留。`docker compose down -v` 会同时删除
+两个数据卷并让该部署退出 Antigravity；使用前先备份确实需要保留的内容。存在排队
+或活跃任务时该命令会拒绝执行；只有明确准备放弃这些任务时，才使用
 `ALLOW_ACTIVE_RUN_DISRUPTION=1 make down`。
 
 ## 仓库结构
@@ -380,7 +393,7 @@ make down
 ```text
 apps/web/                  React/TypeScript 控制台
 apps/api/                  FastAPI API、Worker、Runner 与评分器
-suites/                    版本化题族/数据划分 Manifest 与就绪策略
+suites/                    版本化题族/数据划分 Manifest 与发布状态
 scenarios/                 版本化 Scenario SDK 包、隐藏真相与合成语料
 infra/sandbox/             无网络候选环境镜像
 docs/                      架构、威胁模型与场景编写文档
@@ -409,8 +422,15 @@ docs/                      架构、威胁模型与场景编写文档
 ## 安全模型
 
 Rootless Docker 是实用且较强的本机隔离边界，但共享内核容器不是对所有逃逸漏洞
-的数学证明。Runner 始终把候选代码视为不可信内容，不挂载宿主机工作区，并在
-跨边界传递归档与路径时执行验证。详见
+的数学证明。Runner 始终把候选代码视为不可信内容；只有 Docker Daemon 明确报告
+Rootless 模式、沙箱镜像声明正确隔离契约时才会继续。任何不可信进程启动前，
+Runner 都会拒绝式检查：非 Root 用户、无网络、只读根文件系统、能力集清零、
+`no-new-privileges`、内置 Seccomp、私有 Namespace、资源限制、唯一命名 tmpfs
+工作区，以及无端口、设备、宿主机绑定挂载和 Docker Socket。模型请求写文件时，
+由候选 UID 使用基于目录描述符且不跟随符号链接的路径写入，不再借用高权限 Docker
+归档解包。若要向互不信任的公网租户开放任意代码执行，仍应通过
+`SANDBOX_RUNTIME` 配置兼容隔离运行时，或在外层增加专用 VM/microVM；共享内核
+容器本身不能替代这层边界。详见
 [`docs/threat-model.md`](docs/threat-model.md)。
 
 ## 许可证

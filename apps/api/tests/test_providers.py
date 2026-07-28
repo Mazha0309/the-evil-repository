@@ -4,10 +4,12 @@ import httpx
 import pytest
 from claude_agent_sdk import ResultMessage
 
+from app.antigravity_cli import AntigravityModel, AntigravityResult
 from app.credentials import ResolvedCredential
 from app.models import CredentialKind, ModelProfile, ModelProvider
 from app.runner.providers import (
     ModelClient,
+    ProviderAuthenticationError,
     ProviderContextLengthError,
     ProviderPolicyRejectionError,
     ProviderResponseError,
@@ -171,9 +173,7 @@ def test_non_object_native_tool_arguments_are_quarantined() -> None:
     turn = client.complete(MESSAGES, TOOLS)
 
     assert turn.tool_calls == []
-    assert turn.invalid_tool_calls[0].error == (
-        "tool arguments must decode to a JSON object"
-    )
+    assert turn.invalid_tool_calls[0].error == ("tool arguments must decode to a JSON object")
 
 
 def test_anthropic_adapter_normalizes_tool_blocks_and_usage() -> None:
@@ -657,12 +657,14 @@ def test_codex_oauth_is_pinned_to_official_backend_and_strips_sampling() -> None
             "reasoning": {"effort": "high"},
         },
     )
+
     def resolver(**_kwargs) -> ResolvedCredential:
         return ResolvedCredential(
             CredentialKind.codex_oauth,
             "codex-token",
             account_id="account-123",
         )
+
     client = ModelClient(model, None, credential_resolver=resolver)
     client.client = httpx.Client(transport=httpx.MockTransport(handler))
 
@@ -716,11 +718,7 @@ def test_codex_retries_transient_error_inside_successful_sse(
             }
             return httpx.Response(
                 200,
-                text=(
-                    "event: response.failed\n"
-                    f"data: {json.dumps(failed)}\n\n"
-                    "data: [DONE]\n\n"
-                ),
+                text=(f"event: response.failed\ndata: {json.dumps(failed)}\n\ndata: [DONE]\n\n"),
             )
         output_item = {
             "type": "response.output_item.done",
@@ -783,10 +781,7 @@ def test_codex_retries_transient_error_inside_successful_sse(
             "maximum_attempts": 3,
             "delay_seconds": 2.0,
             "error_type": "provider_stream_error",
-            "error": (
-                f"Codex stream failed: {error_code} · "
-                "Temporary upstream failure."
-            ),
+            "error": (f"Codex stream failed: {error_code} · Temporary upstream failure."),
         }
     ]
 
@@ -834,19 +829,19 @@ def test_gemini_api_key_uses_native_generate_content_and_function_calls() -> Non
             "thinking_config": {"thinkingLevel": "high"},
         },
     )
+
     def resolver(**_kwargs) -> ResolvedCredential:
         return ResolvedCredential(
             CredentialKind.api_key,
             "gemini-key",
         )
+
     client = ModelClient(model, None, credential_resolver=resolver)
     client.client = httpx.Client(transport=httpx.MockTransport(handler))
 
     turn = client.complete(MESSAGES, TOOLS)
 
-    assert captured["url"].endswith(
-        "/v1/models/test-model:generateContent"
-    )
+    assert captured["url"].endswith("/v1/models/test-model:generateContent")
     assert captured["headers"]["x-goog-api-key"] == "gemini-key"
     assert captured["body"]["generationConfig"] == {
         "temperature": 0.2,
@@ -854,14 +849,10 @@ def test_gemini_api_key_uses_native_generate_content_and_function_calls() -> Non
         "maxOutputTokens": 8192,
         "thinkingConfig": {"thinkingLevel": "high"},
     }
-    assert captured["body"]["tools"][0]["functionDeclarations"][0]["name"] == (
-        "read_file"
-    )
+    assert captured["body"]["tools"][0]["functionDeclarations"][0]["name"] == ("read_file")
     assert turn.content == "Need one more file."
     assert turn.tool_calls[0].arguments == {"path": "CHANGELOG.md"}
-    assert turn.tool_calls[0].provider_metadata == {
-        "gemini_thought_signature": "opaque-signature"
-    }
+    assert turn.tool_calls[0].provider_metadata == {"gemini_thought_signature": "opaque-signature"}
     assert "provider_metadata" not in turn.tool_calls[0].model_dump()
     assert (turn.input_tokens, turn.output_tokens) == (31, 9)
 
@@ -875,13 +866,9 @@ def test_gemini_api_key_uses_native_generate_content_and_function_calls() -> Non
                         "id": turn.tool_calls[0].call_id,
                         "function": {
                             "name": turn.tool_calls[0].name,
-                            "arguments": json.dumps(
-                                turn.tool_calls[0].arguments
-                            ),
+                            "arguments": json.dumps(turn.tool_calls[0].arguments),
                         },
-                        "provider_metadata": (
-                            turn.tool_calls[0].provider_metadata
-                        ),
+                        "provider_metadata": (turn.tool_calls[0].provider_metadata),
                     }
                 ],
             },
@@ -892,66 +879,109 @@ def test_gemini_api_key_uses_native_generate_content_and_function_calls() -> Non
             },
         ]
     )
-    assert continued[0]["parts"][1]["thoughtSignature"] == (
-        "opaque-signature"
-    )
+    assert continued[0]["parts"][1]["thoughtSignature"] == ("opaque-signature")
     assert continued[0]["parts"][1]["functionCall"]["id"] == "gemini-call"
     assert continued[1]["parts"][0]["functionResponse"]["id"] == "gemini-call"
 
 
-def test_gemini_oauth_is_pinned_to_code_assist_and_refreshes_once() -> None:
-    requests: list[dict] = []
-    resolutions: list[bool] = []
+def test_antigravity_uses_official_cli_structured_bridge(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict = {}
 
-    def resolve(*, force_refresh: bool = False) -> ResolvedCredential:
-        resolutions.append(force_refresh)
-        return ResolvedCredential(
-            CredentialKind.gemini_oauth,
-            "fresh-token" if force_refresh else "stale-token",
-            project_id="project-123",
-        )
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        requests.append(
-            {
-                "url": str(request.url),
-                "authorization": request.headers.get("authorization"),
-                "body": json.loads(request.content),
-            }
-        )
-        if len(requests) == 1:
-            return httpx.Response(401, json={"error": {"message": "expired"}})
-        return httpx.Response(
-            200,
-            json={
-                "response": {
-                    "candidates": [
-                        {"content": {"parts": [{"text": "recovered"}]}}
+    def run_cli(**kwargs) -> AntigravityResult:
+        captured.update(kwargs)
+        return AntigravityResult(
+            returncode=0,
+            stdout=json.dumps(
+                {
+                    "content": "Need one more file.",
+                    "tool_calls": [
+                        {
+                            "name": "read_file",
+                            "arguments_json": json.dumps({"path": "CHANGELOG.md"}),
+                        }
                     ],
-                    "usageMetadata": {},
                 }
-            },
+            ),
+            stderr="",
         )
 
-    client = ModelClient(
-        profile(ModelProvider.gemini),
-        None,
-        credential_resolver=resolve,
+    monkeypatch.setattr(
+        "app.runner.providers.run_antigravity_prompt",
+        run_cli,
     )
-    client.client = httpx.Client(transport=httpx.MockTransport(handler))
+    monkeypatch.setattr(
+        "app.runner.providers.discover_antigravity_models",
+        lambda **_kwargs: [
+            AntigravityModel(
+                "gemini-3.1-pro-high",
+                "Gemini 3.1 Pro (High)",
+            )
+        ],
+    )
+    model = profile(ModelProvider.antigravity, {"effort": "high"})
+    model.model_id = "gemini-3.1-pro-high"
+    client = ModelClient(
+        model,
+        None,
+        credential_resolver=lambda **_kwargs: ResolvedCredential(
+            CredentialKind.antigravity_cli,
+            "",
+        ),
+    )
 
-    turn = client.complete(MESSAGES, [])
+    turn = client.complete(MESSAGES, TOOLS)
 
-    assert resolutions == [False, True]
-    assert len(requests) == 2
-    assert {
-        item["url"] for item in requests
-    } == {"https://cloudcode-pa.googleapis.com/v1internal:generateContent"}
-    assert requests[0]["authorization"] == "Bearer stale-token"
-    assert requests[1]["authorization"] == "Bearer fresh-token"
-    assert requests[1]["body"]["project"] == "project-123"
-    assert requests[1]["body"]["request"]["session_id"] == client.session_id
-    assert turn.content == "recovered"
+    assert captured["model"] == "gemini-3.1-pro-high"
+    assert captured["effort"] == "high"
+    assert "APP_SECRET" not in captured["prompt"]
+    assert turn.content == "Need one more file."
+    assert turn.tool_calls[0].name == "read_file"
+    assert turn.tool_calls[0].arguments == {"path": "CHANGELOG.md"}
+    assert (turn.input_tokens, turn.output_tokens) == (0, 0)
+    assert turn.token_usage_available is False
+
+
+def test_antigravity_login_failure_is_not_retried(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    attempts = 0
+
+    def run_cli(**_kwargs) -> AntigravityResult:
+        nonlocal attempts
+        attempts += 1
+        return AntigravityResult(
+            returncode=1,
+            stdout="",
+            stderr="Please sign in to view available models.",
+        )
+
+    monkeypatch.setattr(
+        "app.runner.providers.run_antigravity_prompt",
+        run_cli,
+    )
+    monkeypatch.setattr(
+        "app.runner.providers.discover_antigravity_models",
+        lambda **_kwargs: [AntigravityModel("test-model", "Test Model")],
+    )
+    client = ModelClient(
+        profile(ModelProvider.antigravity),
+        None,
+        max_retries=5,
+        credential_resolver=lambda **_kwargs: ResolvedCredential(
+            CredentialKind.antigravity_cli,
+            "",
+        ),
+    )
+
+    with pytest.raises(
+        ProviderAuthenticationError,
+        match="make antigravity-login",
+    ):
+        client.complete(MESSAGES, TOOLS)
+
+    assert attempts == 1
 
 
 def test_provider_rejection_has_actionable_bounded_message() -> None:

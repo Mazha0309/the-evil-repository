@@ -231,6 +231,10 @@ def _provider_turns(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 ),
                 "input_tokens": _number(response.get("input_tokens")),
                 "output_tokens": _number(response.get("output_tokens")),
+                "token_usage_available": response.get(
+                    "token_usage_available", True
+                )
+                is not False,
                 "cumulative_input_tokens": _number(
                     response.get("input_tokens_total")
                 ),
@@ -428,6 +432,10 @@ def _summary(
     output_tokens = sum(
         int(_number(item.get("output_tokens"))) for item in provider_turns
     )
+    token_usage_available = all(
+        item.get("token_usage_available", True) is not False
+        for item in provider_turns
+    )
     context_compactions = [
         event
         for event in events
@@ -478,6 +486,7 @@ def _summary(
             ),
             "latency_ms": _distribution(provider_latencies),
             "tokens": {
+                "available": token_usage_available,
                 "input": input_tokens,
                 "output": output_tokens,
                 "total": input_tokens + output_tokens,

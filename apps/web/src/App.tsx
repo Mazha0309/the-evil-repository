@@ -269,7 +269,10 @@ function ControlPlane({
             <Route path="/" element={<DashboardPage />} />
             <Route path="/scenarios" element={<ScenariosPage />} />
             <Route path="/models" element={<ModelsPage />} />
-            <Route path="/credentials" element={<CredentialsPage />} />
+            <Route
+              path="/credentials"
+              element={<CredentialsPage currentUser={user} />}
+            />
             <Route path="/runs" element={<RunsPage />} />
             <Route path="/runs/new" element={<NewRunPage />} />
             <Route path="/runs/:runId" element={<RunDetailPage />} />
@@ -508,8 +511,14 @@ function ScenariosPage() {
           name: suite.localizations["zh-CN"].name ?? suite.name,
           description:
             suite.localizations["zh-CN"].description ?? suite.description,
+          publicationNote:
+            suite.localizations["zh-CN"].publication_note ??
+            suite.publication.note,
         }
-      : suite;
+      : {
+          ...suite,
+          publicationNote: suite?.publication.note,
+        };
   return (
     <>
       <PageHeader
@@ -528,9 +537,9 @@ function ScenariosPage() {
           <div>
             <span className="eyebrow">
               SUITE / {suite.version} ·{" "}
-              {suite.readiness.leaderboard_eligible
-                ? text("可进入排行榜", "LEADERBOARD READY")
-                : text("开发中", "IN DEVELOPMENT")}
+              {suite.publication.status === "calibrated"
+                ? text("已校准", "CALIBRATED")
+                : text("实验性小样本", "EXPERIMENTAL SAMPLE")}
             </span>
             <h2>{suiteCopy?.name}</h2>
             <p>{suiteCopy?.description}</p>
@@ -538,28 +547,21 @@ function ScenariosPage() {
           <div className="scenario-metrics">
             <Metric
               label={text("活跃题族", "Active families")}
-              value={`${suite.readiness.active_families}/${suite.readiness.required_active_families}`}
+              value={String(suite.coverage.active_families)}
             />
             <Metric
               label={text("隐藏题族", "Held-out families")}
-              value={`${suite.readiness.held_out_families}/${suite.readiness.required_held_out_families}`}
+              value={String(suite.coverage.held_out_families)}
             />
             <Metric
               label={text("场景引用", "Scenario refs")}
-              value={`${suite.readiness.scenario_references}/${suite.readiness.required_scenarios}`}
+              value={String(suite.coverage.scenario_references)}
             />
           </div>
-          {!suite.readiness.leaderboard_eligible && (
-            <div className="callout callout--warning">
-              <AlertTriangle size={16} />
-              <span>
-                {text(
-                  `当前有 ${suite.readiness.active_families} 个公开开发题族，适合工程分析，不应当冒充统计有效的总榜。`,
-                  `${suite.readiness.active_families} public development families exist today. They are useful for engineering analysis, not a statistically valid global leaderboard.`,
-                )}
-              </span>
-            </div>
-          )}
+          <div className="suite-status__note">
+            <FlaskConical size={16} />
+            <span>{suiteCopy?.publicationNote}</span>
+          </div>
         </section>
       )}
       <div className="card-stack">
@@ -804,11 +806,8 @@ function ModelsPage() {
     (credential) => credential.id === credentialId,
   );
   const isClaudeCodeOAuth =
-    provider === "anthropic" &&
-    selectedCredential?.kind === "anthropic_oauth";
-  const tierOptions = isClaudeCodeOAuth
-    ? []
-    : serviceTierOptions(provider);
+    provider === "anthropic" && selectedCredential?.kind === "anthropic_oauth";
+  const tierOptions = isClaudeCodeOAuth ? [] : serviceTierOptions(provider);
   return (
     <>
       <PageHeader
@@ -836,7 +835,9 @@ function ModelsPage() {
                 <span>
                   {model.credential_kind === "anthropic_oauth"
                     ? "Claude Code OAuth · Agent SDK"
-                    : providerLabel(model.provider)}
+                    : model.credential_kind === "antigravity_cli"
+                      ? "Antigravity CLI · official agy"
+                      : providerLabel(model.provider)}
                 </span>
               </div>
               <div className="model-card__actions">
@@ -870,7 +871,9 @@ function ModelsPage() {
                 <dt>{text("工具协议", "Tool protocol")}</dt>
                 <dd>
                   {model.native_tools
-                    ? text("原生函数调用", "Native function calls")
+                    ? model.provider === "antigravity"
+                      ? text("Runner 结构化桥", "Runner structured bridge")
+                      : text("原生函数调用", "Native function calls")
                     : text("JSON 回退协议", "JSON fallback")}
                 </dd>
               </div>
@@ -931,7 +934,8 @@ function ModelsPage() {
             <Plus size={28} />
             <strong>{text("添加第一个模型", "Add your first model")}</strong>
             <span>
-              OpenAI · Anthropic · Codex OAuth · Gemini · Compatible · Ollama
+              OpenAI · Anthropic · Antigravity CLI · Codex OAuth · Gemini ·
+              Compatible · Ollama
             </span>
           </button>
         )}
@@ -1030,7 +1034,11 @@ function ModelsPage() {
                 onChange={(event) => {
                   const next = event.target.value as ModelProvider;
                   setProvider(next);
-                  setBaseUrl(next === "codex" ? providerDefaultUrl(next) : "");
+                  setBaseUrl(
+                    next === "codex" || next === "antigravity"
+                      ? providerDefaultUrl(next)
+                      : "",
+                  );
                   setCredentialId((current) => {
                     const selected = credentials.data?.find(
                       (item) => item.id === current,
@@ -1051,6 +1059,9 @@ function ModelsPage() {
                 <option value="anthropic">
                   Anthropic (Messages API / Claude Code OAuth)
                 </option>
+                <option value="antigravity">
+                  Antigravity CLI (official agy)
+                </option>
                 <option value="codex">
                   Codex OAuth (ChatGPT subscription)
                 </option>
@@ -1067,12 +1078,17 @@ function ModelsPage() {
                       "OAuth 令牌强制锁定到 OpenAI 官方 Codex 后端。",
                       "OAuth tokens are pinned to the official OpenAI Codex backend.",
                     )
-                  : isClaudeCodeOAuth
+                  : provider === "antigravity"
                     ? text(
-                        "Claude Code OAuth 由官方 Agent SDK 消费；自定义 URL 不会生效。",
-                        "Claude Code OAuth is consumed by the official Agent SDK; custom URLs do not apply.",
+                        "由 Runner 内置的官方 agy 执行；此 URL 仅用于标识，不能改为反代。",
+                        "Executed by the official agy binary bundled in the Runner; this URL is identity metadata and cannot be replaced with a proxy.",
                       )
-                  : undefined
+                    : isClaudeCodeOAuth
+                      ? text(
+                          "Claude Code OAuth 由官方 Agent SDK 消费；自定义 URL 不会生效。",
+                          "Claude Code OAuth is consumed by the official Agent SDK; custom URLs do not apply.",
+                        )
+                      : undefined
               }
             >
               <input
@@ -1080,7 +1096,11 @@ function ModelsPage() {
                 type="url"
                 required
                 value={baseUrl}
-                readOnly={provider === "codex" || isClaudeCodeOAuth}
+                readOnly={
+                  provider === "codex" ||
+                  provider === "antigravity" ||
+                  isClaudeCodeOAuth
+                }
                 placeholder={providerDefaultUrl(provider)}
                 onChange={(event) => setBaseUrl(event.target.value)}
               />
@@ -1162,24 +1182,26 @@ function ModelsPage() {
                 {text("打开认证中心", "Open credentials")}
               </Link>
             </div>
-            {provider !== "codex" && !isClaudeCodeOAuth && (
-              <Field
-                label={text(
-                  "快速添加 API Key（可选）",
-                  "Quick-add API key (optional)",
-                )}
-                hint={text(
-                  "输入后会新建可复用的加密凭据，并覆盖上面的选择；留空则使用所选凭据。",
-                  "Entering a key creates a reusable encrypted credential and overrides the selection above; leave blank to use the selection.",
-                )}
-              >
-                <input
-                  name="api_key"
-                  type="password"
-                  autoComplete="new-password"
-                />
-              </Field>
-            )}
+            {provider !== "codex" &&
+              provider !== "antigravity" &&
+              !isClaudeCodeOAuth && (
+                <Field
+                  label={text(
+                    "快速添加 API Key（可选）",
+                    "Quick-add API key (optional)",
+                  )}
+                  hint={text(
+                    "输入后会新建可复用的加密凭据，并覆盖上面的选择；留空则使用所选凭据。",
+                    "Entering a key creates a reusable encrypted credential and overrides the selection above; leave blank to use the selection.",
+                  )}
+                >
+                  <input
+                    name="api_key"
+                    type="password"
+                    autoComplete="new-password"
+                  />
+                </Field>
+              )}
             <div className="form-section-heading">
               <SlidersHorizontal size={14} />
               <div>
@@ -1203,6 +1225,17 @@ function ModelsPage() {
                 </span>
               </div>
             )}
+            {provider === "antigravity" && (
+              <div className="credential-import-warning">
+                <AlertTriangle size={14} />
+                <span>
+                  {text(
+                    "此 Provider 只启动官方 agy：登录、刷新、账户模型目录和网络请求均由 CLI 自己处理。Runner 仅传递序列化调查状态，并强制禁用 agy 的文件、Shell、Browser、MCP 与子 Agent 工具。平台只传递 low / medium / high 推理挡位。",
+                    "This Provider only launches the official agy binary. The CLI owns sign-in, refresh, the account model catalog, and network requests. The Runner supplies serialized investigation state while denying agy's file, shell, browser, MCP, and subagent tools. Only low / medium / high effort is passed.",
+                  )}
+                </span>
+              </div>
+            )}
             {isClaudeCodeOAuth && (
               <div className="credential-import-warning">
                 <AlertTriangle size={14} />
@@ -1215,64 +1248,66 @@ function ModelsPage() {
               </div>
             )}
             <div className="model-parameter-grid">
-              {provider !== "codex" && !isClaudeCodeOAuth && (
-                <>
-                  <Field
-                    label={text("温度", "Temperature")}
-                    hint={text("范围 0–2。", "Range 0–2.")}
-                  >
-                    <input
-                      type="number"
-                      min="0"
-                      max="2"
-                      step="0.01"
-                      value={parameterDraft.temperature}
-                      placeholder={text("默认", "default")}
-                      onChange={(event) =>
-                        updateParameter("temperature", event.target.value)
-                      }
-                    />
-                  </Field>
-                  <Field
-                    label="Top P"
-                    hint={text(
-                      "范围 0–1；通常只调整它或温度之一。",
-                      "Range 0–1; normally tune this or temperature, not both.",
-                    )}
-                  >
-                    <input
-                      type="number"
-                      min="0"
-                      max="1"
-                      step="0.01"
-                      value={parameterDraft.topP}
-                      placeholder={text("默认", "default")}
-                      onChange={(event) =>
-                        updateParameter("topP", event.target.value)
-                      }
-                    />
-                  </Field>
-                  <Field
-                    label={text("最大输出 Token", "Maximum output tokens")}
-                    hint={fieldNames.maxOutputTokens}
-                  >
-                    <input
-                      type="number"
-                      min="1"
-                      step="1"
-                      value={parameterDraft.maxOutputTokens}
-                      placeholder={
-                        provider === "anthropic"
-                          ? "8192"
-                          : text("默认", "default")
-                      }
-                      onChange={(event) =>
-                        updateParameter("maxOutputTokens", event.target.value)
-                      }
-                    />
-                  </Field>
-                </>
-              )}
+              {provider !== "codex" &&
+                provider !== "antigravity" &&
+                !isClaudeCodeOAuth && (
+                  <>
+                    <Field
+                      label={text("温度", "Temperature")}
+                      hint={text("范围 0–2。", "Range 0–2.")}
+                    >
+                      <input
+                        type="number"
+                        min="0"
+                        max="2"
+                        step="0.01"
+                        value={parameterDraft.temperature}
+                        placeholder={text("默认", "default")}
+                        onChange={(event) =>
+                          updateParameter("temperature", event.target.value)
+                        }
+                      />
+                    </Field>
+                    <Field
+                      label="Top P"
+                      hint={text(
+                        "范围 0–1；通常只调整它或温度之一。",
+                        "Range 0–1; normally tune this or temperature, not both.",
+                      )}
+                    >
+                      <input
+                        type="number"
+                        min="0"
+                        max="1"
+                        step="0.01"
+                        value={parameterDraft.topP}
+                        placeholder={text("默认", "default")}
+                        onChange={(event) =>
+                          updateParameter("topP", event.target.value)
+                        }
+                      />
+                    </Field>
+                    <Field
+                      label={text("最大输出 Token", "Maximum output tokens")}
+                      hint={fieldNames.maxOutputTokens}
+                    >
+                      <input
+                        type="number"
+                        min="1"
+                        step="1"
+                        value={parameterDraft.maxOutputTokens}
+                        placeholder={
+                          provider === "anthropic"
+                            ? "8192"
+                            : text("默认", "default")
+                        }
+                        onChange={(event) =>
+                          updateParameter("maxOutputTokens", event.target.value)
+                        }
+                      />
+                    </Field>
+                  </>
+                )}
               <Field
                 label={
                   provider === "ollama"
@@ -1336,48 +1371,54 @@ function ModelsPage() {
                 </Field>
               )}
             </div>
-            <details className="advanced-parameters">
-              <summary>
-                {text(
-                  "高级 Provider 参数（JSON）",
-                  "Advanced provider parameters (JSON)",
-                )}
-              </summary>
-              <Field
-                label={text("额外请求字段", "Additional request fields")}
-                hint={text(
-                  "仅用于当前 Provider 的非核心字段；凭据、消息、工具和模型字段会被拒绝。",
-                  "Only non-core fields for this provider; credentials, messages, tools, and model fields are rejected.",
-                )}
-              >
-                <textarea
-                  rows={8}
-                  spellCheck={false}
-                  value={parameterDraft.advanced}
-                  onChange={(event) =>
-                    updateParameter("advanced", event.target.value)
-                  }
-                />
-              </Field>
-            </details>
-            <label className="check-row">
-              <input
-                name="native_tools"
-                type="checkbox"
-                defaultChecked={editing?.native_tools ?? true}
-              />
-              <span>
-                <strong>
-                  {text("原生函数调用", "Native function calling")}
-                </strong>
-                <small>
+            {provider !== "antigravity" && (
+              <details className="advanced-parameters">
+                <summary>
                   {text(
-                    "关闭后使用 EvilBench 的严格 JSON 回退协议。",
-                    "Disable to use EvilBench's strict JSON fallback protocol.",
+                    "高级 Provider 参数（JSON）",
+                    "Advanced provider parameters (JSON)",
                   )}
-                </small>
-              </span>
-            </label>
+                </summary>
+                <Field
+                  label={text("额外请求字段", "Additional request fields")}
+                  hint={text(
+                    "仅用于当前 Provider 的非核心字段；凭据、消息、工具和模型字段会被拒绝。",
+                    "Only non-core fields for this provider; credentials, messages, tools, and model fields are rejected.",
+                  )}
+                >
+                  <textarea
+                    rows={8}
+                    spellCheck={false}
+                    value={parameterDraft.advanced}
+                    onChange={(event) =>
+                      updateParameter("advanced", event.target.value)
+                    }
+                  />
+                </Field>
+              </details>
+            )}
+            {provider === "antigravity" ? (
+              <input name="native_tools" type="hidden" value="on" />
+            ) : (
+              <label className="check-row">
+                <input
+                  name="native_tools"
+                  type="checkbox"
+                  defaultChecked={editing?.native_tools ?? true}
+                />
+                <span>
+                  <strong>
+                    {text("原生函数调用", "Native function calling")}
+                  </strong>
+                  <small>
+                    {text(
+                      "关闭后使用 EvilBench 的严格 JSON 回退协议。",
+                      "Disable to use EvilBench's strict JSON fallback protocol.",
+                    )}
+                  </small>
+                </span>
+              </label>
+            )}
             <label className="check-row">
               <input
                 name="enabled"
@@ -1628,14 +1669,19 @@ function NewRunPage() {
   }, [orderedTasks, requestedTaskId, selectedTaskId]);
   const selectedTask =
     orderedTasks.find((task) => task.id === selectedTaskId) ?? orderedTasks[0];
+  const [selectedCandidateId, setSelectedCandidateId] = useState("");
+  const selectedCandidate = enabledModels.find(
+    (model) => model.id === selectedCandidateId,
+  );
+  const tokenUsageAvailable = selectedCandidate?.provider !== "antigravity";
   const selectedBudget = selectedTask?.manifest.budget;
   const budgetDefaults = {
     softSeconds: selectedBudget?.soft_seconds ?? 10_800,
     hardSeconds: selectedBudget?.hard_seconds ?? 21_600,
     softToolCalls: selectedBudget?.soft_tool_calls ?? 600,
     hardToolCalls: selectedBudget?.hard_tool_calls ?? 2_200,
-    softProviderRequests: selectedBudget?.soft_provider_requests ?? 300,
-    hardProviderRequests: selectedBudget?.hard_provider_requests ?? 720,
+    softProviderRequests: selectedBudget?.soft_provider_requests ?? null,
+    hardProviderRequests: selectedBudget?.hard_provider_requests ?? null,
   };
   const create = useMutation({
     mutationFn: api.createRun,
@@ -1661,8 +1707,8 @@ function NewRunPage() {
       hard_seconds: Number(data.get("hard_seconds")),
       soft_tool_calls: Number(data.get("soft_tool_calls")),
       hard_tool_calls: Number(data.get("hard_tool_calls")),
-      soft_provider_requests: Number(data.get("soft_provider_requests")),
-      hard_provider_requests: Number(data.get("hard_provider_requests")),
+      soft_provider_requests: optionalNumber("soft_provider_requests"),
+      hard_provider_requests: optionalNumber("hard_provider_requests"),
       soft_total_tokens: optionalNumber("soft_total_tokens"),
       hard_total_tokens: optionalNumber("hard_total_tokens"),
     });
@@ -1718,7 +1764,12 @@ function NewRunPage() {
           />
           <div className="form-grid">
             <Field label={text("候选模型", "Candidate")}>
-              <select name="candidate_model_id" required defaultValue="">
+              <select
+                name="candidate_model_id"
+                required
+                value={selectedCandidateId}
+                onChange={(event) => setSelectedCandidateId(event.target.value)}
+              >
                 <option value="" disabled>
                   {text("选择候选模型", "Select a candidate")}
                 </option>
@@ -1822,51 +1873,85 @@ function NewRunPage() {
               />
             </Field>
             <Field
-              label={text("软 Provider 请求限制", "Soft Provider requests")}
-              hint={text("包含 429 / 5xx 重试", "Includes 429 / 5xx retries")}
+              label={text(
+                "软 Provider 请求限制（可选）",
+                "Soft Provider requests (optional)",
+              )}
+              hint={text(
+                "包含重试；留空表示不限，需与硬限制成对填写",
+                "Includes retries; leave both fields blank for unlimited",
+              )}
             >
               <input
                 name="soft_provider_requests"
                 type="number"
-                defaultValue={budgetDefaults.softProviderRequests}
+                defaultValue={budgetDefaults.softProviderRequests ?? ""}
                 min={1}
+                placeholder={text("不限制", "unlimited")}
               />
             </Field>
             <Field
-              label={text("硬 Provider 请求限制", "Hard Provider requests")}
-              hint={text("真实 HTTP 请求上限", "Raw HTTP request cap")}
+              label={text(
+                "硬 Provider 请求限制（可选）",
+                "Hard Provider requests (optional)",
+              )}
+              hint={text(
+                "留空仍会记录真实请求次数",
+                "Raw requests remain observable when unlimited",
+              )}
             >
               <input
                 name="hard_provider_requests"
                 type="number"
-                defaultValue={budgetDefaults.hardProviderRequests}
+                defaultValue={budgetDefaults.hardProviderRequests ?? ""}
                 min={2}
-              />
-            </Field>
-            <Field
-              label={text("软 Token 限制（可选）", "Soft tokens (optional)")}
-              hint={text(
-                "输入与输出合计；需与硬限制成对填写",
-                "Input + output; configure together with hard tokens",
-              )}
-            >
-              <input
-                name="soft_total_tokens"
-                type="number"
-                min={1000}
                 placeholder={text("不限制", "unlimited")}
               />
             </Field>
-            <Field
-              label={text("硬 Token 限制（可选）", "Hard tokens (optional)")}
-            >
-              <input
-                name="hard_total_tokens"
-                type="number"
-                min={2000}
-                placeholder={text("不限制", "unlimited")}
-              />
-            </Field>
+            {tokenUsageAvailable ? (
+              <>
+                <Field
+                  label={text(
+                    "软 Token 限制（可选）",
+                    "Soft tokens (optional)",
+                  )}
+                  hint={text(
+                    "输入与输出合计；需与硬限制成对填写",
+                    "Input + output; configure together with hard tokens",
+                  )}
+                >
+                  <input
+                    name="soft_total_tokens"
+                    type="number"
+                    min={1000}
+                    placeholder={text("不限制", "unlimited")}
+                  />
+                </Field>
+                <Field
+                  label={text(
+                    "硬 Token 限制（可选）",
+                    "Hard tokens (optional)",
+                  )}
+                >
+                  <input
+                    name="hard_total_tokens"
+                    type="number"
+                    min={2000}
+                    placeholder={text("不限制", "unlimited")}
+                  />
+                </Field>
+              </>
+            ) : (
+              <div className="callout callout--warning">
+                <AlertTriangle size={16} />
+                <span>
+                  {text(
+                    "官方 agy 当前不输出机器可读 Token 用量，因此该 Provider 只使用时间、工具调用与 Provider 请求预算；平台不会伪造估算值。",
+                    "Official agy does not currently expose machine-readable token usage. This Provider uses time, tool-call, and Provider-request budgets; the platform does not invent estimates.",
+                  )}
+                </span>
+              </div>
+            )}
             <Field
               label={text("实例种子（可选）", "Instance seed (optional)")}
               hint={text(
@@ -2011,6 +2096,7 @@ function RunDetailPage() {
     (task) => task.id === data.task_id,
   )?.manifest;
   const candidateModel = resolveRunModel(data, "candidate", models.data ?? []);
+  const tokenUsageAvailable = candidateModel.provider !== "antigravity";
   const runTask = resolveRunTask(data, tasks.data ?? [], isChinese);
   const completion = taskManifest?.completion;
   const pauseRequested = data.config.pause_requested === true;
@@ -2089,12 +2175,20 @@ function RunDetailPage() {
         <MiniKpi
           icon={<Braces />}
           label={text("输入 Token", "Input tokens")}
-          value={formatCompact(data.input_tokens)}
+          value={
+            tokenUsageAvailable
+              ? formatCompact(data.input_tokens)
+              : text("不可用", "N/A")
+          }
         />
         <MiniKpi
           icon={<Bot />}
           label={text("输出 Token", "Output tokens")}
-          value={formatCompact(data.output_tokens)}
+          value={
+            tokenUsageAvailable
+              ? formatCompact(data.output_tokens)
+              : text("不可用", "N/A")
+          }
         />
         <MiniKpi
           icon={<Clock3 />}
@@ -2152,6 +2246,7 @@ function RunDetailPage() {
           completion={completion}
           incident={taskManifest?.incident}
           release={taskManifest?.release}
+          tokenUsageAvailable={tokenUsageAvailable}
         />
       )}
       {tab === "overview" && (
@@ -3534,6 +3629,7 @@ function providerLabel(provider: ModelProvider) {
   const labels: Record<ModelProvider, string> = {
     openai_responses: "OpenAI Responses API",
     anthropic: "Anthropic Messages API",
+    antigravity: "Official Antigravity CLI",
     codex: "Codex OAuth · ChatGPT subscription",
     gemini: "Google Gemini native API",
     openai_compatible: "OpenAI-compatible Chat Completions",
@@ -3546,6 +3642,7 @@ function providerDefaultUrl(provider: ModelProvider) {
   const urls: Record<ModelProvider, string> = {
     openai_responses: "https://api.openai.com/v1",
     anthropic: "https://api.anthropic.com/v1",
+    antigravity: "https://antigravity.google/cli",
     codex: "https://chatgpt.com/backend-api/codex",
     gemini: "https://generativelanguage.googleapis.com/v1beta",
     openai_compatible: "https://api.example.com/v1",
@@ -3559,8 +3656,9 @@ function credentialSupportsProvider(
   provider: ModelProvider,
 ) {
   if (provider === "codex") return kind === "codex_oauth";
+  if (provider === "antigravity") return kind === "antigravity_cli";
   if (provider === "gemini") {
-    return kind === "api_key" || kind === "gemini_oauth";
+    return kind === "api_key";
   }
   if (provider === "anthropic") {
     return kind === "api_key" || kind === "anthropic_oauth";

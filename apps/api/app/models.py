@@ -28,6 +28,7 @@ def now_utc() -> datetime:
 class ModelProvider(StrEnum):
     openai_responses = "openai_responses"
     anthropic = "anthropic"
+    antigravity = "antigravity"
     openai_compatible = "openai_compatible"
     ollama = "ollama"
     codex = "codex"
@@ -36,6 +37,7 @@ class ModelProvider(StrEnum):
 
 class CredentialKind(StrEnum):
     api_key = "api_key"
+    antigravity_cli = "antigravity_cli"
     anthropic_oauth = "anthropic_oauth"
     codex_oauth = "codex_oauth"
     gemini_oauth = "gemini_oauth"

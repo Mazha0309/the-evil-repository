@@ -136,6 +136,11 @@ export const api = {
       method: "POST",
       body: JSON.stringify(payload),
     }),
+  attachAntigravityCredential: (payload: Record<string, unknown>) =>
+    request<ProviderCredential>("/credentials/antigravity", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
   importCredential: (payload: Record<string, unknown>) =>
     request<ProviderCredential>("/credentials/import", {
       method: "POST",

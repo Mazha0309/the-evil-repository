@@ -13,13 +13,11 @@ from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.api import auth, credentials, model_profiles
-from app.config import get_settings
 from app.credentials import (
     CredentialError,
     decode_payload,
     encode_payload,
     normalize_codex_auth_document,
-    normalize_gemini_auth_document,
     poll_codex_device_flow,
     resolve_credential,
     start_codex_device_flow,
@@ -64,7 +62,7 @@ def build_client() -> TestClient:
     return TestClient(app)
 
 
-def test_codex_and_gemini_auth_documents_are_normalized() -> None:
+def test_codex_auth_document_is_normalized() -> None:
     expiry = datetime.now(UTC) + timedelta(hours=1)
     account_id = "account-123456789"
     access_token = jwt(
@@ -88,25 +86,11 @@ def test_codex_and_gemini_auth_documents_are_normalized() -> None:
             },
         }
     )
-    gemini, gemini_hint, gemini_expiry = normalize_gemini_auth_document(
-        {
-            "access_token": "gemini-access",
-            "refresh_token": "gemini-refresh",
-            "expiry_date": int(expiry.timestamp() * 1000),
-            "email": "gemini@example.com",
-            "cloudaicompanionProject": "gemini-project",
-        }
-    )
-
     assert codex["account_id"] == account_id
     assert codex["refresh_token"] == "codex-refresh"
     assert hint == "owner@example.com"
     assert codex_expiry is not None
     assert abs((codex_expiry - expiry).total_seconds()) < 1
-    assert gemini["project_id"] == "gemini-project"
-    assert gemini_hint == "gemini@example.com"
-    assert gemini_expiry is not None
-    assert abs((gemini_expiry - expiry).total_seconds()) < 1
 
 
 def test_codex_refresh_uses_json_and_persists_rotated_token() -> None:
@@ -225,35 +209,9 @@ def test_codex_refresh_surfaces_rotating_token_reuse() -> None:
         assert credential.last_error_code == "refresh_token_reused"
 
 
-def test_gemini_refresh_rotates_token_and_handles_sqlite_naive_expiry(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_legacy_gemini_oauth_is_retired_without_network_access() -> None:
     engine = create_engine("sqlite://")
     Base.metadata.create_all(engine)
-    captured: dict = {}
-    settings = get_settings()
-    monkeypatch.setattr(
-        settings,
-        "gemini_oauth_client_id",
-        "test-client-id",
-    )
-    monkeypatch.setattr(
-        settings,
-        "gemini_oauth_client_secret",
-        "test-client-secret",
-    )
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        captured["url"] = str(request.url)
-        captured["form"] = dict(item.split("=", 1) for item in request.content.decode().split("&"))
-        return httpx.Response(
-            200,
-            json={
-                "access_token": "new-access",
-                "expires_in": 3600,
-                "token_type": "Bearer",
-            },
-        )
 
     with Session(engine) as session:
         owner = UserAccount(
@@ -275,58 +233,6 @@ def test_gemini_refresh_rotates_token_and_handles_sqlite_naive_expiry(
                 }
             ),
             status=CredentialStatus.unchecked,
-            # SQLite returns a naive datetime despite timezone=True.
-            expires_at=(datetime.now(UTC) - timedelta(minutes=1)).replace(tzinfo=None),
-        )
-        session.add(credential)
-        session.commit()
-
-        resolved = resolve_credential(
-            session,
-            credential,
-            client=httpx.Client(transport=httpx.MockTransport(handler)),
-        )
-        session.commit()
-
-        assert resolved.token == "new-access"
-        assert resolved.project_id == "project-123"
-        assert credential.status == CredentialStatus.ready
-        assert credential.last_refreshed_at is not None
-        assert decode_payload(credential)["refresh_token"] == "refresh-token"
-        assert captured["url"] == "https://oauth2.googleapis.com/token"
-        assert captured["form"]["grant_type"] == "refresh_token"
-        assert captured["form"]["client_id"] == "test-client-id"
-        assert captured["form"]["client_secret"] == "test-client-secret"
-
-
-def test_gemini_refresh_requires_deployment_oauth_client_configuration(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    engine = create_engine("sqlite://")
-    Base.metadata.create_all(engine)
-    settings = get_settings()
-    monkeypatch.setattr(settings, "gemini_oauth_client_id", None)
-    monkeypatch.setattr(settings, "gemini_oauth_client_secret", None)
-
-    with Session(engine) as session:
-        owner = UserAccount(
-            username="owner",
-            password_hash="unused",
-            role=UserRole.user,
-        )
-        session.add(owner)
-        session.flush()
-        credential = ProviderCredential(
-            owner_id=owner.id,
-            name="Gemini",
-            kind=CredentialKind.gemini_oauth,
-            encrypted_payload=encode_payload(
-                {
-                    "refresh_token": "refresh-token",
-                    "project_id": "project-123",
-                }
-            ),
-            status=CredentialStatus.unchecked,
         )
         session.add(credential)
         session.flush()
@@ -334,7 +240,38 @@ def test_gemini_refresh_requires_deployment_oauth_client_configuration(
         with pytest.raises(CredentialError) as captured:
             resolve_credential(session, credential)
 
-    assert captured.value.code == "gemini_oauth_client_not_configured"
+        assert captured.value.code == "gemini_oauth_import_retired"
+        assert credential.status == CredentialStatus.needs_reauth
+
+
+def test_antigravity_credential_contains_only_a_session_reference() -> None:
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        owner = UserAccount(
+            username="owner",
+            password_hash="unused",
+            role=UserRole.admin,
+        )
+        session.add(owner)
+        session.flush()
+        credential = ProviderCredential(
+            owner_id=owner.id,
+            name="Antigravity",
+            kind=CredentialKind.antigravity_cli,
+            encrypted_payload=encode_payload({"session_scope": "deployment"}),
+            status=CredentialStatus.unchecked,
+        )
+        session.add(credential)
+        session.flush()
+
+        resolved = resolve_credential(session, credential)
+
+        assert resolved.kind == CredentialKind.antigravity_cli
+        assert resolved.token == ""
+        assert decode_payload(credential) == {"session_scope": "deployment"}
+        assert credential.status == CredentialStatus.ready
 
 
 def test_codex_device_flow_is_bound_to_the_requesting_user() -> None:
@@ -483,6 +420,45 @@ def test_credential_api_never_returns_secrets_and_enforces_compatibility() -> No
     assert blocked_delete.status_code == 409
 
 
+def test_admin_can_attach_one_non_secret_antigravity_session_reference() -> None:
+    client = build_client()
+    setup = client.post(
+        "/api/v1/auth/setup",
+        json={"username": "admin", "password": "strong password"},
+    )
+    csrf = setup.json()["csrf_token"]
+
+    created = client.post(
+        "/api/v1/credentials/antigravity",
+        headers={"X-CSRF-Token": csrf},
+        json={"name": "Official agy"},
+    )
+
+    assert created.status_code == 201
+    assert created.json()["kind"] == "antigravity_cli"
+    assert created.json()["status"] == "unchecked"
+    assert "token" not in created.text.casefold()
+    duplicate = client.post(
+        "/api/v1/credentials/antigravity",
+        headers={"X-CSRF-Token": csrf},
+        json={"name": "Another agy"},
+    )
+    assert duplicate.status_code == 409
+    assert duplicate.json()["detail"]["code"] == "antigravity_session_already_attached"
+
+    retired_import = client.post(
+        "/api/v1/credentials/import",
+        headers={"X-CSRF-Token": csrf},
+        json={
+            "name": "Legacy Gemini",
+            "kind": "gemini_oauth",
+            "document": {"refresh_token": "must-not-be-saved"},
+        },
+    )
+    assert retired_import.status_code == 422
+    assert retired_import.json()["detail"]["code"] == "gemini_oauth_import_retired"
+
+
 def test_anthropic_setup_token_is_encrypted_and_provisions_models() -> None:
     client = build_client()
     setup = client.post(
@@ -516,16 +492,11 @@ def test_anthropic_setup_token_is_encrypted_and_provisions_models() -> None:
     assert synced.status_code == 200
     assert synced.json()["provider"] == "anthropic"
     assert synced.json()["discovered"] == 3
-    assert {
-        item["model_id"] for item in synced.json()["models"]
-    } == {"opus", "sonnet", "haiku"}
+    assert {item["model_id"] for item in synced.json()["models"]} == {"opus", "sonnet", "haiku"}
 
     models = client.get("/api/v1/models")
     assert models.status_code == 200
-    assert all(
-        model["credential_kind"] == "anthropic_oauth"
-        for model in models.json()
-    )
+    assert all(model["credential_kind"] == "anthropic_oauth" for model in models.json())
 
     replacement = "replacement-setup-token-never-return"
     replaced = client.patch(

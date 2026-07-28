@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from app.credentials import (
     CredentialError,
     create_anthropic_oauth_payload,
+    create_antigravity_cli_payload,
     create_api_key_payload,
     encode_payload,
     normalize_import,
@@ -23,8 +24,10 @@ from app.models import (
     ModelProfile,
     ProviderCredential,
     UserAccount,
+    UserRole,
 )
 from app.schemas import (
+    AntigravityCredentialCreate,
     CredentialCreate,
     CredentialImport,
     CredentialModelSyncRead,
@@ -102,15 +105,13 @@ def create_credential(
         raise HTTPException(
             status_code=422,
             detail=(
-                "Codex and Gemini OAuth credentials must use JSON import "
-                "or an interactive login"
+                "Codex OAuth uses JSON import or device login; Antigravity "
+                "CLI sessions use the dedicated attach endpoint"
             ),
         )
     ensure_unique_name(session, user.id, payload.name)
     if payload.kind == CredentialKind.anthropic_oauth:
-        encrypted_payload = encode_payload(
-            create_anthropic_oauth_payload(payload.secret)
-        )
+        encrypted_payload = encode_payload(create_anthropic_oauth_payload(payload.secret))
         account_hint = "Claude subscription"
     else:
         encrypted_payload = encode_payload(create_api_key_payload(payload.secret))
@@ -123,6 +124,53 @@ def create_credential(
         account_hint=account_hint,
         status=CredentialStatus.ready,
         last_validated_at=datetime.now(UTC),
+    )
+    session.add(credential)
+    session.commit()
+    session.refresh(credential)
+    return to_read(session, credential)
+
+
+@router.post(
+    "/antigravity",
+    response_model=CredentialRead,
+    status_code=status.HTTP_201_CREATED,
+)
+def attach_antigravity_credential(
+    payload: AntigravityCredentialCreate,
+    session: Session = Depends(get_session),
+    user: UserAccount = Depends(csrf_protection),
+) -> CredentialRead:
+    if user.role != UserRole.admin:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "code": "antigravity_admin_required",
+                "message": ("Only an administrator can attach the deployment-owned Antigravity CLI session"),
+            },
+        )
+    existing = session.scalar(
+        select(ProviderCredential.id).where(
+            ProviderCredential.kind == CredentialKind.antigravity_cli,
+            ProviderCredential.archived_at.is_(None),
+        )
+    )
+    if existing is not None:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "antigravity_session_already_attached",
+                "message": ("This deployment already has an attached Antigravity CLI session"),
+            },
+        )
+    ensure_unique_name(session, user.id, payload.name)
+    credential = ProviderCredential(
+        owner_id=user.id,
+        name=payload.name.strip(),
+        kind=CredentialKind.antigravity_cli,
+        encrypted_payload=encode_payload(create_antigravity_cli_payload()),
+        account_hint="Deployment-owned official agy session",
+        status=CredentialStatus.unchecked,
     )
     session.add(credential)
     session.commit()
@@ -191,10 +239,7 @@ def update_credential(
                 status_code=422,
                 detail={
                     "code": "credential_secret_update_unsupported",
-                    "message": (
-                        "This OAuth credential must be re-imported or "
-                        "authenticated again"
-                    ),
+                    "message": ("This OAuth credential must be re-imported or authenticated again"),
                 },
             )
         credential.encrypted_payload = encode_payload(normalized)
@@ -214,15 +259,11 @@ def refresh_credential(
     user: UserAccount = Depends(csrf_protection),
 ) -> CredentialRead:
     credential = owned_credential(session, user.id, credential_id, lock=True)
-    if (
-        credential.kind == CredentialKind.anthropic_oauth
-        and credential.status == CredentialStatus.needs_reauth
-    ):
+    if credential.kind == CredentialKind.anthropic_oauth and credential.status == CredentialStatus.needs_reauth:
         raise credential_http_error(
             CredentialError(
                 "anthropic_oauth_replace_required",
-                "Generate a new token with `claude setup-token` and replace "
-                "the saved credential",
+                "Generate a new token with `claude setup-token` and replace the saved credential",
             )
         )
     if credential.kind in {
@@ -237,6 +278,18 @@ def refresh_credential(
         credential.status = CredentialStatus.ready
         credential.last_validated_at = datetime.now(UTC)
         credential.last_error_code = None
+    elif credential.kind == CredentialKind.antigravity_cli:
+        try:
+            # Model discovery is the official CLI's public authenticated probe;
+            # no token is read or refreshed by the platform.
+            sync_credential_models(
+                session,
+                credential,
+                user.id,
+            )
+        except CredentialError as exc:
+            session.commit()
+            raise credential_http_error(exc) from exc
     else:
         try:
             resolve_credential(

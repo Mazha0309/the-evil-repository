@@ -109,6 +109,25 @@ describe("model parameter mapping", () => {
     });
   });
 
+  it("maps only the official Antigravity effort flag", () => {
+    expect(
+      buildModelParameters("antigravity", {
+        ...emptyModelParameterDraft(),
+        temperature: "0.7",
+        topP: "0.8",
+        maxOutputTokens: "32768",
+        reasoningEffort: "high",
+        serviceTier: "priority",
+      }),
+    ).toEqual({ effort: "high" });
+    expect(() =>
+      buildModelParameters("antigravity", {
+        ...emptyModelParameterDraft(),
+        advanced: '{"temperature":0.7}',
+      }),
+    ).toThrow(/only the reasoning effort/);
+  });
+
   it("rejects transport-owned fields in advanced JSON", () => {
     expect(() =>
       buildModelParameters("openai_compatible", {

@@ -101,6 +101,17 @@ receive no Docker socket, host bind mount, Provider credential, or external
 network. Production-like capabilities are deterministic project-mediated tools,
 not access to the real host.
 
+Candidate creation is fail-closed. The Runner verifies Rootless daemon mode,
+the sandbox-image contract label, and the final Docker configuration before
+and after start. Required properties include UID/GID 1000, read-only root,
+network `none`, all capabilities dropped, `no-new-privileges`, built-in
+seccomp, private IPC/UTS/cgroup namespaces, bounded memory/CPU/PIDs, disabled
+swap, no device/port/host mounts, and exactly one per-run named tmpfs workspace.
+Docker client proxy inheritance is disabled. Model-authored file writes run as
+the candidate UID and walk parent directories through descriptor-relative
+operations with `O_NOFOLLOW`; they never invoke Docker archive extraction
+after the candidate starts.
+
 The trusted control plane:
 
 1. asks the configured model for the next turn;
@@ -166,13 +177,17 @@ suites/<suite>/suite.yaml
     version
     family
     split: development | validation | held_out
-  leaderboard_policy
+  publication:
+    status: experimental | calibrated
+    note
 ```
 
-The loader verifies every slug/version reference and computes readiness from
-active families, held-out families, and scenario references. Planned content
-does not count as active. The API and UI must report the exact readiness result
-and cannot turn a development suite into a leaderboard through copywriting.
+The loader verifies every slug/version reference and reports actual family,
+split, scenario, and configured-instance coverage. Publication maturity is an
+explicit, versioned maintainer decision backed by calibration evidence, not a
+fixed scenario-count formula. The API and UI show both the coverage and the
+publication note. A suite grows only when a new Scenario adds a causally
+distinct, objectively gradable task; quantity is never an acceptance gate.
 
 ## 6. Determinism, faults, and offline information
 
@@ -267,14 +282,15 @@ Budgets are separate:
 
 - effective active time, excluding a confirmed pause;
 - logical tool calls;
-- physical Provider requests, including retries;
+- optional physical Provider-request soft/hard caps, including retries;
 - optional input/output Token limits;
 - scenario simulator ticks where applicable.
 
-Soft limits are warnings. Hard limits are safety boundaries. A hard-limit result
-is right-censored (`budget_exhausted`): partial evidence and score remain
-available, but the run is excluded from success-rate and completion-time
-calibration.
+Soft limits are warnings. Hard limits are safety boundaries. Provider-request
+limits may be disabled as a pair while request telemetry remains active. A
+hard-limit result is right-censored (`budget_exhausted`): partial evidence and
+score remain available, but the run is excluded from success-rate and
+completion-time calibration.
 
 The Runner also owns a deterministic, one-shot finalization window. Once any
 tracked resource reaches the later of its soft threshold or 80% of its hard
@@ -343,6 +359,7 @@ The control plane supports distinct adapters for:
 - OpenAI Responses API;
 - Anthropic Messages API or the official Claude Agent SDK;
 - Codex subscription Responses;
+- the official Antigravity CLI;
 - Google Gemini native `generateContent`;
 - OpenAI-compatible Chat Completions;
 - Ollama Chat.
@@ -354,10 +371,13 @@ limits, and bounded advanced JSON.
 
 Authentication is a separate owner-scoped entity. A `ProviderCredential`
 contains an encrypted payload, kind, non-secret account hint, expiry and
-validation state; a model profile references it by ID. Supported kinds are
-static API key, Claude Code OAuth, Codex OAuth, and Gemini OAuth. API responses
-never serialize the encrypted payload. Existing profile-owned API keys migrate
-idempotently into owner-scoped credentials.
+validation state; a model profile references it by ID. Supported active kinds
+are static API key, Claude Code OAuth, Codex OAuth, and a non-secret
+Antigravity CLI session reference. API responses never serialize the encrypted
+payload. Existing profile-owned API keys migrate idempotently into
+owner-scoped credentials. The legacy Gemini OAuth enum remains readable only
+so old rows can be retired safely; new imports are rejected without making a
+network request.
 
 Claude Code OAuth accepts only the long-lived token emitted by the official
 `claude setup-token` command; the platform does not implement a Claude.ai
@@ -373,18 +393,33 @@ Thus Claude Code never receives a Docker socket, repository mount, Browser
 network, or an alternate unobserved tool path.
 
 Codex OAuth accepts the Codex CLI `auth.json` format or an owner-bound device
-flow. Gemini OAuth accepts Gemini CLI `oauth_creds.json`; API-key Gemini uses
-the standard Generative Language endpoint. The OAuth client pair required to
-refresh an imported Gemini token is deployment configuration and is never
-embedded in the source tree. Refresh-token rotation is persisted under a row
-lock, and one authentication rejection may trigger one forced refresh and
-retry. Codex refresh requests use the official JSON contract and preserve the
-rotated refresh token atomically. Imported `auth.json` is a snapshot and must
-not be treated as a safely shareable refresh-token store. A Codex OAuth token
-can only leave the process for OpenAI authentication
-or the fixed `chatgpt.com/backend-api/codex` endpoint. A Gemini OAuth token can
-only leave for Google OAuth or the fixed Code Assist endpoint. The profile Base
-URL cannot redirect either OAuth token.
+flow. Refresh-token rotation is persisted under a row lock, and one
+authentication rejection may trigger one forced refresh and retry. Codex
+refresh requests use the official JSON contract and preserve the rotated
+refresh token atomically. Imported `auth.json` is a snapshot and must not be
+treated as a safely shareable refresh-token store. A Codex OAuth token can
+only leave the process for OpenAI authentication or the fixed
+`chatgpt.com/backend-api/codex` endpoint. Native Gemini supports API-key
+authentication against the public Generative Language endpoint only.
+
+Antigravity uses the official `agy` executable as a process boundary rather
+than reimplementing or reverse-proxying its private transport. The control
+image downloads a pinned `amd64` or `arm64` release and verifies its SHA-256
+digest. The official binary alone owns login, refresh, account-model discovery,
+and Provider requests. Its account state lives in a dedicated named Docker
+volume; the platform stores only a non-secret deployment-session reference and
+never reads, parses, exports, or copies the CLI token.
+
+Before non-interactive inference, the platform rewrites only its managed
+security settings and tool-less custom Agent definition. `tools: []`, strict
+permissions, a deny list for file, command, URL, unsandboxed, and MCP actions,
+an empty workspace, and a minimal subprocess environment prevent `agy` from
+becoming an unobserved second tool plane. Control secrets such as
+`APP_SECRET`, `DATABASE_URL`, and `DOCKER_HOST` are not inherited. A root
+Runner drops the process to the unprivileged `evil` account, and a timeout
+terminates the complete CLI process group. Candidate-visible repository,
+Browser, Git, database, and incident actions still pass only through the
+observable Runner tools.
 
 Codex OAuth provisioning also performs account-model discovery. The control
 plane sends the account access token and ChatGPT account ID only to the fixed
@@ -396,6 +431,15 @@ stable Codex client version is obtained by an unauthenticated, hourly cached
 GitHub Release lookup with a release-tested fallback. OAuth import and device
 sign-in trigger synchronization from the WebUI, while Credentials retains an
 explicit retry action.
+
+Antigravity model provisioning instead executes the public `agy models`
+command against the deployment session and idempotently creates matching
+profiles. A run performs one catalog/authentication preflight before the first
+turn, so a missing or rejected login fails quickly instead of consuming blind
+Provider retries. Because public print mode currently exposes no
+machine-readable Token usage, Antigravity marks Token usage unavailable,
+rejects Token budgets, and remains comparable through time, tool-call, and
+physical Provider-request budgets without invented estimates.
 
 Claude Code OAuth provisioning idempotently creates the official `opus`,
 `sonnet`, and `haiku` runtime aliases because Anthropic does not expose a
@@ -414,7 +458,8 @@ separate destructive operation: it overwrites the encrypted payload, archives
 the row, and is blocked while a live profile references it.
 
 Malformed tool arguments never execute as `{}`. Retryable transport errors use
-bounded backoff, and every physical attempt consumes Provider-request budget.
+bounded backoff, and every physical attempt is counted and consumes the
+Provider-request budget when that optional pair is enabled.
 
 The Runner is a singleton scheduler with a bounded in-process pool. Administrators
 can change concurrency from 1–16 without killing active slots. Each claimed run
@@ -461,7 +506,7 @@ in-memory model conversation.
 The bilingual React console uses normalized `/api/v1` entities for:
 
 - authentication, accounts, registration, and administration;
-- suite readiness and scenario catalog;
+- suite publication status, factual coverage, and scenario catalog;
 - editable model profiles and parameters;
 - concurrent run creation, pause/resume, confirmed cancellation, and result
   soft deletion;
@@ -484,7 +529,7 @@ Platform, Suite, Scenario, SDK, and analyzer versions are independent:
 
 - the platform version covers shared control plane, Runner, API, UI, and SDK
   behavior;
-- a Suite version covers membership, split, and readiness policy;
+- a Suite version covers membership, split, coverage, and publication status;
 - a Scenario version covers its world, truth, faults, tools, scoring,
   completion contract, and calibration;
 - an analyzer version covers derived behavior rules.

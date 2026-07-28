@@ -48,6 +48,7 @@ def test_telemetry_pairs_provider_turns_and_tool_lifecycle() -> None:
             "duration_ms": 7_000,
             "input_tokens": 900,
             "output_tokens": 100,
+            "token_usage_available": False,
             "response_characters": 80,
             "tool_calls": [{"name": "read_file"}],
         },
@@ -114,8 +115,10 @@ def test_telemetry_pairs_provider_turns_and_tool_lifecycle() -> None:
     assert turn["retry_count"] == 1
     assert turn["retry_delay_seconds"] == 2
     assert turn["input_tokens"] == 900
+    assert turn["token_usage_available"] is False
     assert turn["tokens_per_second"] == 14.286
     assert bundle["summary"]["provider"]["peak_context_characters"] == 4_096
+    assert bundle["summary"]["provider"]["tokens"]["available"] is False
     assert bundle["summary"]["provider"]["context_management"] == {
         "compactions": 1,
         "messages_removed": 20,

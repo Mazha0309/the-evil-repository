@@ -140,6 +140,10 @@ class CredentialCreate(BaseModel):
     secret: str = Field(min_length=1, max_length=65_536)
 
 
+class AntigravityCredentialCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+
+
 class CredentialImport(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     kind: CredentialKind
@@ -149,11 +153,10 @@ class CredentialImport(BaseModel):
     def only_oauth_documents_are_imported(self) -> "CredentialImport":
         if self.kind in {
             CredentialKind.api_key,
+            CredentialKind.antigravity_cli,
             CredentialKind.anthropic_oauth,
         }:
-            raise ValueError(
-                "This credential kind must be created as a secret, not imported as JSON"
-            )
+            raise ValueError("This credential kind must be created as a secret, not imported as JSON")
         return self
 
 
@@ -295,8 +298,8 @@ class RunCreate(BaseModel):
     hard_seconds: int = Field(default=21_600, ge=300, le=21_600)
     soft_tool_calls: int = Field(default=600, ge=10, le=2_000)
     hard_tool_calls: int = Field(default=2_200, ge=20, le=3_000)
-    soft_provider_requests: int = Field(default=300, ge=1, le=5_000)
-    hard_provider_requests: int = Field(default=720, ge=2, le=10_000)
+    soft_provider_requests: int | None = Field(default=None, ge=1, le=5_000)
+    hard_provider_requests: int | None = Field(default=None, ge=2, le=10_000)
     soft_total_tokens: int | None = Field(default=None, ge=1_000, le=1_000_000_000)
     hard_total_tokens: int | None = Field(default=None, ge=2_000, le=2_000_000_000)
 
@@ -306,8 +309,11 @@ class RunCreate(BaseModel):
             raise ValueError("Soft time budget must be lower than the hard time budget")
         if self.soft_tool_calls >= self.hard_tool_calls:
             raise ValueError("Soft tool-call budget must be lower than the hard tool-call budget")
-        if self.soft_provider_requests >= self.hard_provider_requests:
-            raise ValueError("Soft Provider-request budget must be lower than the hard Provider-request budget")
+        self._validate_optional_pair(
+            "Provider-request",
+            self.soft_provider_requests,
+            self.hard_provider_requests,
+        )
         self._validate_optional_pair(
             "Token",
             self.soft_total_tokens,
@@ -324,7 +330,7 @@ class RunCreate(BaseModel):
         if (soft is None) != (hard is None):
             raise ValueError(f"{label} soft and hard budgets must be configured together")
         if soft is not None and hard is not None and soft >= hard:
-            raise ValueError(f"Soft {label.lower()} budget must be lower than the hard budget")
+            raise ValueError(f"Soft {label} budget must be lower than the hard budget")
 
 
 class RunRead(ORMModel):

@@ -49,6 +49,28 @@ describe("resolveRunModel", () => {
     });
   });
 
+  it("recognizes an Antigravity identity frozen in a run snapshot", () => {
+    expect(
+      resolveRunModel(
+        {
+          ...run,
+          config: {
+            candidate_model_snapshot: {
+              name: "Gemini through agy",
+              provider: "antigravity",
+              model_id: "gemini-3.1-pro-high",
+            },
+          },
+        },
+        "candidate",
+        [],
+      ),
+    ).toMatchObject({
+      provider: "antigravity",
+      source: "snapshot",
+    });
+  });
+
   it("recovers a historical judge name from the semantic review", () => {
     const identity = resolveRunModel(
       {

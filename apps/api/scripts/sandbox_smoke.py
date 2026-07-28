@@ -25,6 +25,96 @@ def main() -> None:
             required_paths = list(truth["required_patch_paths"])
             bundle = build_runtime_bundle(scenario.metadata.seed)
 
+            boundary_probe = sandbox.execute(
+                ToolCall(
+                    call_id="smoke-boundary",
+                    name="exec_command",
+                    arguments={
+                        "command": (
+                            "set -eu; "
+                            "test ! -e /var/run/docker.sock; "
+                            "test \"$(awk '/CapEff/ {print $2}' /proc/self/status)\" "
+                            "= 0000000000000000; "
+                            "test \"$(awk '/NoNewPrivs/ {print $2}' /proc/self/status)\" = 1; "
+                            "test \"$(awk '/^Seccomp:/ {print $2}' /proc/self/status)\" = 2; "
+                            "! touch /opt/evil/candidate-breakout; "
+                            "! env | grep -Eq '^(HTTP|HTTPS|ALL|NO)_PROXY='"
+                        ),
+                    },
+                )
+            )
+            if boundary_probe.status != "ok":
+                raise RuntimeError(
+                    f"Candidate isolation probe failed: {boundary_probe.output}"
+                )
+
+            alias_setup = sandbox.execute(
+                ToolCall(
+                    call_id="smoke-symlink-setup",
+                    name="exec_command",
+                    arguments={
+                        "cwd": "dead-letter",
+                        "command": "ln -s ci write-alias",
+                    },
+                )
+            )
+            alias_write = sandbox.write_file(
+                ToolCall(
+                    call_id="smoke-symlink-write",
+                    name="write_file",
+                    arguments={
+                        "path": "dead-letter/write-alias/candidate-owned.txt",
+                        "content": "should not cross a symlink parent",
+                    },
+                )
+            )
+            if alias_setup.status != "ok" or alias_write.status == "ok":
+                raise RuntimeError(
+                    "Candidate write followed a symlink parent instead of failing closed"
+                )
+
+            hardlink_setup = sandbox.execute(
+                ToolCall(
+                    call_id="smoke-hardlink-setup",
+                    name="exec_command",
+                    arguments={
+                        "cwd": "dead-letter",
+                        "command": (
+                            "printf sentinel > hardlink-original.txt; "
+                            "ln hardlink-original.txt hardlink-alias.txt"
+                        ),
+                    },
+                )
+            )
+            hardlink_write = sandbox.write_file(
+                ToolCall(
+                    call_id="smoke-hardlink-write",
+                    name="write_file",
+                    arguments={
+                        "path": "dead-letter/hardlink-alias.txt",
+                        "content": "replacement",
+                    },
+                )
+            )
+            hardlink_verify = sandbox.execute(
+                ToolCall(
+                    call_id="smoke-hardlink-verify",
+                    name="exec_command",
+                    arguments={
+                        "cwd": "dead-letter",
+                        "command": (
+                            "test \"$(cat hardlink-original.txt)\" = sentinel; "
+                            "test \"$(cat hardlink-alias.txt)\" = replacement"
+                        ),
+                    },
+                )
+            )
+            if any(
+                result.status != "ok"
+                for result in (hardlink_setup, hardlink_write, hardlink_verify)
+            ):
+                raise RuntimeError("Atomic candidate write did not break a hard link")
+
             before = sandbox.hidden_runtime_contract()
             if before.status == "ok":
                 raise RuntimeError("Broken workspace unexpectedly passed runtime contract")
@@ -174,10 +264,10 @@ def main() -> None:
                         "required_leaf_repairs": len(required_paths),
                         "semantic_checkpoints": len(expected_prefixes),
                         "checks": list(checks),
-                        "isolation": {
-                            "network": "none",
-                            "host_mounts": "none",
-                            "docker_socket_in_candidate": False,
+                        "isolation": sandbox.security_posture(),
+                        "write_boundary": {
+                            "symlink_parent_rejected": True,
+                            "hardlink_replaced_atomically": True,
                         },
                     },
                     indent=2,

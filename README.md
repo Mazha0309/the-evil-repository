@@ -26,7 +26,7 @@ provider credentials.
 
 ## Status
 
-The platform is currently **v0.12.1** and remains under active construction.
+The platform is currently **v0.13.0** and remains under active construction.
 See [`CHANGELOG.md`](CHANGELOG.md). This release includes two independently
 versioned scenarios, account isolation, administrator controls, server
 monitoring, a live Agent activity console, and the complete execution,
@@ -34,12 +34,12 @@ telemetry, scoring, and visualization path around them.
 
 This release also introduces the versioned Suite contract. The bundled
 Production Incident Engineering Suite currently contains **two public
-development scenarios in two active families**. Its policy requires at least 20
-scenario references across five active families, including three held-out
-families, before it may claim leaderboard readiness. The WebUI and `/suites`
-API expose that readiness as `2/5`, `0/3`, and `2/20`; therefore the current
-release is useful for detailed engineering analysis, but it is **not yet a
-statistically valid general leaderboard**.
+development scenarios in two active families**. It is explicitly published as
+an experimental small-sample suite. The WebUI and `/suites` API report actual
+family, split, scenario, and instance coverage without an arbitrary scenario
+quota. Results should name exact versions, seeds, and repetitions; new
+scenarios are accepted for distinct, objectively gradable causal work, not to
+fill a counter.
 
 Long investigations can be paused at a safe Provider/tool boundary and resumed
 without discarding the candidate workspace or conversation. Paused time does
@@ -51,7 +51,8 @@ as an empty object. The whole mixed tool-call batch is rejected, an auditable
 `provider.tool_call_invalid` event is recorded, and the model receives a clean
 repair turn. Provider read/connect/protocol transport failures use bounded
 backoff, and every HTTP attempt still consumes the configured raw Provider
-request budget.
+request budget when one is enabled. Requests remain observable when the cap is
+disabled.
 
 Long-running contexts are bounded before transport. At the soft character
 threshold, the Runner replaces retired transcript blocks with a deterministic
@@ -75,30 +76,30 @@ container. It contains the event stream, repository diffs/status, bounded
 investigation artifacts, scenario audit, resource ledger, and failure summary.
 This checkpoint is replayable evidence, not a resumable model conversation.
 
-The control plane supports six explicit model protocols: OpenAI Responses,
+The control plane supports seven explicit model protocols: OpenAI Responses,
 Anthropic Messages (Console API key) or the official Claude Agent SDK
-(Claude Code OAuth), Codex subscription Responses, Google Gemini native
-`generateContent`, OpenAI-compatible Chat Completions, and Ollama Chat.
+(Claude Code OAuth), Codex subscription Responses, the official Antigravity
+CLI, Google Gemini native `generateContent`, OpenAI-compatible Chat
+Completions, and Ollama Chat.
 Similar brand names do not collapse protocol boundaries: every adapter maps
 messages, tools, errors, parameters, and usage according to its real wire
 contract.
 
-Provider authentication is a separate, per-account vault. One encrypted API
-key can be reused by several profiles. Anthropic can use a Console API key or
-a long-lived token produced by `claude setup-token`; Codex can import the
-Codex CLI `auth.json` or use device sign-in; Gemini can use an API key or
-import Gemini CLI `oauth_creds.json`. OAuth secrets never enter candidate
-containers, events, tool results, or archives. Claude Code tokens are consumed
-only by the bundled official Agent SDK, Codex tokens are pinned to OpenAI's
-authentication and Codex hosts, and Gemini tokens are pinned to Google OAuth
-and Code Assist hosts regardless of the profile Base URL.
+Provider authentication normally lives in a separate per-account vault. One
+encrypted API key can be reused by several profiles. Anthropic can use a
+Console API key or a long-lived token produced by `claude setup-token`; Codex
+can import the Codex CLI `auth.json` or use device sign-in; native Gemini uses
+an API key. Antigravity is the deliberate exception: one administrator-owned,
+deployment-wide login is held only by the official `agy` binary in a
+persistent Docker volume. The platform never imports or parses that session,
+never refreshes its token, and never calls the private Code Assist backend
+itself.
 
-After Codex OAuth import or device sign-in, the control plane reads the
-account-scoped official model catalog and idempotently creates enabled model
-profiles for selectable entries; hidden models never enter the run picker.
-Credentials also expose a **Sync models** action for later catalog changes.
-Catalog requests use the latest stable Codex client version, with a
-release-tested fallback when version discovery is unavailable.
+After Codex sign-in, the control plane reads the account-scoped official model
+catalog and idempotently creates enabled profiles for selectable entries.
+Antigravity synchronization executes `agy models` against its own signed-in
+session and does the same. Hidden or unavailable models never enter the run
+picker.
 
 Model profiles can be edited after creation and switched between compatible
 saved credentials. The bilingual parameter editor exposes temperature, top-p,
@@ -168,7 +169,7 @@ silently changes a published scenario's truth.
 
 ## Included scenarios
 
-- **[The Terminal Repository 3.0.5](scenarios/terminal-repository/DESIGN.md)** —
+- **[The Terminal Repository 3.0.6](scenarios/terminal-repository/DESIGN.md)** —
   a cross-repository protocol regression with a dirty database, polluted CI,
   intermittent runtime behavior, eight incident tickets, seven independent
   relay defects, and a 180/360-minute execution envelope.
@@ -187,7 +188,7 @@ with a stale SQLite cache. The offline mirror is available only through
 `browser.search`, `browser.open`, and `browser.find`, so a candidate cannot
 bypass Browser behavior by scanning a copied mirror directory.
 
-Terminal Repository 3.0.5 makes the apparent bulk material. Five live relay chains contain
+Terminal Repository 3.0.6 makes the apparent bulk material. Five live relay chains contain
 704 executable opaque cells; seven independent corruptions are jointly
 required, and fixing six still fails. The two repositories contain exactly
 5,000 tracked files and 2,000 commits, 40 semantic custody checkpoints, seven
@@ -210,7 +211,7 @@ equivalents of `ps`, `systemctl`, `journalctl`, `lsof`/socket inspection,
 `strace`, and `perf`. These tools observe only the simulated incident state;
 they never attach to a host process or expose live packets. Their collectors,
 clock domains, useful signals, and decoys remain replayable. Terminal
-Repository 3.0.5 stays frozen and does not retroactively enable this new tool
+Repository 3.0.6 stays frozen and does not retroactively enable this new tool
 pack.
 
 A candidate must build an observable investigation, not merely guess a patch.
@@ -246,12 +247,14 @@ verification. Scenario releases are recalibrated when strong Agents discover
 material shortcuts.
 
 The incident's 180 ticks are deterministic logical replay steps, not 180
-wall-clock minutes. Scenario 3.0.5 defaults to a 180-minute soft warning and a
-360-minute hard observation envelope, with 600/2,200 tool calls and 300/720
-raw Provider requests. The hard limit is a safety boundary, not an intended
+wall-clock minutes. Scenario 3.0.6 defaults to a 180-minute soft warning and a
+360-minute hard observation envelope, with 600/2,200 tool calls. Raw Provider
+requests remain fully observable but are unlimited by default; operators can
+configure a paired soft/hard request cap per run when capacity protection is
+needed. The remaining hard limits are safety boundaries, not an intended
 duration or forced wait.
 
-When active time, tool calls, Provider requests, or an enabled Token budget
+When active time, tool calls, or an enabled Provider-request or Token budget
 enters its final 20%, the Runner sends the candidate exactly one trusted
 finalization notice. It includes the remaining resources and the deterministic
 completion-gate gaps, asking the model to stop broad exploration, preserve its
@@ -357,8 +360,8 @@ because their in-memory model conversations cannot be reconstructed.
 Node.js 22+, pnpm, Python 3.12+, and uv are only required for host-side
 development; the deployment command builds application dependencies inside
 containers. The control image includes the official Claude Agent SDK and its
-native runtime, so Claude Code OAuth requires no host-side Claude or Node
-installation.
+native runtime plus the pinned official `agy` binary, so Claude Code OAuth and
+Antigravity require no host-side CLI or Node installation.
 
 On a fresh database, the first page creates the initial administrator. Set
 `SETUP_TOKEN` before startup if anyone else could reach the service during
@@ -415,37 +418,51 @@ Open **Credentials** in the WebUI before creating a model profile:
   device sign-in for a long-lived independent platform session. A successful
   import also synchronizes selectable models, and the Credentials page can
   safely retry that catalog sync later.
-- **Gemini JSON import:** first complete OAuth/onboarding in Gemini CLI, then
-  upload `~/.gemini/oauth_creds.json`. Newer Gemini CLI installations may use
-  an operating-system keychain and therefore have no JSON file; use a Gemini
-  API key unless you deliberately have an exportable credential file. Imported
-  refresh tokens also require `GEMINI_OAUTH_CLIENT_ID` and
-  `GEMINI_OAUTH_CLIENT_SECRET` to contain the OAuth client pair that originally
-  issued the token; the project never embeds or publishes third-party client
-  credentials.
+- **Official Antigravity CLI:** after the deployment image has been built, run
+  `make antigravity-login` on the deployment host. Follow the URL printed by
+  official `agy` and paste the returned authorization code into the terminal.
+  Then open **Credentials → Antigravity CLI**, attach the deployment session,
+  and synchronize its available models. `make antigravity-models` performs a
+  read-only CLI check. This is one administrator-owned session for the whole
+  deployment, not one login per WebUI account. The image pins official
+  `agy` 1.1.7 for `amd64`/`arm64` and verifies the published archive digest
+  during the build. See Google's
+  [CLI authentication guide](https://antigravity.google/docs/cli/install) and
+  [official release repository](https://github.com/google-antigravity/antigravity-cli).
 
-Claude Code and Codex OAuth-generated profiles appear directly in the
+Claude Code, Codex OAuth, and Antigravity profiles appear directly in the
 candidate and judge selectors; no second manual model-ID step is required.
 Claude Code OAuth uses the official Agent SDK with all built-in tools,
 settings, skills, plugins, MCP servers, and session persistence disabled. It
 receives only a schema-constrained next-action interface; EvilBench still
 executes and records every repository, Git, database, Browser, and incident
-tool. For Gemini OAuth, choose **Google Gemini native API** and bind the
-matching credential. Gemini API keys call the standard Generative Language
-endpoint; Gemini OAuth calls the Code Assist endpoint and may require completed
-Gemini CLI onboarding. Incompatible combinations are rejected by both the UI
-and API.
+tool. Antigravity runs a tool-less managed Agent with deny-all local
+permissions in an empty workspace; only the structured next action returns to
+the Runner. The official CLI owns login, refresh, model discovery, and all
+Provider traffic. Native Gemini API-key profiles continue to call the public
+Generative Language endpoint. The retired Gemini OAuth JSON import is rejected
+and legacy rows are marked for reauthentication without network use.
 
-Setup tokens, `auth.json`, and `oauth_creds.json` must be treated like
-passwords. Store them only in an EvilBench deployment you control, keep
-`APP_SECRET` stable and private, and use HTTPS for a remote deployment.
+Official `agy` currently exposes no machine-readable Token usage in print
+mode. Antigravity runs therefore report Token usage as unavailable and cannot
+use Token budgets; time and tool-call budgets remain enforced, while a
+physical Provider-request pair is optional. The platform does not manufacture
+a Token estimate.
+
+Setup tokens and `auth.json` must be treated like passwords. The Antigravity
+session volume has the same sensitivity even though the platform never reads
+it. Store them only in an EvilBench deployment you control, keep `APP_SECRET`
+stable and private, and use HTTPS for a remote deployment.
 Anthropic documents `claude setup-token` for CI and scripts, but also
 [prohibits third-party services from offering Claude.ai login or routing
 Free/Pro/Max credentials on users' behalf](https://code.claude.com/docs/en/legal-and-compliance).
 This integration is therefore for self-hosted personal or organization-internal
 use. A public service must use Anthropic Console API keys or a supported cloud
 provider. Codex subscription access is likewise distinct from a Platform API
-key; operators remain responsible for account and organization policy.
+key; operators remain responsible for account and organization policy. An
+Antigravity subscription session is also subject to Google's current account
+and service terms. Do not attach a personal deployment-wide session to a
+public multi-tenant service whose users you do not trust.
 
 ## External deployment
 
@@ -472,8 +489,10 @@ make down
 
 This refuses to stop while runs are queued or active. Once safe, it stops and
 removes the application containers and Compose networks while preserving the
-PostgreSQL data volume. Run `make deploy` again to resume with the existing
-accounts, settings, and benchmark data. Use
+PostgreSQL and `antigravity-data` volumes. Run `make deploy` again to resume
+with the existing accounts, settings, benchmark data, and official CLI login.
+`docker compose down -v` also deletes both volumes and therefore signs the
+deployment out; back up anything required before using it. Use
 `ALLOW_ACTIVE_RUN_DISRUPTION=1 make down` only to abandon active runs
 deliberately.
 
@@ -482,7 +501,7 @@ deliberately.
 ```text
 apps/web/                  React/TypeScript control plane
 apps/api/                  FastAPI API, worker, runner, scorer
-suites/                    Versioned family/split manifests and readiness policy
+suites/                    Versioned family/split manifests and publication status
 scenarios/                 Versioned Scenario SDK packages, truth, and corpus
 infra/sandbox/             Networkless candidate image
 docs/                      Architecture, threat model, and authoring docs
@@ -514,8 +533,16 @@ Further reading:
 
 Rootless Docker is a strong practical local boundary, not a mathematical
 guarantee against every shared-kernel escape. The runner treats candidate code
-as untrusted, never mounts the host workspace, and performs archive/path
-validation when moving artifacts across the boundary. See
+as untrusted and fails closed unless the selected daemon reports Rootless mode
+and the sandbox image declares the expected isolation contract. Before an
+untrusted process starts, it verifies a non-root user, no network, read-only
+root, zero capabilities, `no-new-privileges`, built-in seccomp, private
+namespaces, resource limits, an exclusive named tmpfs workspace, and no ports,
+devices, host bind mounts, or Docker socket. Model-authored writes execute as
+the candidate UID through descriptor-relative, no-symlink traversal instead of
+privileged Docker archive extraction. For hostile public multi-tenant
+execution, add a dedicated VM/microVM or compatible sandbox runtime through
+`SANDBOX_RUNTIME`; a shared-kernel container alone is not that boundary. See
 [`docs/threat-model.md`](docs/threat-model.md).
 
 ## License

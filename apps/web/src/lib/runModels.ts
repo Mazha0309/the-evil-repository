@@ -86,7 +86,8 @@ function providerValue(value: unknown): ModelProvider | null {
     value === "openai_compatible" ||
     value === "ollama" ||
     value === "codex" ||
-    value === "gemini"
+    value === "gemini" ||
+    value === "antigravity"
     ? value
     : null;
 }

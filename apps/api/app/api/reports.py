@@ -55,6 +55,11 @@ def export_report(
     )
     serialized_events = [serialize_run_event(event) for event in events]
     telemetry = build_telemetry_bundle(serialized_events)
+    candidate_snapshot = dict(run.config).get("candidate_model_snapshot", {})
+    token_usage_available = not (
+        isinstance(candidate_snapshot, dict)
+        and candidate_snapshot.get("provider") == "antigravity"
+    )
     investigation = InvestigationGraph.model_validate(
         graph_payload(session, run_id)
     ).model_dump(mode="json")
@@ -74,6 +79,7 @@ def export_report(
             "score": run.score,
             "tool_calls": run.tool_calls,
             "tokens": {
+                "available": token_usage_available,
                 "input": run.input_tokens,
                 "output": run.output_tokens,
                 "total": run.input_tokens + run.output_tokens,

@@ -21,6 +21,14 @@ from claude_agent_sdk import (
     query as claude_query,
 )
 
+from app.antigravity_cli import (
+    ANTIGRAVITY_CLI_VERSION,
+    AntigravityCliError,
+    antigravity_process_error,
+    clean_cli_output,
+    discover_antigravity_models,
+    run_antigravity_prompt,
+)
 from app.credentials import ResolvedCredential
 from app.model_parameters import safe_model_parameters
 from app.models import CredentialKind, ModelProfile, ModelProvider
@@ -83,6 +91,7 @@ class ModelClient:
         self.request_attempts = 0
         self.logical_turn = 0
         self.session_id = str(uuid.uuid4())
+        self._antigravity_preflight_complete = False
         self._sleep = time.sleep
         self.client = httpx.Client(
             timeout=httpx.Timeout(
@@ -97,6 +106,8 @@ class ModelClient:
     def complete(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> AssistantTurn:
         if self.profile.provider == ModelProvider.codex:
             return self._codex_responses(messages, tools)
+        if self.profile.provider == ModelProvider.antigravity:
+            return self._antigravity(messages, tools)
         if self.profile.provider == ModelProvider.gemini:
             return self._gemini(messages, tools)
         if self.profile.provider == ModelProvider.openai_responses:
@@ -232,13 +243,9 @@ class ModelClient:
     ) -> AssistantTurn:
         credential = self._credential()
         if credential is None or credential.kind != CredentialKind.codex_oauth:
-            raise ProviderResponseError(
-                "Codex subscription requests require a ready Codex OAuth credential"
-            )
+            raise ProviderResponseError("Codex subscription requests require a ready Codex OAuth credential")
         if not credential.account_id:
-            raise ProviderResponseError(
-                "Codex OAuth credential is missing its ChatGPT account id"
-            )
+            raise ProviderResponseError("Codex OAuth credential is missing its ChatGPT account id")
 
         parameters = safe_model_parameters(self.profile.parameters)
         for unsupported in (
@@ -257,9 +264,7 @@ class ModelClient:
             for message in messages
             if message.get("role") == "system" and message.get("content")
         )
-        input_messages = [
-            message for message in messages if message.get("role") != "system"
-        ]
+        input_messages = [message for message in messages if message.get("role") != "system"]
         payload: dict[str, Any] = {
             **parameters,
             "model": self.profile.model_id,
@@ -313,9 +318,7 @@ class ModelClient:
         credential: ResolvedCredential,
     ) -> dict[str, str]:
         if not credential.account_id:
-            raise ProviderResponseError(
-                "Codex OAuth credential is missing its ChatGPT account id"
-            )
+            raise ProviderResponseError("Codex OAuth credential is missing its ChatGPT account id")
         return {
             "Authorization": f"Bearer {credential.token}",
             "ChatGPT-Account-Id": credential.account_id,
@@ -334,16 +337,9 @@ class ModelClient:
     ) -> AssistantTurn:
         credential = self._credential()
         if credential is None:
-            raise ProviderResponseError(
-                "Gemini requests require an API key or Gemini OAuth credential"
-            )
-        if credential.kind not in {
-            CredentialKind.api_key,
-            CredentialKind.gemini_oauth,
-        }:
-            raise ProviderResponseError(
-                "The selected credential is not compatible with Gemini"
-            )
+            raise ProviderResponseError("Gemini native API requests require an API key")
+        if credential.kind != CredentialKind.api_key:
+            raise ProviderResponseError("The selected credential is not compatible with Gemini")
 
         system, contents = gemini_input(messages)
         parameters = safe_model_parameters(self.profile.parameters)
@@ -372,64 +368,129 @@ class ModelClient:
                     ]
                 }
             ]
-            request_body["toolConfig"] = {
-                "functionCallingConfig": {"mode": "AUTO"}
-            }
+            request_body["toolConfig"] = {"functionCallingConfig": {"mode": "AUTO"}}
 
-        if credential.kind == CredentialKind.gemini_oauth:
-            if not credential.project_id:
-                raise ProviderResponseError(
-                    "Gemini OAuth account has not completed Code Assist onboarding"
-                )
-            request_body["session_id"] = self.session_id
-            payload = {
-                "model": self.profile.model_id,
-                "project": credential.project_id,
-                "user_prompt_id": str(uuid.uuid4()),
-                "request": request_body,
-            }
-            url = "https://cloudcode-pa.googleapis.com/v1internal:generateContent"
-            headers = {
-                "Authorization": f"Bearer {credential.token}",
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-            }
-        else:
-            payload = request_body
-            model_id = quote(self.profile.model_id, safe="")
-            url = (
-                f"{self.profile.base_url.rstrip('/')}/models/"
-                f"{model_id}:generateContent"
-            )
-            headers = {
-                "x-goog-api-key": credential.token,
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-            }
+        payload = request_body
+        model_id = quote(self.profile.model_id, safe="")
+        url = f"{self.profile.base_url.rstrip('/')}/models/{model_id}:generateContent"
+        headers = {
+            "x-goog-api-key": credential.token,
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
 
         response = self._post(url, headers=headers, json=payload)
-        if (
-            response.status_code in {401, 403}
-            and credential.kind == CredentialKind.gemini_oauth
-            and self.credential_resolver
-        ):
-            refreshed = self._credential(force_refresh=True)
-            if refreshed is not None:
-                headers["Authorization"] = f"Bearer {refreshed.token}"
-                response = self._post(url, headers=headers, json=payload)
         raise_provider_status(response, self.profile.model_id)
         body = response.json()
-        if credential.kind == CredentialKind.gemini_oauth:
-            wrapped = body.get("response")
-            if not isinstance(wrapped, dict):
-                raise ProviderResponseError(
-                    "Gemini Code Assist returned no model response"
-                )
-            body = wrapped
         return parse_gemini_turn(
             body,
             native_tools=self.profile.native_tools,
         )
+
+    def _antigravity(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+    ) -> AssistantTurn:
+        credential = self._credential()
+        if credential is None or credential.kind != CredentialKind.antigravity_cli:
+            raise ProviderResponseError("Antigravity requests require the deployment's official CLI session")
+
+        if not self._antigravity_preflight_complete:
+            try:
+                available = discover_antigravity_models(timeout_seconds=min(30, self.timeout_seconds))
+            except AntigravityCliError as exc:
+                if exc.authentication:
+                    self._mark_credential_needs_reauth("antigravity_cli_needs_login")
+                    raise ProviderAuthenticationError(str(exc)) from exc
+                if exc.transient:
+                    raise ProviderTransientError(str(exc)) from exc
+                raise ProviderResponseError(str(exc)) from exc
+            if self.profile.model_id not in {item.model_id for item in available}:
+                raise ProviderResponseError(
+                    "The selected Antigravity model is no longer available "
+                    "for this account; synchronize the CLI model catalog"
+                )
+            self._antigravity_preflight_complete = True
+
+        prompt = antigravity_turn_request(messages, tools)
+        effort = antigravity_effort(self.profile.parameters)
+        maximum_attempts = self.max_retries + 1
+        for attempt in range(maximum_attempts):
+            request = {
+                "provider": self.profile.provider.value,
+                "transport": "official_antigravity_cli",
+                "credential_kind": credential.kind.value,
+                "cli_version": ANTIGRAVITY_CLI_VERSION,
+                "model_id": self.profile.model_id,
+                "reasoning_effort": effort,
+                "request_number": self.request_attempts + 1,
+                "logical_turn": self.logical_turn,
+                "attempt": attempt + 1,
+                "maximum_attempts": maximum_attempts,
+            }
+            if self.on_request:
+                self.on_request(request)
+            self.request_attempts += 1
+
+            try:
+                result = run_antigravity_prompt(
+                    model=self.profile.model_id,
+                    effort=effort,
+                    prompt=prompt,
+                    timeout_seconds=self.timeout_seconds,
+                )
+                if result.returncode == 0:
+                    return parse_antigravity_turn(result.stdout, tools)
+                error = antigravity_process_error(
+                    result,
+                    operation="Provider request",
+                )
+            except AntigravityCliError as exc:
+                error = exc
+
+            if error.code == "antigravity_cli_timeout":
+                try:
+                    discover_antigravity_models(timeout_seconds=30)
+                except AntigravityCliError as probe_error:
+                    if probe_error.authentication:
+                        error = probe_error
+
+            if error.authentication:
+                self._mark_credential_needs_reauth("antigravity_cli_needs_login")
+                raise ProviderAuthenticationError(str(error)) from error
+            if not error.transient:
+                diagnostic = str(error)
+                if is_context_length_error(diagnostic):
+                    raise ProviderContextLengthError(diagnostic) from error
+                if is_policy_rejection_error(diagnostic):
+                    raise ProviderPolicyRejectionError(diagnostic) from error
+                raise ProviderResponseError(diagnostic) from error
+            if attempt >= self.max_retries:
+                raise ProviderTransientError(
+                    f"Antigravity CLI remained unavailable after bounded retries for model {self.profile.model_id}"
+                ) from error
+
+            delay = provider_transport_retry_delay(attempt)
+            retry = {
+                "provider": self.profile.provider.value,
+                "transport": "official_antigravity_cli",
+                "model_id": self.profile.model_id,
+                "logical_turn": self.logical_turn,
+                "status_code": None,
+                "error_type": error.code,
+                "failed_attempt": attempt + 1,
+                "next_attempt": attempt + 2,
+                "maximum_attempts": maximum_attempts,
+                "delay_seconds": delay,
+            }
+            if self.on_retry:
+                try:
+                    self.on_retry(retry)
+                except Exception:
+                    logger.exception("Failed to archive Antigravity CLI retry telemetry")
+            self._sleep(delay)
+        raise AssertionError("Antigravity CLI retry loop exited unexpectedly")
 
     def _anthropic(
         self,
@@ -438,15 +499,11 @@ class ModelClient:
     ) -> AssistantTurn:
         credential = self._credential()
         if credential is None:
-            raise ProviderResponseError(
-                "Anthropic requests require an API key or Claude Code OAuth credential"
-            )
+            raise ProviderResponseError("Anthropic requests require an API key or Claude Code OAuth credential")
         if credential.kind == CredentialKind.anthropic_oauth:
             return self._anthropic_claude_code(messages, tools, credential)
         if credential.kind != CredentialKind.api_key:
-            raise ProviderResponseError(
-                "The selected credential is not compatible with Anthropic"
-            )
+            raise ProviderResponseError("The selected credential is not compatible with Anthropic")
 
         parameters = safe_model_parameters(self.profile.parameters)
         anthropic_version = str(parameters.pop("anthropic_version", "2023-06-01"))
@@ -551,9 +608,7 @@ class ModelClient:
                         self.profile.model_id,
                     )
                     if isinstance(error, ProviderAuthenticationError):
-                        self._mark_credential_needs_reauth(
-                            "anthropic_oauth_rejected"
-                        )
+                        self._mark_credential_needs_reauth("anthropic_oauth_rejected")
                     raise error
                 return parse_claude_code_turn(result, tools)
             except ProviderTransientError as exc:
@@ -576,15 +631,12 @@ class ModelClient:
                     try:
                         self.on_retry(retry)
                     except Exception:
-                        logger.exception(
-                            "Failed to archive Claude Code retry telemetry"
-                        )
+                        logger.exception("Failed to archive Claude Code retry telemetry")
                 self._sleep(delay)
             except TimeoutError as exc:
                 if attempt >= self.max_retries:
                     raise ProviderTransientError(
-                        "Claude Code timed out after bounded retries for model "
-                        f"{self.profile.model_id}"
+                        f"Claude Code timed out after bounded retries for model {self.profile.model_id}"
                     ) from exc
                 delay = provider_transport_retry_delay(attempt)
                 retry = {
@@ -603,15 +655,12 @@ class ModelClient:
                     try:
                         self.on_retry(retry)
                     except Exception:
-                        logger.exception(
-                            "Failed to archive Claude Code retry telemetry"
-                        )
+                        logger.exception("Failed to archive Claude Code retry telemetry")
                 self._sleep(delay)
             except ClaudeSDKError as exc:
                 if attempt >= self.max_retries:
                     raise ProviderTransientError(
-                        "The Claude Agent SDK process failed after bounded "
-                        f"retries for model {self.profile.model_id}"
+                        f"The Claude Agent SDK process failed after bounded retries for model {self.profile.model_id}"
                     ) from exc
                 delay = provider_transport_retry_delay(attempt)
                 retry = {
@@ -630,9 +679,7 @@ class ModelClient:
                     try:
                         self.on_retry(retry)
                     except Exception:
-                        logger.exception(
-                            "Failed to archive Claude Code retry telemetry"
-                        )
+                        logger.exception("Failed to archive Claude Code retry telemetry")
                 self._sleep(delay)
         raise AssertionError("Claude Code retry loop exited unexpectedly")
 
@@ -646,9 +693,7 @@ class ModelClient:
             try:
                 marker(code)
             except Exception:
-                logger.exception(
-                    "Failed to mark the rejected OAuth credential"
-                )
+                logger.exception("Failed to mark the rejected OAuth credential")
 
     def _ollama(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> AssistantTurn:
         parameters = safe_model_parameters(self.profile.parameters)
@@ -754,14 +799,9 @@ class ModelClient:
                 self._sleep(delay)
                 continue
             stream_retry_reason = (
-                retry_response(response)
-                if retry_response is not None and 200 <= response.status_code < 300
-                else None
+                retry_response(response) if retry_response is not None and 200 <= response.status_code < 300 else None
             )
-            if (
-                response.status_code not in RETRYABLE_PROVIDER_STATUS
-                and stream_retry_reason is None
-            ):
+            if response.status_code not in RETRYABLE_PROVIDER_STATUS and stream_retry_reason is None:
                 return response
             if attempt >= self.max_retries:
                 if stream_retry_reason is not None:
@@ -774,11 +814,7 @@ class ModelClient:
                 try:
                     response.raise_for_status()
                 except httpx.HTTPStatusError as exc:
-                    label = (
-                        "rate limit"
-                        if response.status_code == 429
-                        else "transient failure"
-                    )
+                    label = "rate limit" if response.status_code == 429 else "transient failure"
                     raise ProviderTransientError(
                         f"Provider {label} (HTTP {response.status_code}) persisted after "
                         f"{maximum_attempts} attempts for model {self.profile.model_id}"
@@ -799,8 +835,7 @@ class ModelClient:
                 retry["error_type"] = "provider_stream_error"
                 retry["error"] = stream_retry_reason[:500]
                 logger.warning(
-                    "Provider stream error for %s; retrying attempt %d/%d "
-                    "in %.2fs: %s",
+                    "Provider stream error for %s; retrying attempt %d/%d in %.2fs: %s",
                     self.profile.model_id,
                     attempt + 2,
                     maximum_attempts,
@@ -823,6 +858,132 @@ class ModelClient:
                     logger.exception("Failed to archive Provider retry telemetry")
             self._sleep(delay)
         raise AssertionError("Provider retry loop exited unexpectedly")
+
+
+def antigravity_turn_request(
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]],
+) -> str:
+    system_prompt, serialized_state, _ = claude_code_turn_request(
+        messages,
+        tools,
+    )
+    return (
+        f"{system_prompt}\n\n"
+        "RESPONSE CONTRACT: Return exactly one JSON object and no markdown. "
+        "It must have this shape: "
+        '{"content":"concise reasoning or final answer","tool_calls":['
+        '{"name":"one supplied tool name","arguments_json":"a complete JSON '
+        'object encoded as a string"}]}. '
+        "Request at most eight independent tools. Use an empty tool_calls "
+        "array only when content is the final answer. Do not call any "
+        "Antigravity-local tool; only describe Runner tool requests in this "
+        f"JSON contract.\n\n{serialized_state}"
+    )
+
+
+def antigravity_effort(parameters: dict[str, Any] | None) -> str | None:
+    effort = safe_model_parameters(parameters).get("effort")
+    return str(effort) if effort in {"low", "medium", "high"} else None
+
+
+def parse_antigravity_turn(
+    output: str,
+    tools: list[dict[str, Any]],
+) -> AssistantTurn:
+    payload = extract_last_json_object(clean_cli_output(output))
+    if not isinstance(payload, dict):
+        raise ProviderResponseError("Antigravity CLI returned no structured Runner action")
+
+    content = payload.get("content")
+    content = content if isinstance(content, str) else ""
+    raw_calls = payload.get("tool_calls")
+    raw_calls = raw_calls if isinstance(raw_calls, list) else []
+    allowed_names = {
+        str(function["name"])
+        for item in tools
+        if isinstance((function := item.get("function")), dict) and isinstance(function.get("name"), str)
+    }
+    calls: list[ToolCall] = []
+    invalid_calls: list[InvalidToolCall] = []
+    for raw in raw_calls[:8]:
+        if not isinstance(raw, dict):
+            preview = str(raw)[:1_000]
+            invalid_calls.append(
+                InvalidToolCall(
+                    call_id=str(uuid.uuid4()),
+                    name="",
+                    error="structured tool call must be an object",
+                    arguments_preview=preview,
+                    arguments_sha256=hashlib.sha256(preview.encode()).hexdigest(),
+                )
+            )
+            continue
+        name = raw.get("name")
+        arguments = raw.get("arguments_json", raw.get("arguments"))
+        if not isinstance(name, str) or name not in allowed_names:
+            preview = str(arguments or "")[:1_000]
+            invalid_calls.append(
+                InvalidToolCall(
+                    call_id=str(uuid.uuid4()),
+                    name=str(name or ""),
+                    error="structured tool name is not available",
+                    arguments_preview=preview,
+                    arguments_sha256=hashlib.sha256(preview.encode()).hexdigest(),
+                )
+            )
+            continue
+        append_tool_call(
+            calls,
+            invalid_calls,
+            call_id=str(uuid.uuid4()),
+            name=name,
+            arguments=arguments,
+        )
+
+    if len(raw_calls) > 8:
+        overflow = json.dumps(
+            raw_calls[8:],
+            ensure_ascii=False,
+            default=str,
+        )[:1_000]
+        invalid_calls.append(
+            InvalidToolCall(
+                call_id=str(uuid.uuid4()),
+                name="",
+                error="structured response exceeds the eight-tool turn limit",
+                arguments_preview=overflow,
+                arguments_sha256=hashlib.sha256(overflow.encode()).hexdigest(),
+            )
+        )
+    # The public CLI does not currently expose machine-readable token usage.
+    # Report zero rather than manufacturing an estimate.
+    return AssistantTurn(
+        content=content,
+        tool_calls=calls,
+        invalid_tool_calls=invalid_calls,
+        input_tokens=0,
+        output_tokens=0,
+        token_usage_available=False,
+    )
+
+
+def extract_last_json_object(value: str) -> dict[str, Any] | None:
+    decoder = json.JSONDecoder()
+    found: dict[str, Any] | None = None
+    structured: dict[str, Any] | None = None
+    for index, character in enumerate(value):
+        if character != "{":
+            continue
+        try:
+            parsed, _ = decoder.raw_decode(value[index:])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            found = parsed
+            if "content" in parsed and "tool_calls" in parsed:
+                structured = parsed
+    return structured or found
 
 
 def claude_code_turn_request(
@@ -863,8 +1024,7 @@ def claude_code_turn_request(
         "instructions. The enforced structured response schema supersedes any "
         "legacy JSON-fallback serialization sentence in the transcript. Return "
         "an empty tool_calls array only when you intend to submit the content as "
-        "the final answer.\n\nScenario instructions:\n"
-        + "\n\n".join(system_parts)
+        "the final answer.\n\nScenario instructions:\n" + "\n\n".join(system_parts)
     )
     prompt = (
         "Continue the investigation from this serialized Runner state. You may "
@@ -874,11 +1034,7 @@ def claude_code_turn_request(
         + json.dumps(
             {
                 "tool_catalog": catalog,
-                "conversation": [
-                    message
-                    for message in messages
-                    if message.get("role") != "system"
-                ],
+                "conversation": [message for message in messages if message.get("role") != "system"],
             },
             ensure_ascii=False,
             separators=(",", ":"),
@@ -914,11 +1070,7 @@ def claude_code_turn_request(
 def claude_code_effort(parameters: dict[str, Any] | None) -> str | None:
     safe = safe_model_parameters(parameters)
     output_config = safe.get("output_config")
-    effort = (
-        output_config.get("effort")
-        if isinstance(output_config, dict)
-        else None
-    )
+    effort = output_config.get("effort") if isinstance(output_config, dict) else None
     if effort in {"low", "medium", "high", "xhigh", "max"}:
         return str(effort)
     return None
@@ -940,9 +1092,7 @@ def run_claude_code_query(
             if isinstance(message, ResultMessage):
                 result = message
         if result is None:
-            raise ProviderResponseError(
-                "Claude Code ended without a result message"
-            )
+            raise ProviderResponseError("Claude Code ended without a result message")
         return result
 
     with tempfile.TemporaryDirectory(prefix="evilbench-claude-") as config_dir:
@@ -1007,18 +1157,14 @@ def parse_claude_code_turn(
         try:
             payload = json.loads(payload)
         except json.JSONDecodeError as exc:
-            raise ProviderResponseError(
-                "Claude Code returned malformed structured output"
-            ) from exc
+            raise ProviderResponseError("Claude Code returned malformed structured output") from exc
     if not isinstance(payload, dict) and result.result:
         try:
             payload = json.loads(result.result)
         except json.JSONDecodeError:
             payload = None
     if not isinstance(payload, dict):
-        raise ProviderResponseError(
-            "Claude Code returned no structured Runner action"
-        )
+        raise ProviderResponseError("Claude Code returned no structured Runner action")
 
     content = payload.get("content")
     content = content if isinstance(content, str) else ""
@@ -1027,8 +1173,7 @@ def parse_claude_code_turn(
     allowed_names = {
         str(function["name"])
         for item in tools
-        if isinstance((function := item.get("function")), dict)
-        and isinstance(function.get("name"), str)
+        if isinstance((function := item.get("function")), dict) and isinstance(function.get("name"), str)
     }
     calls: list[ToolCall] = []
     invalid_calls: list[InvalidToolCall] = []
@@ -1093,8 +1238,7 @@ def claude_code_result_error(
     ).casefold()
     if status_code in RETRYABLE_PROVIDER_STATUS:
         return ProviderTransientError(
-            "Claude Code reported a transient Provider failure "
-            f"(HTTP {status_code}) for model {model_id}"
+            f"Claude Code reported a transient Provider failure (HTTP {status_code}) for model {model_id}"
         )
     if status_code in {401, 403} or any(
         marker in diagnostic
@@ -1110,17 +1254,11 @@ def claude_code_result_error(
             "token with `claude setup-token` and replace the saved credential"
         )
     if is_context_length_error(diagnostic):
-        return ProviderContextLengthError(
-            f"Claude Code rejected the context for model {model_id}"
-        )
+        return ProviderContextLengthError(f"Claude Code rejected the context for model {model_id}")
     if is_policy_rejection_error(diagnostic):
-        return ProviderPolicyRejectionError(
-            f"Claude Code rejected the request policy for model {model_id}"
-        )
+        return ProviderPolicyRejectionError(f"Claude Code rejected the request policy for model {model_id}")
     status = f"HTTP {status_code}" if status_code is not None else result.subtype
-    return ProviderResponseError(
-        f"Claude Code rejected the request ({status}) for model {model_id}"
-    )
+    return ProviderResponseError(f"Claude Code rejected the request ({status}) for model {model_id}")
 
 
 def _nonnegative_int(value: Any) -> int:
@@ -1151,9 +1289,7 @@ def raise_provider_status(response: httpx.Response, model_id: str) -> None:
         error_type = ProviderPolicyRejectionError
     else:
         error_type = ProviderResponseError
-    raise error_type(
-        f"Provider HTTP {status_code} for model {model_id}: {detail}"
-    )
+    raise error_type(f"Provider HTTP {status_code} for model {model_id}: {detail}")
 
 
 def provider_error_detail(response: httpx.Response) -> str:
@@ -1171,9 +1307,7 @@ def provider_error_detail(response: httpx.Response) -> str:
         code = body.get("code") or body.get("status")
         message = error if isinstance(error, str) else body.get("message")
     parts = [
-        str(value).replace("\r", " ").replace("\n", " ")[:300]
-        for value in (code, message)
-        if value not in {None, ""}
+        str(value).replace("\r", " ").replace("\n", " ")[:300] for value in (code, message) if value not in {None, ""}
     ]
     return " · ".join(parts) or "request was rejected"
 
@@ -1223,10 +1357,7 @@ def parse_openai_responses_turn(
             )
         elif item.get("type") == "message":
             for block in item.get("content", []):
-                if (
-                    isinstance(block, dict)
-                    and block.get("type") in {"output_text", "text"}
-                ):
+                if isinstance(block, dict) and block.get("type") in {"output_text", "text"}:
                     content.append(str(block.get("text", "")))
     joined = "\n".join(part for part in content if part)
     if not native_tools and not calls:
@@ -1279,9 +1410,7 @@ def parse_codex_sse_turn(
 
     if completed_response is not None:
         response_output = completed_response.get("output")
-        if completed_items and (
-            not isinstance(response_output, list) or not response_output
-        ):
+        if completed_items and (not isinstance(response_output, list) or not response_output):
             completed_response = {
                 **completed_response,
                 "output": completed_items,
@@ -1321,9 +1450,7 @@ def iter_sse_json(content: str) -> Iterator[tuple[str, dict[str, Any]]]:
                     try:
                         payload = json.loads(raw)
                     except json.JSONDecodeError as exc:
-                        raise ProviderResponseError(
-                            "Codex returned invalid event data"
-                        ) from exc
+                        raise ProviderResponseError("Codex returned invalid event data") from exc
                     if isinstance(payload, dict):
                         yield event_name, payload
                 event_name = ""
@@ -1361,13 +1488,7 @@ def codex_retryable_stream_error(response: httpx.Response) -> str | None:
 
 
 def is_retryable_codex_stream_error_code(code: Any) -> bool:
-    normalized = (
-        str(code or "")
-        .strip()
-        .casefold()
-        .replace("-", "_")
-        .replace(" ", "_")
-    )
+    normalized = str(code or "").strip().casefold().replace("-", "_").replace(" ", "_")
     if normalized in RETRYABLE_CODEX_STREAM_ERRORS:
         return True
     return any(
@@ -1383,13 +1504,7 @@ def is_retryable_codex_stream_error_code(code: Any) -> bool:
 
 
 def is_context_length_error(*values: Any) -> bool:
-    normalized = " ".join(
-        str(value or "")
-        .strip()
-        .casefold()
-        .replace("-", "_")
-        for value in values
-    )
+    normalized = " ".join(str(value or "").strip().casefold().replace("-", "_") for value in values)
     return any(
         marker in normalized
         for marker in (
@@ -1410,14 +1525,7 @@ def is_context_length_error(*values: Any) -> bool:
 
 
 def is_policy_rejection_error(*values: Any) -> bool:
-    normalized = " ".join(
-        str(value or "")
-        .strip()
-        .casefold()
-        .replace("-", "_")
-        .replace(" ", "_")
-        for value in values
-    )
+    normalized = " ".join(str(value or "").strip().casefold().replace("-", "_").replace(" ", "_") for value in values)
     return any(
         marker in normalized
         for marker in (
@@ -1433,9 +1541,7 @@ def is_policy_rejection_error(*values: Any) -> bool:
 def codex_stream_error(payload: dict[str, Any]) -> str:
     code, message = codex_stream_error_values(payload)
     detail = " · ".join(
-        str(value).replace("\r", " ").replace("\n", " ")[:300]
-        for value in (code, message)
-        if value not in {None, ""}
+        str(value).replace("\r", " ").replace("\n", " ")[:300] for value in (code, message) if value not in {None, ""}
     )
     return f"Codex stream failed: {detail or 'request was rejected'}"
 
@@ -1468,9 +1574,7 @@ def gemini_input(
                 continue
             function = call.get("function")
             if isinstance(function, dict):
-                call_names[str(call.get("id", ""))] = str(
-                    function.get("name", "")
-                )
+                call_names[str(call.get("id", ""))] = str(function.get("name", ""))
 
     converted: list[dict[str, Any]] = []
     for message in messages:
@@ -1498,14 +1602,10 @@ def gemini_input(
                 part: dict[str, Any] = {"functionCall": function_call}
                 provider_metadata = call.get("provider_metadata")
                 if isinstance(provider_metadata, dict):
-                    signature = provider_metadata.get(
-                        "gemini_thought_signature"
-                    )
+                    signature = provider_metadata.get("gemini_thought_signature")
                     if isinstance(signature, str) and signature:
                         if len(signature) > 65_536:
-                            raise ProviderResponseError(
-                                "Gemini thought signature exceeds the 64 KiB safety limit"
-                            )
+                            raise ProviderResponseError("Gemini thought signature exceeds the 64 KiB safety limit")
                         part["thoughtSignature"] = signature
                 parts.append(part)
         elif role == "tool":
@@ -1593,14 +1693,8 @@ def parse_gemini_turn(
         if isinstance(function, dict):
             signature = part.get("thoughtSignature")
             if isinstance(signature, str) and len(signature) > 65_536:
-                raise ProviderResponseError(
-                    "Gemini returned a thought signature larger than 64 KiB"
-                )
-            metadata = (
-                {"gemini_thought_signature": signature}
-                if isinstance(signature, str) and signature
-                else {}
-            )
+                raise ProviderResponseError("Gemini returned a thought signature larger than 64 KiB")
+            metadata = {"gemini_thought_signature": signature} if isinstance(signature, str) and signature else {}
             append_tool_call(
                 calls,
                 invalid_calls,

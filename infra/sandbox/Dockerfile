@@ -20,6 +20,8 @@ RUN apt-get update \
         strace \
     && rm -rf /var/lib/apt/lists/*
 
+LABEL org.evil-repository.sandbox.contract="1"
+
 RUN mkdir -p /workspace /opt/evil/bin \
     && chown node:node /workspace
 
