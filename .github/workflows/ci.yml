@@ -38,7 +38,10 @@ jobs:
       - run: uv run pytest
 
   sandbox-image:
-    runs-on: ubuntu-latest
+    # Ubuntu 24.04 restricts nested unprivileged user namespaces through
+    # AppArmor. Keep the real Rootless DIND smoke test instead of weakening
+    # the product's fail-closed daemon check.
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v6
       - name: Start dedicated Rootless Docker daemon
