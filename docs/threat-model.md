@@ -41,24 +41,45 @@ Candidate text is data even when it resembles an instruction.
 ## Existing controls
 
 - Rootless Docker daemon rather than the system daemon.
+- Fail-closed Rootless-daemon detection and a required sandbox-image contract
+  label; a rootful, unverifiable, or accidentally substituted image is refused.
 - One ephemeral container per run.
 - `network_mode=none`, read-only root, dropped capabilities, and
-  `no-new-privileges`.
+  `no-new-privileges`, with explicit built-in seccomp.
+- Non-root UID/GID, private IPC/UTS/cgroup namespaces, disabled swap, an init
+  process, bounded shared memory/file descriptors, no restart or container log
+  driver, and no ports, devices, links, or volumes-from.
 - No host workspace bind mount and no Docker socket inside candidates.
 - Per-run tmpfs workspace volume and bounded resources.
+- Pre-start and post-start inspection of the complete candidate Docker config.
+  The only accepted mount is the run's named tmpfs volume at `/workspace`.
+- Docker client proxy inheritance disabled so local proxy credentials cannot
+  enter candidate environments.
 - Relative-path validation and unsafe-symlink rejection before archive import.
+- Candidate-authored writes execute as the non-root candidate UID using
+  descriptor-relative directory traversal, `O_NOFOLLOW`, a new temporary inode,
+  and atomic replacement. They never use daemon-privileged `put_archive` after
+  untrusted execution begins.
 - Tool allowlist, command-boundary policy, output caps, and hard run budgets.
 - Provider credentials held only by the trusted API/Runner control plane.
 - Owner-scoped encrypted credential payloads; list/model APIs expose only
   non-secret metadata and references.
-- OAuth host pinning: Codex tokens cannot follow profile Base URLs and only
-  reach OpenAI authentication/Codex hosts; Gemini OAuth tokens only reach
-  Google OAuth/Code Assist hosts.
+- OAuth transport boundaries: Codex tokens cannot follow profile Base URLs and
+  only reach OpenAI authentication/Codex hosts. Antigravity tokens are never
+  imported into platform code; only the pinned official `agy` executable can
+  access its deployment-owned session and Provider transport. Native Gemini
+  is API-key only.
 - Claude Code setup tokens are passed only through a child-process environment
   to the bundled official Agent SDK. Every turn uses an empty temporary config,
   no built-in tools or MCP, no settings/skills/plugins, no persistent session,
   and disabled nonessential traffic. The platform never implements Claude.ai
   login or sends the token as a Messages API key.
+- The Antigravity image layer pins official release 1.1.7 by architecture and
+  verifies its published SHA-256. Its persistent home is mode `0700`, shared
+  only by API/Runner, and never mounted into candidates. Non-interactive runs
+  use an empty workspace, `tools: []`, strict deny-all local permissions, a
+  secret-minimized environment, disabled self-update/telemetry, UID downgrade,
+  bounded output, and complete process-group termination on timeout.
 - Refresh-token rotation under a locked credential row, bounded
   authentication retry, and protocol/credential-kind compatibility checks.
 - Host-side hidden judge and artifact hashing.
@@ -100,15 +121,26 @@ behavioral summaries. Redaction protects control-plane credentials, not
 secrets that a user deliberately placed inside benchmark inputs. Treat every
 download as sensitive run data and share it only with authorized analysts.
 
-Claude Code setup tokens and imported Codex `auth.json` / Gemini
-`oauth_creds.json` files are bearer credentials equivalent to passwords. A
-malicious or compromised control plane can use them as the signed-in account,
-and changing `APP_SECRET` without a migration makes stored credentials
-unreadable. Anthropic subscription OAuth is limited to self-hosted personal or
+Claude Code setup tokens and imported Codex `auth.json` files are bearer
+credentials equivalent to passwords. A malicious or compromised control plane
+can use them as the signed-in account, and changing `APP_SECRET` without a
+migration makes stored credentials unreadable. The Antigravity named volume is
+equally sensitive even though platform code does not parse it. It is one
+deployment-wide administrator session, so every profile attached to it shares
+that account's entitlement and quota. Do not expose a personal session through
+an untrusted public multi-tenant deployment.
+
+Anthropic subscription OAuth is limited to self-hosted personal or
 organization-internal use; a public third-party deployment must use Console
-API keys or a supported cloud provider. Codex subscription access is likewise
-distinct from ordinary API-key access; operators remain responsible for
-account, organization, and service-policy compliance.
+API keys or a supported cloud provider. Codex and Antigravity subscription
+access remain distinct from ordinary API-key access; operators are responsible
+for current account, organization, service-policy, and automation terms.
+
+The official `agy` binary and its release distribution are part of the trusted
+computing base. Checksum pinning detects an unexpected archive but cannot
+protect against a compromised official release, Provider backend, or signed-in
+account. CLI settings are defense in depth, not a sandbox guarantee for a
+malicious binary.
 
 Resource limits reduce denial-of-service risk but cannot eliminate disk,
 kernel, daemon, or provider-level exhaustion. The offline Browser prevents live
@@ -124,6 +156,10 @@ conversation ownership is process-local.
 
 - Use a dedicated non-production Linux user and workstation or VM.
 - Keep the Rootless daemon and host kernel patched.
+- For mutually untrusted public tenants, configure a reviewed compatible
+  isolation runtime with `SANDBOX_RUNTIME` and place the Runner/Rootless daemon
+  inside a dedicated VM or microVM. Test the selected runtime against the
+  sandbox smoke suite before accepting runs.
 - Run only reviewed scenario entrypoints.
 - Keep API/UI on loopback unless external access is required.
 - Set `SETUP_TOKEN` before exposing an uninitialized instance.

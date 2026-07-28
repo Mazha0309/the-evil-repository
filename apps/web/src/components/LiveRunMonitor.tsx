@@ -39,6 +39,7 @@ interface LiveRunMonitorProps {
   completion?: CompletionSpec;
   incident?: IncidentSpec;
   release?: ReleaseSpec;
+  tokenUsageAvailable?: boolean;
 }
 
 export default function LiveRunMonitor({
@@ -48,6 +49,7 @@ export default function LiveRunMonitor({
   completion,
   incident,
   release,
+  tokenUsageAvailable = true,
 }: LiveRunMonitorProps) {
   const { locale, text } = useLocale();
   const [now, setNow] = useState(() => Date.now());
@@ -275,9 +277,11 @@ export default function LiveRunMonitor({
             value={providerRequests}
             soft={softProviderRequests}
             hard={hardProviderRequests}
-            display={`${providerRequests} / ${hardProviderRequests || "—"}`}
+            display={`${providerRequests} / ${
+              hardProviderRequests || text("不限", "unlimited")
+            }`}
           />
-          {hardTokens > 0 && (
+          {tokenUsageAvailable && hardTokens > 0 && (
             <LiveMeter
               label={text("Token 总量", "Total tokens")}
               value={totalTokens}
@@ -290,12 +294,16 @@ export default function LiveRunMonitor({
             <span>
               <Bot size={13} />
               {text("输入", "Input")}{" "}
-              <strong>{compact(run.input_tokens)}</strong>
+              <strong>
+                {tokenUsageAvailable ? compact(run.input_tokens) : "N/A"}
+              </strong>
             </span>
             <span>
               <Activity size={13} />
               {text("输出", "Output")}{" "}
-              <strong>{compact(run.output_tokens)}</strong>
+              <strong>
+                {tokenUsageAvailable ? compact(run.output_tokens) : "N/A"}
+              </strong>
             </span>
             <span>
               <TimerReset size={13} />
@@ -408,7 +416,9 @@ export default function LiveRunMonitor({
             <span>
               {text("输出速率", "output rate")}{" "}
               <strong>
-                {analysis.outputTokensPerSecond.toFixed(1)} tok/s
+                {tokenUsageAvailable
+                  ? `${analysis.outputTokensPerSecond.toFixed(1)} tok/s`
+                  : "N/A"}
               </strong>
             </span>
           </div>
@@ -1591,10 +1601,14 @@ function finalizationNudgeDetail(
     locale === "zh-CN"
       ? `工具 ${String(remaining.tool_calls ?? "—")} 次`
       : `${String(remaining.tool_calls ?? "—")} tools`,
-    locale === "zh-CN"
-      ? `Provider ${String(remaining.provider_requests ?? "—")} 次`
-      : `${String(remaining.provider_requests ?? "—")} Provider requests`,
   ];
+  if (remaining.provider_requests != null) {
+    details.push(
+      locale === "zh-CN"
+        ? `Provider ${String(remaining.provider_requests)} 次`
+        : `${String(remaining.provider_requests)} Provider requests`,
+    );
+  }
   if (remaining.total_tokens != null) {
     details.push(
       locale === "zh-CN"

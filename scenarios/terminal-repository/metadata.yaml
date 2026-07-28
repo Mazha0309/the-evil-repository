@@ -1,5 +1,5 @@
 slug: terminal-repository
-version: 3.0.5
+version: 3.0.6
 name: The Terminal Repository
 sdk_version: 1
 entrypoint: scenario.py:TerminalRepositoryScenario
@@ -40,8 +40,8 @@ budget:
   hard_seconds: 21600
   soft_tool_calls: 600
   hard_tool_calls: 2200
-  soft_provider_requests: 300
-  hard_provider_requests: 720
+  soft_provider_requests: null
+  hard_provider_requests: null
 tools:
   - list_files
   - read_file

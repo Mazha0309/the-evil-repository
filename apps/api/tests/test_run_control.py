@@ -63,7 +63,13 @@ def test_run_budget_soft_limits_must_precede_hard_limits() -> None:
             hard_provider_requests=360,
         )
     with pytest.raises(ValueError, match="configured together"):
+        RunCreate(**common, soft_provider_requests=360)
+    with pytest.raises(ValueError, match="configured together"):
         RunCreate(**common, soft_total_tokens=10_000)
+
+    unlimited = RunCreate(**common)
+    assert unlimited.soft_provider_requests is None
+    assert unlimited.hard_provider_requests is None
 
 
 def test_pause_and_resume_update_cooperative_control_flag(monkeypatch) -> None:

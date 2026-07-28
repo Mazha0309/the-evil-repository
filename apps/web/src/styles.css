@@ -733,9 +733,22 @@ pre {
   margin-top: 0;
 }
 
-.suite-status .callout {
+.suite-status__note {
   grid-column: 1 / -1;
-  margin: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  border-top: 1px solid var(--line);
+  padding-top: 13px;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.6;
+}
+
+.suite-status__note svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+  color: var(--cyan);
 }
 
 .scenario-card {
@@ -1067,7 +1080,7 @@ pre {
 
 .credential-actions {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
   gap: 10px;
   margin-bottom: 14px;
 }
@@ -1187,6 +1200,12 @@ pre {
   color: var(--cyan);
   border-color: #294654;
   background: rgba(76, 201, 240, 0.04);
+}
+
+.credential-kind--antigravity_cli {
+  color: #ffbd4a;
+  border-color: #5b4725;
+  background: rgba(255, 189, 74, 0.045);
 }
 
 .credential-kind--gemini_oauth {
@@ -1405,6 +1424,18 @@ pre {
   font-family: var(--mono);
   font-size: 23px;
   letter-spacing: 0.12em;
+}
+
+.credential-device > code {
+  max-width: 100%;
+  overflow-x: auto;
+  border: 1px solid #38502f;
+  border-radius: 5px;
+  padding: 10px 12px;
+  color: var(--lime);
+  background: #090d09;
+  font-size: 9px;
+  white-space: nowrap;
 }
 
 .credential-device > div {
@@ -2050,6 +2081,11 @@ pre {
 
 .budget-grid {
   grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.budget-grid > .callout {
+  grid-column: 1 / -1;
+  margin-top: 0;
 }
 
 .callout {

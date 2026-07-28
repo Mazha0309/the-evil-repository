@@ -1,9 +1,11 @@
 from datetime import UTC, datetime, timedelta
 
 import httpx
+import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
+from app.antigravity_cli import AntigravityModel
 from app.credentials import encode_payload
 from app.database import Base
 from app.model_discovery import (
@@ -53,10 +55,18 @@ def make_anthropic_credential(owner: UserAccount) -> ProviderCredential:
         owner_id=owner.id,
         name="Claude Code OAuth",
         kind=CredentialKind.anthropic_oauth,
-        encrypted_payload=encode_payload(
-            {"oauth_token": "claude-setup-token"}
-        ),
+        encrypted_payload=encode_payload({"oauth_token": "claude-setup-token"}),
         status=CredentialStatus.ready,
+    )
+
+
+def make_antigravity_credential(owner: UserAccount) -> ProviderCredential:
+    return ProviderCredential(
+        owner_id=owner.id,
+        name="Official agy",
+        kind=CredentialKind.antigravity_cli,
+        encrypted_payload=encode_payload({"session_scope": "deployment"}),
+        status=CredentialStatus.unchecked,
     )
 
 
@@ -219,21 +229,59 @@ def test_anthropic_oauth_sync_provisions_official_runtime_aliases() -> None:
         assert second.created == 0
         assert second.existing == 3
         profiles = session.scalars(
-            select(ModelProfile)
-            .where(ModelProfile.credential_id == credential.id)
-            .order_by(ModelProfile.model_id)
+            select(ModelProfile).where(ModelProfile.credential_id == credential.id).order_by(ModelProfile.model_id)
         ).all()
         assert [profile.model_id for profile in profiles] == [
             "haiku",
             "opus",
             "sonnet",
         ]
-        assert all(
-            profile.provider == ModelProvider.anthropic
-            for profile in profiles
-        )
-        assert all(
-            profile.base_url == "https://api.anthropic.com"
-            for profile in profiles
-        )
+        assert all(profile.provider == ModelProvider.anthropic for profile in profiles)
+        assert all(profile.base_url == "https://api.anthropic.com" for profile in profiles)
+        assert all(profile.native_tools for profile in profiles)
+
+
+def test_antigravity_sync_uses_the_official_cli_account_catalog(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    monkeypatch.setattr(
+        "app.model_discovery.discover_antigravity_models",
+        lambda: [
+            AntigravityModel(
+                model_id="gemini-3.1-pro-high",
+                display_name="Gemini 3.1 Pro (High)",
+            ),
+            AntigravityModel(
+                model_id="claude-sonnet-4.6-thinking",
+                display_name="Claude Sonnet 4.6 (Thinking)",
+            ),
+        ],
+    )
+
+    with Session(engine) as session:
+        owner = make_owner()
+        owner.role = UserRole.admin
+        session.add(owner)
+        session.flush()
+        credential = make_antigravity_credential(owner)
+        session.add(credential)
+        session.flush()
+
+        result = sync_credential_models(session, credential, owner.id)
+
+        assert result.provider == ModelProvider.antigravity
+        assert result.discovered == 2
+        assert result.created == 2
+        assert credential.status == CredentialStatus.ready
+        profiles = session.scalars(
+            select(ModelProfile).where(ModelProfile.credential_id == credential.id).order_by(ModelProfile.model_id)
+        ).all()
+        assert [profile.model_id for profile in profiles] == [
+            "claude-sonnet-4.6-thinking",
+            "gemini-3.1-pro-high",
+        ]
+        assert all(profile.provider == ModelProvider.antigravity for profile in profiles)
+        assert all(profile.base_url == "https://antigravity.google/cli" for profile in profiles)
         assert all(profile.native_tools for profile in profiles)

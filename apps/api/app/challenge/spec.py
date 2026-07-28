@@ -16,8 +16,8 @@ class BudgetSpec(BaseModel):
     hard_seconds: int = Field(default=21_600, ge=2)
     soft_tool_calls: int = Field(default=600, ge=1)
     hard_tool_calls: int = Field(default=2_200, ge=2)
-    soft_provider_requests: int = Field(default=300, ge=1)
-    hard_provider_requests: int = Field(default=720, ge=2)
+    soft_provider_requests: int | None = Field(default=None, ge=1)
+    hard_provider_requests: int | None = Field(default=None, ge=2)
     soft_total_tokens: int | None = Field(default=None, ge=1)
     hard_total_tokens: int | None = Field(default=None, ge=2)
 
@@ -26,30 +26,38 @@ class BudgetSpec(BaseModel):
         ordered_pairs = (
             ("time", self.soft_seconds, self.hard_seconds),
             ("tool-call", self.soft_tool_calls, self.hard_tool_calls),
-            (
-                "Provider-request",
-                self.soft_provider_requests,
-                self.hard_provider_requests,
-            ),
         )
         for label, soft, hard in ordered_pairs:
             if soft >= hard:
                 raise ValueError(
                     f"Soft {label} budget must be lower than the hard budget"
                 )
-        if (self.soft_total_tokens is None) != (self.hard_total_tokens is None):
-            raise ValueError(
-                "Token soft and hard budgets must be configured together"
-            )
-        if (
-            self.soft_total_tokens is not None
-            and self.hard_total_tokens is not None
-            and self.soft_total_tokens >= self.hard_total_tokens
-        ):
-            raise ValueError(
-                "Soft token budget must be lower than the hard budget"
-            )
+        self._validate_optional_pair(
+            "Provider-request",
+            self.soft_provider_requests,
+            self.hard_provider_requests,
+        )
+        self._validate_optional_pair(
+            "Token",
+            self.soft_total_tokens,
+            self.hard_total_tokens,
+        )
         return self
+
+    @staticmethod
+    def _validate_optional_pair(
+        label: str,
+        soft: int | None,
+        hard: int | None,
+    ) -> None:
+        if (soft is None) != (hard is None):
+            raise ValueError(
+                f"{label} soft and hard budgets must be configured together"
+            )
+        if soft is not None and hard is not None and soft >= hard:
+            raise ValueError(
+                f"Soft {label} budget must be lower than the hard budget"
+            )
 
 
 class FaultSpec(BaseModel):

@@ -11,6 +11,7 @@ import {
   Plus,
   RefreshCw,
   ShieldCheck,
+  SquareTerminal,
   Trash2,
   Upload,
   X,
@@ -23,16 +24,21 @@ import type {
   CredentialStatus,
   OAuthDeviceStart,
   ProviderCredential,
+  UserAccount,
 } from "../lib/types";
 
 type CreateMode =
   | "api_key"
+  | "antigravity"
   | "anthropic_token"
   | "codex_import"
-  | "gemini_import"
   | "codex_device";
 
-export default function CredentialsPage() {
+export default function CredentialsPage({
+  currentUser,
+}: {
+  currentUser: UserAccount;
+}) {
   const { locale, text } = useLocale();
   const queryClient = useQueryClient();
   const credentials = useQuery({
@@ -43,8 +49,9 @@ export default function CredentialsPage() {
   const [deleteTarget, setDeleteTarget] = useState<ProviderCredential | null>(
     null,
   );
-  const [replaceTarget, setReplaceTarget] =
-    useState<ProviderCredential | null>(null);
+  const [replaceTarget, setReplaceTarget] = useState<ProviderCredential | null>(
+    null,
+  );
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const refresh = useMutation({
@@ -92,13 +99,8 @@ export default function CredentialsPage() {
       setError(cause instanceof Error ? cause.message : String(cause)),
   });
   const replace = useMutation({
-    mutationFn: ({
-      id,
-      secret,
-    }: {
-      id: string;
-      secret: string;
-    }) => api.updateCredential(id, { secret }),
+    mutationFn: ({ id, secret }: { id: string; secret: string }) =>
+      api.updateCredential(id, { secret }),
     onSuccess: () => {
       setReplaceTarget(null);
       setError("");
@@ -124,8 +126,8 @@ export default function CredentialsPage() {
           <h1>{text("Provider 凭据。", "Provider credentials.")}</h1>
           <p>
             {text(
-              "集中保存 API Key、Claude Code、Codex 和 Gemini CLI 登录。明文仅在控制平面解密，不会进入候选 Docker、工具输出或运行归档。",
-              "Store API keys plus Claude Code, Codex, and Gemini CLI sign-ins centrally. Plaintext is decrypted only in the control plane and never enters candidate Docker, tool output, or run archives.",
+              "集中保存 API Key、Claude Code 与 Codex 登录；Antigravity 认证由 Runner 内置的官方 agy 自己持有。任何认证材料都不会进入候选 Docker、工具输出或运行归档。",
+              "Store API keys plus Claude Code and Codex sign-ins centrally. Antigravity authentication remains owned by the official agy binary bundled in the Runner. No authentication material enters candidate Docker, tool output, or run archives.",
             )}
           </p>
         </div>
@@ -137,11 +139,11 @@ export default function CredentialsPage() {
       <section className="credential-security">
         <ShieldCheck size={18} />
         <div>
-          <strong>{text("令牌出站域名锁定", "Token egress is pinned")}</strong>
+          <strong>{text("官方客户端边界", "Official client boundary")}</strong>
           <span>
             {text(
-              "Claude Code OAuth 仅由官方 Agent SDK 访问 Anthropic；Codex 与 Gemini OAuth 也分别锁定到各自官方端点。",
-              "Claude Code OAuth is consumed only by the official Agent SDK; Codex and Gemini OAuth are likewise pinned to their official endpoints.",
+              "Claude Code OAuth 仅交给官方 Agent SDK；Antigravity 的登录、刷新、模型目录与请求全部交给官方 agy。平台不再导入 Gemini OAuth，也不直接反代私有 Code Assist API。",
+              "Claude Code OAuth is consumed only by the official Agent SDK. Antigravity sign-in, refresh, model discovery, and requests are owned by official agy. The platform no longer imports Gemini OAuth or directly proxies private Code Assist APIs.",
             )}
           </span>
         </div>
@@ -183,12 +185,12 @@ export default function CredentialsPage() {
         />
         <CredentialAction
           icon={<FileJson2 size={19} />}
-          title={text("导入 OAuth 文件", "Import OAuth file")}
+          title={text("导入 Codex OAuth", "Import Codex OAuth")}
           description={text(
-            "导入 Codex auth.json 或 Gemini CLI oauth_creds.json。",
-            "Import Codex auth.json or Gemini CLI oauth_creds.json.",
+            "导入 Codex CLI auth.json；Gemini OAuth 文件不再支持。",
+            "Import Codex CLI auth.json. Gemini OAuth files are no longer supported.",
           )}
-          action={text("选择格式", "Choose format")}
+          action={text("选择文件", "Choose file")}
           onClick={() => setMode("codex_import")}
         />
         <CredentialAction
@@ -201,6 +203,18 @@ export default function CredentialsPage() {
           action={text("开始登录", "Start sign-in")}
           onClick={() => setMode("codex_device")}
         />
+        {currentUser.role === "admin" && (
+          <CredentialAction
+            icon={<SquareTerminal size={19} />}
+            title="Antigravity CLI"
+            description={text(
+              "在部署容器内登录官方 agy，再自动读取该账户实际可用模型。",
+              "Sign in to official agy inside the deployment, then discover the account's actual models.",
+            )}
+            action={text("连接 CLI", "Attach CLI")}
+            onClick={() => setMode("antigravity")}
+          />
+        )}
       </div>
 
       <div className="credential-grid">
@@ -257,7 +271,8 @@ export default function CredentialsPage() {
             )}
             <div className="credential-card__actions">
               {(credential.kind === "codex_oauth" ||
-                credential.kind === "anthropic_oauth") && (
+                credential.kind === "anthropic_oauth" ||
+                credential.kind === "antigravity_cli") && (
                 <button
                   className="button button--small"
                   disabled={sync.isPending && sync.variables === credential.id}
@@ -357,10 +372,15 @@ export default function CredentialsPage() {
               <AlertTriangle size={22} />
               <div>
                 <strong>
-                  {text(
-                    "加密令牌将被清除，且无法恢复。",
-                    "The encrypted token will be erased and cannot be recovered.",
-                  )}
+                  {deleteTarget.kind === "antigravity_cli"
+                    ? text(
+                        "模型引用将被移除，但 agy 的部署会话不会自动登出。",
+                        "The model reference will be removed, but the deployment's agy session is not logged out automatically.",
+                      )
+                    : text(
+                        "加密令牌将被清除，且无法恢复。",
+                        "The encrypted token will be erased and cannot be recovered.",
+                      )}
                 </strong>
                 <p>
                   {deleteTarget.model_count
@@ -492,15 +512,12 @@ function CredentialModal({
   const [deviceComplete, setDeviceComplete] = useState(false);
   const title = {
     api_key: text("添加 API Key", "Add API key"),
-    anthropic_token: text(
-      "添加 Claude Code OAuth",
-      "Add Claude Code OAuth",
+    antigravity: text(
+      "连接官方 Antigravity CLI",
+      "Attach official Antigravity CLI",
     ),
+    anthropic_token: text("添加 Claude Code OAuth", "Add Claude Code OAuth"),
     codex_import: text("导入 Codex auth.json", "Import Codex auth.json"),
-    gemini_import: text(
-      "导入 Gemini oauth_creds.json",
-      "Import Gemini oauth_creds.json",
-    ),
     codex_device: text("Codex 设备登录", "Codex device sign-in"),
   }[mode];
   const create = useMutation({
@@ -510,6 +527,11 @@ function CredentialModal({
   });
   const importFile = useMutation({
     mutationFn: api.importCredential,
+    onSuccess: (credential) => finish(credential),
+    onError: showError,
+  });
+  const attachAntigravity = useMutation({
+    mutationFn: api.attachAntigravityCredential,
     onSuccess: (credential) => finish(credential),
     onError: showError,
   });
@@ -529,7 +551,8 @@ function CredentialModal({
   async function syncOAuthCredential(credential: ProviderCredential) {
     if (
       credential.kind !== "codex_oauth" &&
-      credential.kind !== "anthropic_oauth"
+      credential.kind !== "anthropic_oauth" &&
+      credential.kind !== "antigravity_cli"
     ) {
       return;
     }
@@ -544,8 +567,8 @@ function CredentialModal({
     } catch (cause) {
       const detail = cause instanceof Error ? cause.message : String(cause);
       provisionError = text(
-        `OAuth 已保存，但账户模型自动同步失败：${detail}`,
-        `OAuth was saved, but automatic account-model sync failed: ${detail}`,
+        `认证引用已保存，但账户模型自动同步失败：${detail}`,
+        `The credential reference was saved, but automatic account-model sync failed: ${detail}`,
       );
     }
     await Promise.all([
@@ -630,6 +653,12 @@ function CredentialModal({
     });
   };
 
+  const submitAntigravity = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const data = new FormData(event.currentTarget);
+    attachAntigravity.mutate({ name: data.get("name") });
+  };
+
   const submitImport = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const data = new FormData(event.currentTarget);
@@ -660,7 +689,7 @@ function CredentialModal({
       }
       importFile.mutate({
         name: data.get("name"),
-        kind: mode === "codex_import" ? "codex_oauth" : "gemini_oauth",
+        kind: "codex_oauth",
         document,
       });
     } catch (cause) {
@@ -684,16 +713,16 @@ function CredentialModal({
           Claude OAuth
         </button>
         <button
+          className={mode === "antigravity" ? "active" : ""}
+          onClick={() => onMode("antigravity")}
+        >
+          Antigravity
+        </button>
+        <button
           className={mode === "codex_import" ? "active" : ""}
           onClick={() => onMode("codex_import")}
         >
           Codex JSON
-        </button>
-        <button
-          className={mode === "gemini_import" ? "active" : ""}
-          onClick={() => onMode("gemini_import")}
-        >
-          Gemini JSON
         </button>
         <button
           className={mode === "codex_device" ? "active" : ""}
@@ -738,6 +767,54 @@ function CredentialModal({
         </form>
       )}
 
+      {mode === "antigravity" && (
+        <form className="form" onSubmit={submitAntigravity}>
+          <div className="credential-import-warning">
+            <SquareTerminal size={16} />
+            <span>
+              {text(
+                "镜像已内置并校验官方 agy 1.1.7。平台不会接收 auth.json、OAuth Token、Google 客户端密钥或账号密码；登录与刷新完全由 agy 处理。该会话属于整台部署，因此仅管理员可连接。",
+                "The image includes a checksum-verified official agy 1.1.7. The platform never accepts auth.json, OAuth tokens, Google client secrets, or account passwords; agy owns sign-in and refresh. The session belongs to the deployment, so only administrators may attach it.",
+              )}
+            </span>
+          </div>
+          <div className="credential-device">
+            <span>
+              {text(
+                "先在部署仓库目录执行",
+                "First run this from the deployment repository",
+              )}
+            </span>
+            <code>make antigravity-login</code>
+            <small>
+              {text(
+                "云服务器会显示官方授权 URL；在本机浏览器登录后，把一次性代码贴回终端。登录完成后返回这里继续。",
+                "A remote server prints the official authorization URL. Sign in in your local browser, then paste the one-time code back into the terminal. Return here after login completes.",
+              )}
+            </small>
+          </div>
+          <label className="field">
+            <span>{text("凭据名称", "Credential name")}</span>
+            <input
+              name="name"
+              required
+              maxLength={120}
+              defaultValue="Antigravity CLI"
+            />
+          </label>
+          {error && <div className="inline-error">{error}</div>}
+          <ModalActions
+            pending={attachAntigravity.isPending}
+            onClose={onClose}
+            text={text}
+            submitLabel={text(
+              "连接会话并同步模型",
+              "Attach session and sync models",
+            )}
+          />
+        </form>
+      )}
+
       {mode === "anthropic_token" && (
         <form className="form" onSubmit={submitAnthropicToken}>
           <div className="credential-import-warning">
@@ -778,25 +855,23 @@ function CredentialModal({
             pending={create.isPending}
             onClose={onClose}
             text={text}
-            submitLabel={text("加密保存并获取模型", "Encrypt and provision models")}
+            submitLabel={text(
+              "加密保存并获取模型",
+              "Encrypt and provision models",
+            )}
           />
         </form>
       )}
 
-      {(mode === "codex_import" || mode === "gemini_import") && (
+      {mode === "codex_import" && (
         <form className="form" onSubmit={submitImport}>
           <div className="credential-import-warning">
             <AlertTriangle size={16} />
             <span>
-              {mode === "codex_import"
-                ? text(
-                    "选择 Codex CLI 的 auth.json。Refresh Token 会轮换，CLI 与平台长期共用同一份快照可能使其中一方失效；持续使用建议选择“Codex OAuth”设备登录。",
-                    "Choose Codex CLI auth.json. Refresh tokens rotate, so a snapshot shared by the CLI and platform can invalidate either copy; use Codex OAuth device sign-in for ongoing use.",
-                  )
-                : text(
-                    "选择 Gemini CLI 的 oauth_creds.json。若文件没有项目 ID，首次验证时会通过官方 Code Assist 接口发现项目。",
-                    "Choose Gemini CLI oauth_creds.json. If it lacks a project ID, first validation discovers one through the official Code Assist API.",
-                  )}
+              {text(
+                "选择 Codex CLI 的 auth.json。Refresh Token 会轮换，CLI 与平台长期共用同一份快照可能使其中一方失效；持续使用建议选择“Codex OAuth”设备登录。",
+                "Choose Codex CLI auth.json. Refresh tokens rotate, so a snapshot shared by the CLI and platform can invalidate either copy; use Codex OAuth device sign-in for ongoing use.",
+              )}
             </span>
           </div>
           <label className="field">
@@ -805,16 +880,12 @@ function CredentialModal({
               name="name"
               required
               maxLength={120}
-              defaultValue={
-                mode === "codex_import" ? "Codex OAuth" : "Gemini OAuth"
-              }
+              defaultValue="Codex OAuth"
             />
           </label>
           <label className="credential-file">
             <Upload size={20} />
-            <strong>
-              {mode === "codex_import" ? "auth.json" : "oauth_creds.json"}
-            </strong>
+            <strong>auth.json</strong>
             <small>{text("最大 64 KiB", "64 KiB maximum")}</small>
             <input
               name="document"
@@ -1018,6 +1089,7 @@ function CredentialStatusBadge({
 function kindLabel(kind: CredentialKind) {
   const labels: Record<CredentialKind, string> = {
     api_key: "API KEY",
+    antigravity_cli: "ANTIGRAVITY CLI",
     anthropic_oauth: "CLAUDE CODE OAUTH",
     codex_oauth: "CODEX OAUTH",
     gemini_oauth: "GEMINI OAUTH",

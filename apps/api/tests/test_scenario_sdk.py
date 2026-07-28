@@ -11,7 +11,7 @@ SCENARIO_ROOT = PROJECT_ROOT / "scenarios" / "terminal-repository"
 def test_scenario_loads_and_components_are_confined() -> None:
     scenario = load_scenario(SCENARIO_ROOT)
     assert scenario.metadata.slug == "terminal-repository"
-    assert scenario.metadata.version == "3.0.5"
+    assert scenario.metadata.version == "3.0.6"
     assert sum(scenario.metadata.scoring.values()) == 1_200
     assert scenario.component_path("database/init.sql").is_file()
 

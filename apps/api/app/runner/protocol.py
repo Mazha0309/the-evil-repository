@@ -45,6 +45,7 @@ class AssistantTurn(BaseModel):
     invalid_tool_calls: list[InvalidToolCall] = Field(default_factory=list)
     input_tokens: int = 0
     output_tokens: int = 0
+    token_usage_available: bool = True
 
 
 TOOL_DEFINITIONS: list[dict[str, Any]] = [
@@ -88,7 +89,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 "type": "object",
                 "properties": {
                     "path": {"type": "string"},
-                    "content": {"type": "string"},
+                    "content": {"type": "string", "maxLength": 65_536},
                 },
                 "required": ["path", "content"],
             },

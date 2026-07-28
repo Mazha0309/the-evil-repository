@@ -3,7 +3,11 @@ from fastapi import HTTPException
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
-from app.api.model_profiles import delete_model, list_models
+from app.api.model_profiles import (
+    delete_model,
+    list_models,
+    validate_provider_parameters,
+)
 from app.api.runs import create_run
 from app.database import Base
 from app.model_identity import model_snapshot
@@ -249,3 +253,111 @@ def test_create_run_freezes_task_identity_for_historical_display() -> None:
                 }
             },
         }
+
+
+def test_run_inherits_or_explicitly_disables_scenario_provider_request_cap() -> None:
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        user = make_user()
+        candidate = make_model("candidate")
+        task = make_task()
+        task.manifest = {
+            "budget": {
+                "soft_provider_requests": 240,
+                "hard_provider_requests": 600,
+            }
+        }
+        session.add_all([user, candidate, task])
+        session.flush()
+        session.add(
+            UserModelAccess(
+                user_id=user.id,
+                model_profile_id=candidate.id,
+            )
+        )
+        session.commit()
+
+        inherited = create_run(
+            RunCreate(
+                task_id=task.id,
+                candidate_model_id=candidate.id,
+            ),
+            session,
+            user,
+        )
+        disabled = create_run(
+            RunCreate(
+                task_id=task.id,
+                candidate_model_id=candidate.id,
+                soft_provider_requests=None,
+                hard_provider_requests=None,
+            ),
+            session,
+            user,
+        )
+
+        assert inherited.config["soft_provider_requests"] == 240
+        assert inherited.config["hard_provider_requests"] == 600
+        assert disabled.config["soft_provider_requests"] is None
+        assert disabled.config["hard_provider_requests"] is None
+
+
+def test_antigravity_run_rejects_unobservable_token_budget() -> None:
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        user = make_user()
+        candidate = make_model("antigravity")
+        candidate.provider = ModelProvider.antigravity
+        task = make_task()
+        session.add_all([user, candidate, task])
+        session.flush()
+        session.add(
+            UserModelAccess(
+                user_id=user.id,
+                model_profile_id=candidate.id,
+            )
+        )
+        session.commit()
+
+        with pytest.raises(HTTPException) as error:
+            create_run(
+                RunCreate(
+                    task_id=task.id,
+                    candidate_model_id=candidate.id,
+                    soft_total_tokens=1_000,
+                    hard_total_tokens=2_000,
+                ),
+                session,
+                user,
+            )
+
+        assert error.value.status_code == 400
+        assert "does not expose machine-readable token usage" in error.value.detail
+
+
+def test_antigravity_accepts_only_official_effort_parameter() -> None:
+    validate_provider_parameters(ModelProvider.antigravity, {})
+    validate_provider_parameters(
+        ModelProvider.antigravity,
+        {"effort": "high"},
+    )
+
+    with pytest.raises(HTTPException) as invalid_effort:
+        validate_provider_parameters(
+            ModelProvider.antigravity,
+            {"effort": "xhigh"},
+        )
+    assert invalid_effort.value.status_code == 422
+
+    with pytest.raises(HTTPException) as unsupported:
+        validate_provider_parameters(
+            ModelProvider.antigravity,
+            {"temperature": 0.2},
+        )
+    assert unsupported.value.detail["code"] == (
+        "antigravity_parameters_unsupported"
+    )

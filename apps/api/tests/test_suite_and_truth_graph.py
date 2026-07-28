@@ -23,6 +23,10 @@ def test_scenario_budget_contract_rejects_invalid_order_and_half_token_pair() ->
         )
     with pytest.raises(ValueError, match="configured together"):
         BudgetSpec(soft_total_tokens=10_000)
+    with pytest.raises(ValueError, match="configured together"):
+        BudgetSpec(soft_provider_requests=300)
+    assert BudgetSpec().soft_provider_requests is None
+    assert BudgetSpec().hard_provider_requests is None
 
 
 def sample_graph() -> TruthGraph:
@@ -117,28 +121,29 @@ def test_truth_graph_rejects_dangling_references() -> None:
         )
 
 
-def test_suite_is_honest_about_current_leaderboard_readiness() -> None:
+def test_suite_reports_small_sample_coverage_without_a_quantity_quota() -> None:
     suite = load_suite(
         PROJECT_ROOT / "suites" / "production-incidents" / "suite.yaml",
         PROJECT_ROOT / "scenarios",
     )
 
-    assert suite.version == "0.2.1"
+    assert suite.version == "0.3.0"
+    assert suite.publication.status.value == "experimental"
     assert {
         (scenario.slug, scenario.version)
         for scenario in suite.scenarios
     } == {
-        ("terminal-repository", "3.0.5"),
+        ("terminal-repository", "3.0.6"),
         ("counterfeit-release", "1.0.0"),
     }
-    assert suite.readiness == {
+    assert suite.coverage == {
         "active_families": 2,
         "held_out_families": 0,
         "scenario_references": 2,
-        "required_active_families": 5,
-        "required_held_out_families": 3,
-        "required_scenarios": 20,
-        "leaderboard_eligible": False,
+        "development_references": 2,
+        "validation_references": 0,
+        "held_out_references": 0,
+        "configured_instances": 2,
     }
 
 
@@ -146,11 +151,14 @@ def test_suite_rejects_a_nonexistent_scenario(tmp_path: Path) -> None:
     suite_path = tmp_path / "suite.yaml"
     suite_path.write_text(
         """
-schema_version: 1
+schema_version: 2
 slug: test-suite
 version: 1.0.0
 name: Test
 description: Test
+publication:
+  status: experimental
+  note: Test suite
 families:
   - id: missing-family
     name: Missing

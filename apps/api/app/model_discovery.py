@@ -3,15 +3,21 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.antigravity_cli import (
+    AntigravityCliError,
+    discover_antigravity_models,
+)
 from app.credentials import CredentialError, ResolvedCredential, resolve_credential
 from app.models import (
     CredentialKind,
+    CredentialStatus,
     ModelProfile,
     ModelProvider,
     ProviderCredential,
@@ -22,6 +28,7 @@ CODEX_MODELS_URL = "https://chatgpt.com/backend-api/codex/models"
 CODEX_RELEASE_URL = "https://api.github.com/repos/openai/codex/releases/latest"
 CODEX_PROFILE_BASE_URL = "https://chatgpt.com/backend-api/codex"
 ANTHROPIC_PROFILE_BASE_URL = "https://api.anthropic.com"
+ANTIGRAVITY_PROFILE_BASE_URL = "https://antigravity.google/cli"
 DEFAULT_CODEX_CLIENT_VERSION = "0.145.0"
 MODEL_DISCOVERY_TIMEOUT_SECONDS = 20
 CODEX_VERSION_CACHE_SECONDS = 3_600
@@ -119,10 +126,41 @@ def sync_credential_models(
             client=client,
         )
         discovered = list(CLAUDE_CODE_SUBSCRIPTION_MODELS)
+    elif credential.kind == CredentialKind.antigravity_cli:
+        provider = ModelProvider.antigravity
+        profile_base_url = ANTIGRAVITY_PROFILE_BASE_URL
+        # agy receives a serialized Runner state and emits validated structured
+        # actions. It never receives direct access to benchmark tools.
+        native_tools = True
+        resolve_credential(
+            session,
+            credential,
+            force_refresh=False,
+            client=client,
+        )
+        try:
+            catalog = discover_antigravity_models()
+        except AntigravityCliError as exc:
+            credential.status = CredentialStatus.needs_reauth if exc.authentication else CredentialStatus.error
+            credential.last_error_code = exc.code[:120]
+            raise CredentialError(exc.code, str(exc)) from exc
+        credential.status = CredentialStatus.ready
+        credential.last_error_code = None
+        credential.last_validated_at = datetime.now(UTC)
+        discovered = [
+            DiscoveredModel(
+                model_id=item.model_id,
+                display_name=item.display_name,
+                description=("Discovered from the signed-in official Antigravity CLI."),
+                default_reasoning_effort="high",
+                supported_reasoning_efforts=("low", "medium", "high"),
+            )
+            for item in catalog
+        ]
     else:
         raise CredentialError(
             "model_discovery_unsupported",
-            "Automatic model provisioning is available for Codex and Claude Code OAuth credentials",
+            "Automatic model provisioning is available for Codex, Claude Code, and Antigravity CLI credentials",
         )
 
     profiles = session.scalars(

@@ -1,5 +1,6 @@
 import uuid
 from datetime import UTC, datetime
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func, or_, select
@@ -31,12 +32,30 @@ from app.security import can_access_model, csrf_protection, current_user
 router = APIRouter(prefix="/models", tags=["models"])
 
 
+def validate_provider_parameters(
+    provider: ModelProvider,
+    parameters: dict[str, Any],
+) -> None:
+    if provider != ModelProvider.antigravity:
+        return
+    unsupported = sorted(set(parameters) - {"effort"})
+    effort = parameters.get("effort")
+    if unsupported or (effort is not None and effort not in {"low", "medium", "high"}):
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "antigravity_parameters_unsupported",
+                "message": (
+                    "Official agy supports only effort=low|medium|high; "
+                    "sampling, output limits, service tiers, and advanced "
+                    "Provider fields are not sent"
+                ),
+            },
+        )
+
+
 def to_read(session: Session, profile: ModelProfile) -> ModelRead:
-    credential = (
-        session.get(ProviderCredential, profile.credential_id)
-        if profile.credential_id
-        else None
-    )
+    credential = session.get(ProviderCredential, profile.credential_id) if profile.credential_id else None
     return ModelRead(
         id=profile.id,
         name=profile.name,
@@ -100,7 +119,15 @@ def create_model(
         )
     if credential is not None:
         ensure_compatible(payload.provider, credential.kind)
-    if payload.provider in {ModelProvider.codex, ModelProvider.gemini} and credential is None:
+    if (
+        payload.provider
+        in {
+            ModelProvider.antigravity,
+            ModelProvider.codex,
+            ModelProvider.gemini,
+        }
+        and credential is None
+    ):
         raise HTTPException(
             status_code=422,
             detail={
@@ -108,14 +135,20 @@ def create_model(
                 "message": f"{payload.provider.value} profiles require a compatible credential",
             },
         )
+    validate_provider_parameters(payload.provider, payload.parameters)
+    base_url = str(payload.base_url).rstrip("/")
+    native_tools = payload.native_tools
+    if payload.provider == ModelProvider.antigravity:
+        base_url = "https://antigravity.google/cli"
+        native_tools = True
     profile = ModelProfile(
         name=payload.name,
         provider=payload.provider,
-        base_url=str(payload.base_url).rstrip("/"),
+        base_url=base_url,
         model_id=payload.model_id,
         encrypted_api_key=None,
         credential_id=credential.id if credential else None,
-        native_tools=payload.native_tools,
+        native_tools=native_tools,
         parameters=payload.parameters,
         enabled=payload.enabled,
     )
@@ -138,9 +171,7 @@ def update_model(
     session: Session = Depends(get_session),
     user: UserAccount = Depends(csrf_protection),
 ) -> ModelRead:
-    profile = session.scalar(
-        select(ModelProfile).where(ModelProfile.id == model_id).with_for_update()
-    )
+    profile = session.scalar(select(ModelProfile).where(ModelProfile.id == model_id).with_for_update())
     if not can_access_model(session, user, profile) or profile.archived_at is not None:
         raise HTTPException(status_code=404, detail="Model profile not found")
     assert profile is not None
@@ -168,6 +199,12 @@ def update_model(
     if payload.name is not None:
         profile.name = payload.name
     effective_provider = payload.provider or profile.provider
+    effective_parameters = (
+        payload.parameters
+        if payload.parameters is not None
+        else profile.parameters
+    )
+    validate_provider_parameters(effective_provider, effective_parameters)
     if payload.provider is not None:
         profile.provider = payload.provider
     if payload.base_url is not None:
@@ -212,7 +249,11 @@ def update_model(
         if current_credential is None or current_credential.archived_at is not None:
             raise HTTPException(status_code=422, detail="Credential is unavailable")
         ensure_compatible(profile.provider, current_credential.kind)
-    elif profile.provider in {ModelProvider.codex, ModelProvider.gemini}:
+    elif profile.provider in {
+        ModelProvider.antigravity,
+        ModelProvider.codex,
+        ModelProvider.gemini,
+    }:
         raise HTTPException(
             status_code=422,
             detail={
@@ -220,6 +261,10 @@ def update_model(
                 "message": f"{profile.provider.value} profiles require a compatible credential",
             },
         )
+
+    if profile.provider == ModelProvider.antigravity:
+        profile.base_url = "https://antigravity.google/cli"
+        profile.native_tools = True
 
     session.commit()
     session.refresh(profile)
@@ -232,9 +277,7 @@ def delete_model(
     session: Session = Depends(get_session),
     user: UserAccount = Depends(csrf_protection),
 ) -> None:
-    profile = session.scalar(
-        select(ModelProfile).where(ModelProfile.id == model_id).with_for_update()
-    )
+    profile = session.scalar(select(ModelProfile).where(ModelProfile.id == model_id).with_for_update())
     if not can_access_model(session, user, profile) or profile.archived_at is not None:
         raise HTTPException(status_code=404, detail="Model profile not found")
     assert profile is not None
@@ -260,10 +303,7 @@ def delete_model(
     if active_runs:
         raise HTTPException(
             status_code=409,
-            detail=(
-                f"Model profile is used by {active_runs} active run(s). "
-                "Cancel or finish them before deleting it."
-            ),
+            detail=(f"Model profile is used by {active_runs} active run(s). Cancel or finish them before deleting it."),
         )
 
     snapshot = model_snapshot(profile)
@@ -277,15 +317,9 @@ def delete_model(
     ).all()
     for run in referenced_runs:
         config = dict(run.config or {})
-        if (
-            run.candidate_model_id == model_id
-            and not _valid_model_snapshot(config.get("candidate_model_snapshot"))
-        ):
+        if run.candidate_model_id == model_id and not _valid_model_snapshot(config.get("candidate_model_snapshot")):
             config["candidate_model_snapshot"] = snapshot
-        if (
-            run.judge_model_id == model_id
-            and not _valid_model_snapshot(config.get("judge_model_snapshot"))
-        ):
+        if run.judge_model_id == model_id and not _valid_model_snapshot(config.get("judge_model_snapshot")):
             config["judge_model_snapshot"] = snapshot
         run.config = config
 

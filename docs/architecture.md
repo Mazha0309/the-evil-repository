@@ -22,9 +22,9 @@ owns registration policy, account controls, and aggregate service telemetry.
 
 The Suite registry is file-backed and versioned independently from scenario
 packages. `/api/v1/suites` validates family/split manifests against installed
-scenario slug/version pairs and reports whether the declared diversity and
-held-out thresholds are actually met. React displays that state; it does not
-infer leaderboard readiness.
+scenario slug/version pairs and reports actual family, split, scenario, and
+configured-instance coverage. React also displays the explicit publication
+status and note; it does not infer maturity from an arbitrary scenario quota.
 
 The Compose control network is an ordinary private bridge so Rootless Docker
 can publish the loopback-only API/UI ports. Platform PostgreSQL has no published
@@ -54,20 +54,30 @@ daemon rootful. Candidate containers remain fixed at unprivileged UID 1000.
 Model inference happens outside the candidate container. Provider credentials
 are never copied into a scenario workspace or sandbox environment. Model
 profiles reference reusable owner-scoped credentials. API keys, imported
-Codex CLI `auth.json`, imported Gemini CLI `oauth_creds.json`, Claude Code
-setup tokens, OAuth refresh, status transitions, and destructive credential
-deletion remain control-plane operations. Structured inference controls are
-mapped per protocol, while bounded advanced JSON cannot override credentials,
-prompts, messages, models, tools, or transport-owned fields.
+Codex CLI `auth.json`, Claude Code setup tokens, OAuth refresh, status
+transitions, and destructive credential deletion remain control-plane
+operations. Antigravity is represented in PostgreSQL only by a non-secret
+deployment-session reference; the official CLI account state remains in the
+`antigravity-data` named volume. Structured inference controls are mapped per
+protocol, while bounded advanced JSON cannot override credentials, prompts,
+messages, models, tools, or transport-owned fields.
 
-The six Provider adapters are OpenAI Responses, Anthropic Messages / the
-official Claude Agent SDK, Codex subscription Responses, Gemini native
-`generateContent`, OpenAI-compatible Chat Completions, and Ollama Chat. OAuth
-egress is not configurable: the Claude setup token is consumed only by a
-tool-less official SDK subprocess with an ephemeral config directory, Codex is
-pinned to OpenAI authentication and the official Codex backend, and Gemini is
-pinned to Google OAuth and Code Assist. API-key profiles may use their explicit
-Base URL.
+The seven Provider adapters are OpenAI Responses, Anthropic Messages / the
+official Claude Agent SDK, Codex subscription Responses, the official
+Antigravity CLI, Gemini native `generateContent`, OpenAI-compatible Chat
+Completions, and Ollama Chat. OAuth egress is not configurable: the Claude
+setup token is consumed only by a tool-less official SDK subprocess with an
+ephemeral config directory, Codex is pinned to OpenAI authentication and the
+official Codex backend, and Antigravity traffic is owned only by the pinned
+official `agy` process. Native Gemini is API-key only. API-key profiles may use
+their explicit Base URL.
+
+API and Runner mount the same persistent Antigravity home, but only the
+unprivileged `evil` user can access it. The API executes `agy models` for
+catalog checks; the Runner executes `agy --print` in an empty workspace with a
+tool-less managed Agent, deny-all local permissions, and a minimal environment
+that excludes Docker and control-plane secrets. The candidate container never
+mounts this volume. CLI timeouts terminate the complete process group.
 
 Deleting a profile archives its stable row instead of cascading through run
 history. The control plane blocks deletion while a run is active, freezes any
@@ -83,7 +93,10 @@ outside the candidate graph.
 
 The resource ledger separates logical model turns from raw Provider requests
 and counts retry attempts. It preserves Provider-reported input/output Tokens
-but intentionally does not estimate normalized dollar cost.
+but intentionally does not estimate normalized dollar cost. Because `agy`
+print mode exposes no machine-readable usage, Antigravity marks Token usage
+unavailable and cannot select Token budgets; its other resource envelopes
+remain observable and enforced.
 
 At safe model-turn boundaries, the Runner also evaluates the active-time,
 tool-call, Provider-request, and optional Token envelopes. Crossing the later
@@ -143,7 +156,7 @@ be cancelled or finish before archival.
 ```text
 React → FastAPI → platform PostgreSQL
                   ↓ queued run
-              Runner worker → model provider
+              Runner worker → adapter / official agy → model provider
                   ↓ validated tool call
               Rootless Docker → networkless candidate
                   ↓ patch + report + telemetry

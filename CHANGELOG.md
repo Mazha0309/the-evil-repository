@@ -3,6 +3,67 @@
 All notable platform changes are recorded here. The project follows Semantic
 Versioning while individual benchmark scenarios retain independent versions.
 
+## [0.13.0] - 2026-07-28
+
+### Added
+
+- Official Google Antigravity CLI support as a seventh Provider adapter. The
+  control image pins `agy` 1.1.7 for `amd64` and `arm64`, verifies the release
+  archive digest, persists its deployment login in a dedicated Docker volume,
+  discovers account models through `agy models`, and exposes administrator-only
+  attach, synchronization, and reauthentication controls.
+- `make antigravity-login` for the official remote authorization-code flow and
+  `make antigravity-models` for a read-only account catalog check.
+- Explicit Token-observability metadata in events, telemetry summaries, and
+  exports. Antigravity displays Token usage as unavailable and rejects Token
+  budgets because official print mode does not expose machine-readable usage.
+
+### Changed
+
+- Antigravity inference now runs through a managed tool-less `agy` Agent. The
+  Runner translates its schema-constrained next action into the same observable
+  project tools used by every other adapter; `agy` never receives the
+  candidate workspace, Docker socket, Browser, database, or incident tools.
+- Antigravity model profiles use an immutable official-CLI identity rather
+  than a user-supplied Base URL. The first turn performs an authentication and
+  model-catalog preflight so rejected sessions fail immediately instead of
+  spending the normal Provider retry budget.
+- Provider-request budgets are now an optional soft/hard pair. Terminal
+  Repository 3.0.6 disables that cap by default while preserving complete raw
+  request telemetry; operators can still configure a pair per run. Its truth,
+  completion contract, score, time envelope, and tool budgets are unchanged.
+- Suite manifest schema 2 and Production Incident Engineering Suite 0.3.0
+  replace arbitrary
+  five-family/three-held-out/20-scenario readiness debt with explicit
+  `experimental` or `calibrated` publication status and factual family, split,
+  Scenario, and configured-instance coverage.
+
+### Removed
+
+- Gemini CLI `oauth_creds.json` import, platform-managed Google token refresh,
+  and direct private Code Assist requests. Native Gemini remains supported
+  through API-key authentication against the public Generative Language API.
+  Legacy Gemini OAuth rows remain readable only so they can be marked for
+  reauthentication without network access.
+
+### Security
+
+- Official `agy` runs with a minimal secret-free environment, unprivileged
+  `evil` UID, empty workspace, strict deny-all local permissions, disabled
+  self-update and telemetry, bounded output, and whole-process-group cleanup on
+  timeout. Its credential material remains owned by the CLI volume and is
+  never parsed, exported, logged, or copied into a candidate container.
+- Candidate startup now fails closed unless Docker reports Rootless mode and
+  the sandbox image declares the expected contract. The Runner verifies
+  non-root execution, network `none`, read-only root, zero capabilities,
+  `no-new-privileges`, built-in seccomp, private namespaces, disabled swap,
+  bounded resources, no devices/ports/host mounts, and one named tmpfs
+  workspace before and after start.
+- Candidate file writes no longer use daemon-privileged Docker archive
+  extraction. They execute as the candidate UID with descriptor-relative,
+  no-symlink traversal and atomic replacement, closing a path-alias and
+  hard-link attack surface.
+
 ## [0.12.1] - 2026-07-25
 
 ### Added

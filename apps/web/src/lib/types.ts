@@ -95,8 +95,8 @@ export interface Task {
       hard_seconds: number;
       soft_tool_calls: number;
       hard_tool_calls: number;
-      soft_provider_requests?: number;
-      hard_provider_requests?: number;
+      soft_provider_requests?: number | null;
+      hard_provider_requests?: number | null;
       soft_total_tokens?: number | null;
       hard_total_tokens?: number | null;
     };
@@ -150,16 +150,23 @@ export interface BenchmarkSuite {
     instances: number;
     weight: number;
   }>;
-  readiness: {
+  publication: {
+    status: "experimental" | "calibrated";
+    note: string;
+  };
+  coverage: {
     active_families: number;
     held_out_families: number;
     scenario_references: number;
-    required_active_families: number;
-    required_held_out_families: number;
-    required_scenarios: number;
-    leaderboard_eligible: boolean;
+    development_references: number;
+    validation_references: number;
+    held_out_references: number;
+    configured_instances: number;
   };
-  localizations?: Record<string, { name?: string; description?: string }>;
+  localizations?: Record<
+    string,
+    { name?: string; description?: string; publication_note?: string }
+  >;
 }
 
 export interface CompletionSpec {
@@ -222,6 +229,7 @@ export interface ModelProfile {
 export type ModelProvider =
   | "openai_responses"
   | "anthropic"
+  | "antigravity"
   | "openai_compatible"
   | "ollama"
   | "codex"
@@ -229,6 +237,7 @@ export type ModelProvider =
 
 export type CredentialKind =
   | "api_key"
+  | "antigravity_cli"
   | "anthropic_oauth"
   | "codex_oauth"
   | "gemini_oauth";

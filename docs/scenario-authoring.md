@@ -40,9 +40,11 @@ scenario design editions in the same change.
 
 Budgets distinguish active seconds, candidate tool calls, raw Provider HTTP
 requests (including retries), and optional Provider-reported total Tokens.
-Every enabled budget needs an ordered soft/hard pair. Do not invent a portable
-dollar-cost budget from input/output Tokens; cache, reasoning, tier, discount,
-and compatible-API semantics are not normalized.
+Every enabled budget needs an ordered soft/hard pair. Provider-request and
+Token pairs may be omitted; telemetry still counts physical requests when
+their cap is disabled. Do not invent a portable dollar-cost budget from
+input/output Tokens; cache, reasoning, tier, discount, and compatible-API
+semantics are not normalized.
 
 `scenario.py` subclasses `Scenario` and implements `prepare()`,
 `collect_artifacts()`, and `grade()`. It may return trusted

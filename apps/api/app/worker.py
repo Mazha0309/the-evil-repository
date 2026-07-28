@@ -53,6 +53,10 @@ logger = logging.getLogger("evil-runner")
 settings = get_settings()
 
 
+def _optional_int(value: object) -> int | None:
+    return None if value is None else int(value)
+
+
 class Worker:
     def __init__(self) -> None:
         self._active_run_ids: set[uuid.UUID] = set()
@@ -317,13 +321,13 @@ class Worker:
                                 "hard_seconds": int(run_config["hard_seconds"]),
                                 "soft_tool_calls": int(run_config["soft_tool_calls"]),
                                 "hard_tool_calls": int(run_config["hard_tool_calls"]),
-                                "soft_provider_requests": int(
+                                "soft_provider_requests": _optional_int(
                                     run_config.get(
                                         "soft_provider_requests",
                                         prepared.metadata.budget.soft_provider_requests,
                                     )
                                 ),
-                                "hard_provider_requests": int(
+                                "hard_provider_requests": _optional_int(
                                     run_config.get(
                                         "hard_provider_requests",
                                         prepared.metadata.budget.hard_provider_requests,
@@ -369,6 +373,7 @@ class Worker:
                     status=RunStatus.running,
                     stage="Candidate investigation",
                     kind="sandbox.started",
+                    payload=sandbox.security_posture(),
                 )
                 candidate_client = ModelClient(
                     profile,

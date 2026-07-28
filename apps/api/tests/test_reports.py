@@ -115,6 +115,7 @@ def test_detailed_report_exports_replayable_telemetry_without_secrets(
     )
     assert payload["telemetry"]["summary"]["provider"]["logical_turns"] == 1
     assert payload["telemetry"]["provider_turns"][0]["duration_ms"] == 1_250
+    assert payload["run"]["tokens"]["available"] is True
     assert payload["events"][0]["created_at"] is not None
     assert payload["artifacts"][0]["sha256"] == "a" * 64
     assert payload["privacy"]["credentials_included"] is False
