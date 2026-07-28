@@ -41,6 +41,36 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+      - name: Start dedicated Rootless Docker daemon
+        run: |
+          docker run --detach \
+            --name evil-repository-ci-rootless-docker \
+            --privileged \
+            --publish 127.0.0.1:2375:2375 \
+            --env DOCKER_TLS_CERTDIR= \
+            docker.io/library/docker@sha256:9d7346a1c76e658d818714d48d6154436bcf681ea3251985ccbe55f7788d9e20
+
+          ready=0
+          for attempt in {1..60}; do
+            security_options="$(
+              docker --host tcp://127.0.0.1:2375 \
+                info --format '{{json .SecurityOptions}}' 2>/dev/null || true
+            )"
+            case "${security_options}" in
+              *name=rootless*)
+                ready=1
+                break
+                ;;
+            esac
+            sleep 1
+          done
+
+          if [ "${ready}" -ne 1 ]; then
+            docker logs evil-repository-ci-rootless-docker
+            exit 1
+          fi
+
+          echo "DOCKER_HOST=tcp://127.0.0.1:2375" >> "${GITHUB_ENV}"
       - run: docker build -t evil-repository-sandbox:ci infra/sandbox
       - uses: astral-sh/setup-uv@v9.0.0
         with:
@@ -49,3 +79,9 @@ jobs:
         working-directory: apps/api
       - run: SANDBOX_IMAGE=evil-repository-sandbox:ci uv run python scripts/sandbox_smoke.py
         working-directory: apps/api
+      - name: Stop dedicated Rootless Docker daemon
+        if: always()
+        continue-on-error: true
+        env:
+          DOCKER_HOST: unix:///var/run/docker.sock
+        run: docker rm --force evil-repository-ci-rootless-docker
