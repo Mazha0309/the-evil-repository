@@ -1,4 +1,4 @@
-# v0.14.0 设计：预算动态调整 · Harness 优化 · Diff 页面 · 归档与导出优化
+# v0.14.0 设计：预算动态调整 · Harness 优化 · Diff 页面 · 归档与导出优化 · 离线 HTML 报告
 
 日期：2026-08-05
 目标版本：0.14.0（当前 0.13.0）
@@ -164,6 +164,18 @@
 - censored 判定从"硬预算触发"扩展为"最终用量超默认预算"：`run_outcomes.py` 兼容层同步扩展；dashboard 平均分逻辑不变（仍排除 censored）。
 - 归档契约变更 → `scenario/sdk.py` 归档版本号递增（run.json 内）。
 
+### 7.1 离线 HTML 报告（与 v0.14.0 一起发布）
+
+- **归档**：worker 生成归档时同步渲染 `report.html`（自包含）并打进 tar.gz（`telemetry/` 旁）；完整性哈希覆盖，README 更新。worker.complete 阶段数据齐全（scorecard/事件/diff/图谱），渲染时机天然合适。
+- **导出中心 3 格式**：
+  - tar.gz：全量归档（含 report.html），原文件直出
+  - JSON：精简数据（compact 事件，现状）
+  - HTML：从归档提取 `report.html`；归档缺失时动态渲染兜底
+- **端点**：`GET /runs/{id}/export?format=html`（`current_user` 认证，与现有 export 一致）
+- **渲染模块**：`apps/api/app/report_html.py`，复用 reports v3 payload 构造；零外部依赖（内联 CSS、系统字体、极少量内联 JS 做折叠），深色卡片风与详情页一致
+- **内容分区**（无 live tab）：头部运行信息（含 censored/预算调整次数）→ 分数卡（含 overtime_penalty 明细、语义 judge 摘要）→ 总览（行为画像/效率维度/错误画像）→ 假设图谱（静态渲染：树状 + 关联表）→ 审计事件流（全量内嵌、按类型折叠 + 分页）→ diff 全文（行级着色）→ 遥测摘要（预算调整历史/turn 统计/压缩统计）
+- **事件流体积**：主要体积来源（1-10MB 量级），可接受；折叠渲染控制 DOM 规模
+
 ## 8. 测试策略
 
 - 后端 pytest（apps/api/tests 现有风格）：
@@ -173,6 +185,7 @@
   - diff 端点：解析统计、归档缺失 404。
   - export：格式/内容过滤、完整性哈希。
 - 前端 vitest：DiffViewer 解析单测、导出中心类型。
+- HTML 报告：report_html 结构断言（分区存在、diff 着色、事件内嵌）、worker 归档含 report.html、export format=html（提取/兜底渲染两条路径）。
 - 回归：跑现有 CI workflow（api lint/test、web lint/test、rootless sandbox-image 构建）。
 
 ## 9. 交付顺序（串行）
