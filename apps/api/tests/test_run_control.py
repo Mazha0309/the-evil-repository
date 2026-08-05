@@ -234,3 +234,54 @@ def test_adjust_budget_rejects_token_for_antigravity(monkeypatch) -> None:
         )
 
     assert error.value.status_code == 400
+
+
+def test_adjust_budget_without_fields_emits_empty_event_fields(monkeypatch) -> None:
+    run_id = uuid.uuid4()
+    run = SimpleNamespace(
+        id=run_id,
+        task_id=uuid.uuid4(),
+        status=RunStatus.running,
+        stage="Candidate investigation",
+        config={
+            "candidate_model_snapshot": {"provider": "openai_compatible"},
+            "soft_seconds": 10_800,
+            "hard_seconds": 21_600,
+            "soft_tool_calls": 600,
+            "hard_tool_calls": 2_200,
+            "soft_provider_requests": None,
+            "hard_provider_requests": None,
+            "soft_total_tokens": None,
+            "hard_total_tokens": None,
+            "budget_overrides": [
+                {
+                    "field": "hard_seconds",
+                    "value": 50_000,
+                    "reason": "previous adjustment",
+                }
+            ],
+        },
+    )
+    events: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        runs_module,
+        "append_event",
+        lambda _session, _run_id, kind, payload: events.append((kind, payload)),
+    )
+
+    result = adjust_run_budget(
+        run_id,
+        BudgetAdjustment(reason="just a note"),
+        FakeSession(run),
+        SimpleNamespace(role=UserRole.admin, username="mazha"),
+    )
+
+    assert result is run
+    assert events == [("run.budget_adjustment_requested", {"reason": "just a note", "fields": []})]
+    assert run.config["budget_overrides"] == [
+        {
+            "field": "hard_seconds",
+            "value": 50_000,
+            "reason": "previous adjustment",
+        }
+    ]

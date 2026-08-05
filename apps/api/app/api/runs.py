@@ -378,7 +378,7 @@ def adjust_run_budget(
         "run.budget_adjustment_requested",
         {
             "reason": payload.reason,
-            "fields": [entry["field"] for entry in overrides[-len(requested_fields) :]],
+            "fields": requested_fields,
         },
     )
     session.commit()
