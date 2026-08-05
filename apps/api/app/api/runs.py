@@ -216,8 +216,47 @@ def export_run_archive(
             session=session,
             user=user,
         )
+    if format == "html":
+        archive_path = Path(get_settings().artifact_root) / f"{run_id}.tar.gz"
+        if archive_path.exists():
+            import tarfile as tarfile_module
+
+            with tarfile_module.open(archive_path, "r:gz") as source:
+                member = next(
+                    (m for m in source.getmembers() if m.isfile() and m.name == "report.html"),
+                    None,
+                )
+                if member is not None:
+                    return Response(
+                        source.extractfile(member).read(),
+                        media_type="text/html; charset=utf-8",
+                        headers={"Content-Disposition": f'inline; filename="run-{run_id}.html"'},
+                    )
+        from app.api.diffs import _archive_candidates, _read_members
+        from app.api.reports import build_report_payload
+        from app.report_html import render_report_html, report_payload_for_html
+
+        payload = build_report_payload(run_id, session, include="compact")
+        for candidate in _archive_candidates(run_id):
+            if candidate.exists():
+                text_by_repo = {entry["repo"]: entry for entry in _read_members(candidate)}
+                break
+        else:
+            text_by_repo = {}
+        for diff in payload.get("diffs") or []:
+            entry = text_by_repo.get(diff["repo"])
+            if entry:
+                diff["diff_text"] = entry.get("diff_text", "")
+                diff["status_text"] = entry.get("status_text", "")
+        model = dict(run.config).get("candidate_model_snapshot") or {}
+        html = render_report_html(report_payload_for_html(payload, model=model))
+        return Response(
+            html.encode("utf-8"),
+            media_type="text/html; charset=utf-8",
+            headers={"Content-Disposition": f'inline; filename="run-{run_id}.html"'},
+        )
     if format != "tar.gz":
-        raise HTTPException(status_code=400, detail="format must be json or tar.gz")
+        raise HTTPException(status_code=400, detail="format must be json, tar.gz or html")
     archive_path = Path(get_settings().artifact_root) / f"{run_id}.tar.gz"
     if not archive_path.exists():
         raise HTTPException(status_code=404, detail="No run archive available")
@@ -234,12 +273,7 @@ def export_run_archive(
         "diffs": ["artifacts/"],
         "graph": ["investigation/"],
     }
-    keep = [
-        marker
-        for name, markers in path_markers.items()
-        if name in allowed
-        for marker in markers
-    ]
+    keep = [marker for name, markers in path_markers.items() if name in allowed for marker in markers]
     if not keep:
         raise HTTPException(status_code=400, detail="No matching archive content")
     import io
@@ -251,20 +285,14 @@ def export_run_archive(
         tarfile_module.open(fileobj=buffer, mode="w:gz") as out,
     ):
         for member in source.getmembers():
-            if member.isfile() and any(
-                member.name.startswith(marker) for marker in keep
-            ):
+            if member.isfile() and any(member.name.startswith(marker) for marker in keep):
                 payload = source.extractfile(member)
                 out.addfile(member, payload)
     buffer.seek(0)
     return Response(
         buffer.getvalue(),
         media_type="application/gzip",
-        headers={
-            "Content-Disposition": (
-                f'attachment; filename="run-{run_id}-filtered.tar.gz"'
-            )
-        },
+        headers={"Content-Disposition": (f'attachment; filename="run-{run_id}-filtered.tar.gz"')},
     )
 
 
