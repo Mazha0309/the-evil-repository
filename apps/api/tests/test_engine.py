@@ -893,16 +893,17 @@ def test_provider_policy_rejection_retries_without_raw_tool_history(
 class BudgetOverrideClient:
     profile = SimpleNamespace(native_tools=True)
 
-    def __init__(self) -> None:
+    def __init__(self, tool_turns: int = 1) -> None:
         self.turns = 0
+        self.tool_turns = tool_turns
 
     def complete(self, messages: list[dict], tools: list[dict]) -> AssistantTurn:
         self.turns += 1
-        if self.turns == 1:
+        if self.turns <= self.tool_turns:
             return AssistantTurn(
                 tool_calls=[
                     ToolCall(
-                        call_id="t1",
+                        call_id=f"t{self.turns}",
                         name="read_file",
                         arguments={"path": "README.md"},
                     ),
@@ -936,28 +937,25 @@ class BudgetOverrideDB:
         )
 
 
-def test_budget_overrides_applied_at_runtime(tmp_path: Path, monkeypatch) -> None:
+def _budget_override_engine(
+    tmp_path: Path,
+    monkeypatch,
+    config: dict,
+    tool_turns: int = 1,
+) -> tuple[AgentEngine, PreparedScenario]:
     scenario = load_scenario(SCENARIO_ROOT)
+    budget = scenario.metadata.budget.model_copy(
+        update={"hard_tool_calls": 2, "soft_tool_calls": 1}
+    )
     prepared = PreparedScenario(
         scenario_root=SCENARIO_ROOT,
         workspace=tmp_path,
-        metadata=scenario.metadata,
+        metadata=scenario.metadata.model_copy(update={"budget": budget}),
     )
-    config = {
-        "budget_overrides": [
-            {
-                "field": "hard_tool_calls",
-                "value": 5000,
-                "reason": "keep going",
-                "requested_by": "test",
-                "requested_at": "2026-08-05T00:00:00Z",
-            }
-        ]
-    }
     monkeypatch.setattr(engine_module, "SessionLocal", lambda: BudgetOverrideDB(config))
     engine = AgentEngine(
         run_id=uuid.uuid4(),
-        client=BudgetOverrideClient(),
+        client=BudgetOverrideClient(tool_turns=tool_turns),
         sandbox=SimpleNamespace(),
         prepared=prepared,
         faults=FaultController([]),
@@ -979,10 +977,106 @@ def test_budget_overrides_applied_at_runtime(tmp_path: Path, monkeypatch) -> Non
     )
     monkeypatch.setattr(engine, "_completion_gaps", lambda: [])
     monkeypatch.setattr(engine, "_compact_context", lambda *a, **k: None)
+    return engine, prepared
+
+
+def test_budget_overrides_applied_at_runtime(tmp_path: Path, monkeypatch) -> None:
+    config = {
+        "budget_overrides": [
+            {
+                "field": "hard_tool_calls",
+                "value": 5000,
+                "reason": "keep going",
+                "requested_by": "test",
+                "requested_at": "2026-08-05T00:00:00Z",
+            }
+        ]
+    }
+    engine, prepared = _budget_override_engine(
+        tmp_path,
+        monkeypatch,
+        config,
+        tool_turns=3,
+    )
+
     result = engine.run(prepared)
+
     assert engine.budget.hard_tool_calls == 5000
+    assert result.tool_calls == 3
     assert result.private_state["hard_budget_reasons"] == []
     assert any(e["kind"] == "run.budget_adjusted" for e in engine.events)
-    adjusted = [e for e in engine.events if e["kind"] == "run.budget_adjusted"][0]
-    assert adjusted["field"] == "hard_tool_calls"
-    assert adjusted["new_value"] == 5000
+    adjusted = [e for e in engine.events if e["kind"] == "run.budget_adjusted"]
+    assert len(adjusted) == 1
+    assert adjusted[0]["field"] == "hard_tool_calls"
+    assert adjusted[0]["old_value"] == 2
+    assert adjusted[0]["new_value"] == 5000
+    assert adjusted[0]["requested_at"] == "2026-08-05T00:00:00Z"
+    assert "applied_at" in adjusted[0]
+
+
+def test_budget_override_invalid_entry_skipped_without_duplicate_events(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config = {
+        "budget_overrides": [
+            {
+                "field": "no_such_field",
+                "value": 9999,
+                "reason": "invalid",
+                "requested_by": "test",
+                "requested_at": "2026-08-05T00:00:00Z",
+            },
+            {
+                "field": "hard_tool_calls",
+                "value": 5000,
+                "reason": "keep going",
+                "requested_by": "test",
+                "requested_at": "2026-08-05T00:00:00Z",
+            },
+        ]
+    }
+    engine, prepared = _budget_override_engine(
+        tmp_path,
+        monkeypatch,
+        config,
+        tool_turns=3,
+    )
+
+    result = engine.run(prepared)
+
+    assert result.tool_calls == 3
+    assert engine.budget.hard_tool_calls == 5000
+    adjusted = [e for e in engine.events if e["kind"] == "run.budget_adjusted"]
+    assert len(adjusted) == 1
+    assert adjusted[0]["field"] == "hard_tool_calls"
+
+
+def test_budget_override_null_value_skipped_without_crash(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config = {
+        "budget_overrides": [
+            {
+                "field": "hard_tool_calls",
+                "value": None,
+                "reason": "null value",
+                "requested_by": "test",
+                "requested_at": "2026-08-05T00:00:00Z",
+            }
+        ]
+    }
+    engine, prepared = _budget_override_engine(
+        tmp_path,
+        monkeypatch,
+        config,
+        tool_turns=1,
+    )
+
+    result = engine.run(prepared)
+
+    assert engine.budget.hard_tool_calls == 2
+    assert result.tool_calls == 1
+    assert result.final_response == "done"
+    assert not any(e["kind"] == "run.budget_adjusted" for e in engine.events)

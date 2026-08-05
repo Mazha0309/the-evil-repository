@@ -1,11 +1,13 @@
 import copy
 import hashlib
 import json
+import logging
 import re
 import shlex
 import time
 import uuid
 from collections import Counter
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import func, select
@@ -38,6 +40,8 @@ from app.scenario.browser import OfflineBrowser
 from app.scenario.incident import IncidentDirector
 from app.scenario.release import RELEASE_TOOLS, ReleaseDirector
 from app.scenario.sdk import PreparedScenario, ScenarioRunResult
+
+logger = logging.getLogger(__name__)
 
 
 class HardResourceBudgetExceeded(RuntimeError):
@@ -1690,20 +1694,26 @@ class AgentEngine:
                     else []
                 )
         except SQLAlchemyError:
+            logger.warning(
+                "Budget override read failed for run %s; continuing with "
+                "current budget",
+                self.run_id,
+            )
             return
         for entry in overrides[self.applied_budget_overrides :]:
+            self.applied_budget_overrides += 1
             field = str(entry.get("field", ""))
-            if not hasattr(self.budget, field):
+            if field not in BudgetSpec.model_fields:
                 continue
             old_value = getattr(self.budget, field)
             new_value = entry.get("value")
             try:
-                self.budget = self.budget.model_copy(
-                    update={field: int(new_value) if new_value is not None else None}
-                )
+                updated = self.budget.model_dump()
+                updated[field] = int(new_value) if new_value is not None else None
+                budget = BudgetSpec.model_validate(updated)
             except (TypeError, ValueError):
                 continue
-            self.applied_budget_overrides += 1
+            self.budget = budget
             self._event(
                 "run.budget_adjusted",
                 {
@@ -1713,6 +1723,7 @@ class AgentEngine:
                     "reason": str(entry.get("reason", "")),
                     "requested_by": str(entry.get("requested_by", "")),
                     "requested_at": str(entry.get("requested_at", "")),
+                    "applied_at": datetime.now(UTC).isoformat(),
                 },
             )
 
