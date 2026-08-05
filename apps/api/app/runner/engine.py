@@ -128,6 +128,7 @@ class AgentEngine:
         self.tool_status_counts: Counter[str] = Counter()
         self.tool_signature_counts: Counter[str] = Counter()
         self.tool_result_cache: dict[str, tuple[int, str]] = {}
+        self._workspace_dirty = False
         self.result_display_limit = 8_192
         self.events: list[dict[str, Any]] = []
         self.final_rejections = 0
@@ -476,6 +477,7 @@ class AgentEngine:
                     native=native,
                 )
             flush_parallel(turn_number)
+            self._capture_repo_diffs(turn_number)
             if stop_requested:
                 break
         else:
@@ -526,6 +528,38 @@ class AgentEngine:
             },
         )
 
+    def _capture_repo_diffs(self, turn_number: int) -> None:
+        if not self._workspace_dirty:
+            return
+        self._workspace_dirty = False
+        from app.api.diffs import _stats
+
+        for repository in self.prepared.metadata.repositories:
+            repo = repository.name
+            try:
+                diff_text = self.sandbox.git_diff(repo)
+                status_text = self.sandbox.git_status(repo)
+            except Exception:
+                logger.debug(
+                    "Run %s: repo diff capture failed for %s",
+                    self.run_id,
+                    repo,
+                    exc_info=True,
+                )
+                continue
+            if not diff_text and not status_text:
+                continue
+            self._event(
+                "run.repo_diff",
+                {
+                    "repo": repo,
+                    "diff_text": diff_text,
+                    "status_text": status_text,
+                    **_stats(diff_text),
+                    "updated_at": datetime.now(UTC).isoformat(),
+                },
+            )
+
     def _process_tool_result(
         self,
         call: ToolCall,
@@ -559,6 +593,11 @@ class AgentEngine:
                         "logical_time": checkpoint["logical_time"],
                     },
                 )
+        if (
+            result.status in {"ok", "success"}
+            and call.name in {"write_file", "exec_command"}
+        ):
+            self._workspace_dirty = True
         tool_duration_ms = round((time.monotonic() - started) * 1_000)
         self.tool_durations_ms.append(tool_duration_ms)
         self.tool_status_counts[result.status] += 1

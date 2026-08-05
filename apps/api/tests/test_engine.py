@@ -1906,3 +1906,131 @@ def test_parallel_dedup_summary_uses_call_ordinal(tmp_path: Path, monkeypatch) -
     last_message = client.requests[1][-1]
     assert last_message["role"] == "tool"
     assert "Identical to tool call #1" in last_message["content"]
+
+
+class DiffCaptureSandbox:
+    def __init__(self) -> None:
+        self.diff_calls: list[str] = []
+        self.fail = False
+
+    def git_diff(self, repo: str) -> str:
+        if self.fail:
+            raise RuntimeError("git exploded")
+        self.diff_calls.append(repo)
+        return (
+            "diff --git a/README.md b/README.md\n"
+            "--- a/README.md\n"
+            "+++ b/README.md\n"
+            "@@ -1,1 +1,2 @@\n"
+            "- old\n"
+            "+ new\n"
+        )
+
+    def git_status(self, repo: str) -> str:
+        return " M README.md"
+
+
+class DiffWriteClient:
+    profile = SimpleNamespace(native_tools=True)
+
+    def __init__(self) -> None:
+        self.turn = 0
+
+    def complete(self, messages: list[dict], tools: list[dict]) -> AssistantTurn:
+        self.turn += 1
+        if self.turn == 1:
+            return AssistantTurn(
+                tool_calls=[
+                    ToolCall(call_id="w1", name="write_file", arguments={"path": "README.md", "content": "new"}),
+                ],
+                input_tokens=10,
+                output_tokens=2,
+            )
+        return AssistantTurn(content="done", input_tokens=10, output_tokens=2)
+
+
+def test_repo_diff_emitted_after_mutating_tool(tmp_path: Path, monkeypatch) -> None:
+    scenario = load_scenario(SCENARIO_ROOT)
+    prepared = PreparedScenario(
+        scenario_root=SCENARIO_ROOT,
+        workspace=tmp_path,
+        metadata=scenario.metadata,
+    )
+    sandbox = DiffCaptureSandbox()
+    monkeypatch.setattr(engine_module, "SessionLocal", lambda: BudgetOverrideDB({}))
+    engine = AgentEngine(
+        run_id=uuid.uuid4(),
+        client=DiffWriteClient(),
+        sandbox=sandbox,
+        prepared=prepared,
+        faults=FaultController([]),
+    )
+    monkeypatch.setattr(engine, "_event", lambda kind, payload: engine.events.append({"kind": kind, **payload}))
+    def fake_write(call: ToolCall) -> ToolResult:
+        return ToolResult(call_id=call.call_id, name=call.name, status="ok", output="written")
+
+    monkeypatch.setattr(engine, "_execute", fake_write)
+    monkeypatch.setattr(engine, "_completion_gaps", lambda: [])
+    monkeypatch.setattr(engine, "_compact_context", lambda *a, **k: None)
+    engine.run(prepared)
+    diffs = [e for e in engine.events if e["kind"] == "run.repo_diff"]
+    assert len(diffs) == 2
+    repos = {d["repo"] for d in diffs}
+    assert repos == {"dead-letter", "palimpsest"}
+    assert diffs[0]["added_lines"] == 1
+    assert diffs[0]["removed_lines"] == 1
+    assert diffs[0]["file_count"] == 1
+    assert diffs[0]["status_text"] == " M README.md"
+
+
+def test_no_repo_diff_without_mutating_tool(tmp_path: Path, monkeypatch) -> None:
+    scenario = load_scenario(SCENARIO_ROOT)
+    prepared = PreparedScenario(
+        scenario_root=SCENARIO_ROOT,
+        workspace=tmp_path,
+        metadata=scenario.metadata,
+    )
+    sandbox = DiffCaptureSandbox()
+    monkeypatch.setattr(engine_module, "SessionLocal", lambda: BudgetOverrideDB({}))
+    engine = AgentEngine(
+        run_id=uuid.uuid4(),
+        client=FinalAnswerClient(),
+        sandbox=sandbox,
+        prepared=prepared,
+        faults=FaultController([]),
+    )
+    monkeypatch.setattr(engine, "_event", lambda kind, payload: engine.events.append({"kind": kind, **payload}))
+    monkeypatch.setattr(engine, "_completion_gaps", lambda: [])
+    monkeypatch.setattr(engine, "_compact_context", lambda *a, **k: None)
+    engine.run(prepared)
+    assert not any(e["kind"] == "run.repo_diff" for e in engine.events)
+    assert sandbox.diff_calls == []
+
+
+def test_repo_diff_capture_failure_is_silent(tmp_path: Path, monkeypatch) -> None:
+    scenario = load_scenario(SCENARIO_ROOT)
+    prepared = PreparedScenario(
+        scenario_root=SCENARIO_ROOT,
+        workspace=tmp_path,
+        metadata=scenario.metadata,
+    )
+    sandbox = DiffCaptureSandbox()
+    sandbox.fail = True
+    monkeypatch.setattr(engine_module, "SessionLocal", lambda: BudgetOverrideDB({}))
+    engine = AgentEngine(
+        run_id=uuid.uuid4(),
+        client=DiffWriteClient(),
+        sandbox=sandbox,
+        prepared=prepared,
+        faults=FaultController([]),
+    )
+    monkeypatch.setattr(engine, "_event", lambda kind, payload: engine.events.append({"kind": kind, **payload}))
+    def fake_write(call: ToolCall) -> ToolResult:
+        return ToolResult(call_id=call.call_id, name=call.name, status="ok", output="written")
+
+    monkeypatch.setattr(engine, "_execute", fake_write)
+    monkeypatch.setattr(engine, "_completion_gaps", lambda: [])
+    monkeypatch.setattr(engine, "_compact_context", lambda *a, **k: None)
+    result = engine.run(prepared)
+    assert result.final_response == "done"
+    assert not any(e["kind"] == "run.repo_diff" for e in engine.events)
