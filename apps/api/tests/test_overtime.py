@@ -59,3 +59,12 @@ def test_penalty_floor_zero_and_cap() -> None:
     apply_overtime_penalty(scorecard, result, default)
     assert scorecard["score"] == 0.0
     assert scorecard["overtime_penalty"]["active_time"]["overrun"] == 2.0
+
+
+def test_final_usage_ceil_seconds_and_handles_none_state() -> None:
+    result = SimpleNamespace(elapsed_seconds=200.9, tool_calls=5, private_state=None)
+    usage = final_usage(result)
+    assert usage["active_time"] == 201  # 200.9s > 200s 硬预算必须计为超额
+    assert usage["tool_calls"] == 5
+    assert usage["provider_requests"] == 0
+    assert usage["total_tokens"] == 0

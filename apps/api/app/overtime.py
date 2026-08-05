@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from typing import Any
 
 from app.challenge.spec import BudgetSpec
@@ -8,7 +9,7 @@ from app.challenge.spec import BudgetSpec
 def final_usage(result: Any) -> dict[str, int]:
     private_state = result.private_state or {}
     return {
-        "active_time": int(result.elapsed_seconds or 0),
+        "active_time": int(math.ceil(result.elapsed_seconds or 0)),
         "tool_calls": int(result.tool_calls or 0),
         "provider_requests": int(private_state.get("provider_requests", 0)),
         "total_tokens": int(private_state.get("input_tokens", 0)) + int(private_state.get("output_tokens", 0)),
