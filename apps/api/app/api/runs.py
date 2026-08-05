@@ -7,6 +7,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import FileResponse, StreamingResponse
+from pydantic import ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -41,6 +42,17 @@ from app.security import can_access_model, can_access_run, csrf_protection, curr
 
 router = APIRouter(prefix="/runs", tags=["runs"])
 settings = get_settings()
+
+_BUDGET_FIELDS = (
+    "soft_seconds",
+    "hard_seconds",
+    "soft_tool_calls",
+    "hard_tool_calls",
+    "soft_provider_requests",
+    "hard_provider_requests",
+    "soft_total_tokens",
+    "hard_total_tokens",
+)
 
 
 @router.get("", response_model=list[RunRead])
@@ -328,36 +340,24 @@ def adjust_run_budget(
         current[override["field"]] = override["value"]
     merged = {
         field: getattr(payload, field) if getattr(payload, field) is not None else current.get(field)
-        for field in (
-            "soft_seconds",
-            "hard_seconds",
-            "soft_tool_calls",
-            "hard_tool_calls",
-            "soft_provider_requests",
-            "hard_provider_requests",
-            "soft_total_tokens",
-            "hard_total_tokens",
-        )
+        for field in _BUDGET_FIELDS
     }
     try:
         BudgetSpec(**merged)
-    except Exception as exc:
+    except ValidationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    completion = task.manifest.get("completion", {}) if task else {}
+    minimum_calls = int(completion.get("min_tool_calls", 0))
+    if merged["hard_tool_calls"] is not None and merged["hard_tool_calls"] < minimum_calls:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Hard tool-call budget must be at least {minimum_calls} for this Scenario",
+        )
     config = dict(run.config)
     config.setdefault("budget_overrides", [])
     overrides = list(config["budget_overrides"])
-    budget_fields = (
-        "soft_seconds",
-        "hard_seconds",
-        "soft_tool_calls",
-        "hard_tool_calls",
-        "soft_provider_requests",
-        "hard_provider_requests",
-        "soft_total_tokens",
-        "hard_total_tokens",
-    )
     requested_fields: list[str] = []
-    for field in budget_fields:
+    for field in _BUDGET_FIELDS:
         value = getattr(payload, field)
         if value is not None:
             requested_fields.append(field)

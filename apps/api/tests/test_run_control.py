@@ -285,3 +285,85 @@ def test_adjust_budget_without_fields_emits_empty_event_fields(monkeypatch) -> N
             "reason": "previous adjustment",
         }
     ]
+
+
+def _running_run_config() -> dict:
+    return {
+        "candidate_model_snapshot": {"provider": "openai_compatible"},
+        "soft_seconds": 10_800,
+        "hard_seconds": 21_600,
+        "soft_tool_calls": 600,
+        "hard_tool_calls": 2_200,
+        "soft_provider_requests": None,
+        "hard_provider_requests": None,
+        "soft_total_tokens": None,
+        "hard_total_tokens": None,
+    }
+
+
+def test_adjust_budget_rejects_invalid_pair(monkeypatch) -> None:
+    run_id = uuid.uuid4()
+    run = SimpleNamespace(
+        id=run_id,
+        task_id=uuid.uuid4(),
+        status=RunStatus.running,
+        stage="Candidate investigation",
+        config=_running_run_config(),
+    )
+    monkeypatch.setattr(runs_module, "append_event", lambda *_args: None)
+
+    with pytest.raises(HTTPException) as error:
+        adjust_run_budget(
+            run_id,
+            BudgetAdjustment(soft_seconds=30_000, hard_seconds=20_000, reason="bad"),
+            FakeSession(run),
+            SimpleNamespace(role=UserRole.admin, username="mazha"),
+        )
+
+    assert error.value.status_code == 400
+
+
+def test_adjust_budget_rejects_below_scenario_min_tool_calls(monkeypatch) -> None:
+    run_id = uuid.uuid4()
+    run = SimpleNamespace(
+        id=run_id,
+        task_id=uuid.uuid4(),
+        status=RunStatus.running,
+        stage="Candidate investigation",
+        config=_running_run_config() | {"soft_tool_calls": 10},
+    )
+    task = SimpleNamespace(manifest={"completion": {"min_tool_calls": 50}})
+    monkeypatch.setattr(runs_module, "append_event", lambda *_args: None)
+
+    with pytest.raises(HTTPException) as error:
+        adjust_run_budget(
+            run_id,
+            BudgetAdjustment(hard_tool_calls=20, reason="low"),
+            FakeSession(run, task),
+            SimpleNamespace(role=UserRole.admin, username="mazha"),
+        )
+
+    assert error.value.status_code == 400
+    assert "at least 50" in error.value.detail
+
+
+def test_adjust_budget_rejects_single_sided_token_pair(monkeypatch) -> None:
+    run_id = uuid.uuid4()
+    run = SimpleNamespace(
+        id=run_id,
+        task_id=uuid.uuid4(),
+        status=RunStatus.running,
+        stage="Candidate investigation",
+        config=_running_run_config(),
+    )
+    monkeypatch.setattr(runs_module, "append_event", lambda *_args: None)
+
+    with pytest.raises(HTTPException) as error:
+        adjust_run_budget(
+            run_id,
+            BudgetAdjustment(soft_total_tokens=100_000, reason="half"),
+            FakeSession(run),
+            SimpleNamespace(role=UserRole.admin, username="mazha"),
+        )
+
+    assert error.value.status_code == 400
