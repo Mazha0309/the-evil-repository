@@ -62,6 +62,11 @@ POLICY_RECOVERY_MARKER = "RUNNER_PROVIDER_POLICY_RECOVERY_V1"
 FINALIZATION_BUDGET_NUMERATOR = 4
 FINALIZATION_BUDGET_DENOMINATOR = 5
 
+# Read-only tools safe to run concurrently: list_files/read_file only read
+# the workspace; browser_search/browser_find/browser_open query the offline
+# mirror with fresh sqlite connections per call, and browser_open's relay
+# write replaces its per-ref_id inbox file atomically (last-write-wins).
+# Do not add tools that mutate shared runner state.
 PARALLEL_SAFE_TOOLS = frozenset(
     {"list_files", "read_file", "browser_search", "browser_open", "browser_find"}
 )

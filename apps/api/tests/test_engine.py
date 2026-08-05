@@ -1291,3 +1291,124 @@ def test_parallel_safe_tools_execute_concurrently_keep_order(tmp_path: Path, mon
     assert [e["call_id"] for e in results] == ["p1", "p2", "p3", "p4"]
 
 
+class SingleSafeToolClient:
+    profile = SimpleNamespace(native_tools=True)
+
+    def __init__(self) -> None:
+        self.turn = 0
+
+    def complete(self, messages: list[dict], tools: list[dict]) -> AssistantTurn:
+        self.turn += 1
+        if self.turn == 1:
+            return AssistantTurn(
+                tool_calls=[
+                    ToolCall(call_id="s1", name="read_file", arguments={"path": "a.txt"}),
+                ],
+                input_tokens=10,
+                output_tokens=2,
+            )
+        return AssistantTurn(content="done", input_tokens=10, output_tokens=2)
+
+
+def test_parallel_single_safe_tool_batch_fast_path(tmp_path: Path, monkeypatch) -> None:
+    scenario = load_scenario(SCENARIO_ROOT)
+    prepared = PreparedScenario(
+        scenario_root=SCENARIO_ROOT,
+        workspace=tmp_path,
+        metadata=scenario.metadata,
+    )
+    executed: list[str] = []
+
+    def fake_execute(call: ToolCall) -> ToolResult:
+        executed.append(call.call_id)
+        return ToolResult(
+            call_id=call.call_id,
+            name=call.name,
+            status="ok",
+            output=f"out:{call.name}",
+        )
+
+    monkeypatch.setattr(engine_module, "SessionLocal", lambda: BudgetOverrideDB({}))
+    engine = AgentEngine(
+        run_id=uuid.uuid4(),
+        client=SingleSafeToolClient(),
+        sandbox=SimpleNamespace(),
+        prepared=prepared,
+        faults=FaultController([]),
+    )
+    monkeypatch.setattr(engine, "_event", lambda kind, payload: engine.events.append({"kind": kind, **payload}))
+    monkeypatch.setattr(engine, "_execute", fake_execute)
+    monkeypatch.setattr(engine, "_completion_gaps", lambda: [])
+    monkeypatch.setattr(engine, "_compact_context", lambda *a, **k: None)
+    engine.run(prepared)
+    assert executed == ["s1"]
+    calls = [e for e in engine.events if e["kind"] == "tool.call"]
+    assert [e["call_id"] for e in calls] == ["s1"]
+    results = [e for e in engine.events if e["kind"] == "tool.result"]
+    assert [e["call_id"] for e in results] == ["s1"]
+
+
+class TwoSafeToolsClient:
+    profile = SimpleNamespace(native_tools=True)
+
+    def __init__(self) -> None:
+        self.turn = 0
+
+    def complete(self, messages: list[dict], tools: list[dict]) -> AssistantTurn:
+        self.turn += 1
+        if self.turn == 1:
+            return AssistantTurn(
+                tool_calls=[
+                    ToolCall(call_id="h1", name="read_file", arguments={"path": "a.txt"}),
+                    ToolCall(call_id="h2", name="read_file", arguments={"path": "b.txt"}),
+                ],
+                input_tokens=10,
+                output_tokens=2,
+            )
+        return AssistantTurn(content="done", input_tokens=10, output_tokens=2)
+
+
+def test_parallel_hard_budget_mid_turn_break_flushes_pending(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    scenario = load_scenario(SCENARIO_ROOT)
+    budget = scenario.metadata.budget.model_copy(update={"hard_tool_calls": 1})
+    prepared = PreparedScenario(
+        scenario_root=SCENARIO_ROOT,
+        workspace=tmp_path,
+        metadata=scenario.metadata.model_copy(update={"budget": budget}),
+    )
+    executed: list[str] = []
+
+    def fake_execute(call: ToolCall) -> ToolResult:
+        executed.append(call.call_id)
+        return ToolResult(
+            call_id=call.call_id,
+            name=call.name,
+            status="ok",
+            output=f"out:{call.name}",
+        )
+
+    monkeypatch.setattr(engine_module, "SessionLocal", lambda: BudgetOverrideDB({}))
+    engine = AgentEngine(
+        run_id=uuid.uuid4(),
+        client=TwoSafeToolsClient(),
+        sandbox=SimpleNamespace(),
+        prepared=prepared,
+        faults=FaultController([]),
+    )
+    monkeypatch.setattr(engine, "_event", lambda kind, payload: engine.events.append({"kind": kind, **payload}))
+    monkeypatch.setattr(engine, "_execute", fake_execute)
+    monkeypatch.setattr(engine, "_completion_gaps", lambda: [])
+    monkeypatch.setattr(engine, "_compact_context", lambda *a, **k: None)
+    result = engine.run(prepared)
+    assert executed == ["h1"]
+    assert result.tool_calls == 1
+    assert result.private_state["hard_budget_reasons"] == ["tool_calls"]
+    calls = [e for e in engine.events if e["kind"] == "tool.call"]
+    assert [e["call_id"] for e in calls] == ["h1"]
+    results = [e for e in engine.events if e["kind"] == "tool.result"]
+    assert [e["call_id"] for e in results] == ["h1"]
+
+
