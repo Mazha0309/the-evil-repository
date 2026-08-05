@@ -3,6 +3,7 @@ import type {
   AdminSummary,
   AuthConfig,
   AuthResponse,
+  BudgetAdjustment,
   DashboardSummary,
   InvestigationGraph,
   ModelProfile,
@@ -199,6 +200,11 @@ export const api = {
     request<Run>(`/runs/${id}/pause`, { method: "POST" }),
   resumeRun: (id: string) =>
     request<Run>(`/runs/${id}/resume`, { method: "POST" }),
+  adjustBudget: (runId: string, payload: BudgetAdjustment) =>
+    request<Run>(`/runs/${runId}/budget`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
   reportUrl: (id: string) => `${API_BASE}/reports/${id}`,
   adminSummary: () => request<AdminSummary>("/admin/summary"),
   adminUsers: () => request<UserAccount[]>("/admin/users"),

@@ -74,6 +74,7 @@ import AuthScreen from "./components/AuthScreen";
 import CredentialsPage from "./components/CredentialsPage";
 import LiveRunMonitor from "./components/LiveRunMonitor";
 import { api, ApiError } from "./lib/api";
+import { mergeBudgetOverrides } from "./lib/budget";
 import { useLocale } from "./lib/i18n";
 import {
   buildModelParameters,
@@ -94,6 +95,8 @@ import {
 import type {
   AuthConfig,
   AuthResponse,
+  BudgetAdjustment,
+  BudgetOverrideEntry,
   CredentialKind,
   ModelProfile,
   ModelProvider,
@@ -2007,6 +2010,7 @@ function RunDetailPage() {
   >("live");
   const [confirmCancel, setConfirmCancel] = useState(false);
   const [confirmArchive, setConfirmArchive] = useState(false);
+  const [budgetAdjustOpen, setBudgetAdjustOpen] = useState(false);
   const [cancelError, setCancelError] = useState("");
   const run = useQuery({
     queryKey: ["run", runId],
@@ -2481,13 +2485,22 @@ function RunDetailPage() {
               <Play size={14} /> {text("继续运行", "Resume run")}
             </button>
           ) : (
-            <button
-              className="button button--warning"
-              disabled={pauseRun.isPending}
-              onClick={() => pauseRun.mutate()}
-            >
-              <Pause size={14} /> {text("安全暂停", "Pause safely")}
-            </button>
+            <>
+              <button
+                className="button button--ghost"
+                onClick={() => setBudgetAdjustOpen(true)}
+              >
+                <SlidersHorizontal size={14} />
+                {text("调整预算", "Adjust budget")}
+              </button>
+              <button
+                className="button button--warning"
+                disabled={pauseRun.isPending}
+                onClick={() => pauseRun.mutate()}
+              >
+                <Pause size={14} /> {text("安全暂停", "Pause safely")}
+              </button>
+            </>
           ))}
         {!isTerminal(data.status) && (
           <button
@@ -2572,6 +2585,9 @@ function RunDetailPage() {
           onClose={() => setConfirmArchive(false)}
           onArchived={() => navigate("/runs")}
         />
+      )}
+      {budgetAdjustOpen && (
+        <BudgetAdjustDialog run={data} onClose={() => setBudgetAdjustOpen(false)} />
       )}
     </>
   );
@@ -2679,6 +2695,142 @@ function ArchiveRunDialog({
           </button>
         </div>
       </div>
+    </Modal>
+  );
+}
+
+function BudgetAdjustDialog({
+  run,
+  onClose,
+}: {
+  run: Run;
+  onClose: () => void;
+}) {
+  const { locale, text } = useLocale();
+  const queryClient = useQueryClient();
+  const [error, setError] = useState("");
+  const config = run.config;
+  const overrides = (config.budget_overrides as
+    | BudgetOverrideEntry[]
+    | undefined) ?? [];
+  const baseBudget: Record<string, number | null> = {};
+  for (const key of BUDGET_FIELDS) {
+    const value = config[key];
+    baseBudget[key] = typeof value === "number" ? value : null;
+  }
+  const merged = mergeBudgetOverrides(baseBudget, overrides);
+  const antigravity =
+    (config.candidate_model_snapshot as { provider?: string } | undefined)
+      ?.provider === "antigravity";
+  const adjust = useMutation({
+    mutationFn: (payload: BudgetAdjustment) =>
+      api.adjustBudget(run.id, payload),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["run", run.id] });
+      onClose();
+    },
+    onError: (cause) =>
+      setError(cause instanceof Error ? cause.message : String(cause)),
+  });
+  const submit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const data = new FormData(event.currentTarget);
+    const changed: Partial<BudgetAdjustment> = {};
+    for (const key of BUDGET_FIELDS) {
+      const raw = String(data.get(key) ?? "").trim();
+      const value = raw ? Number(raw) : null;
+      if (value !== null && value !== merged[key]) {
+        changed[key] = value;
+      }
+    }
+    adjust.mutate({
+      ...changed,
+      reason: String(data.get("reason") ?? "").trim(),
+    });
+  };
+  const close = () => {
+    if (!adjust.isPending) onClose();
+  };
+  return (
+    <Modal
+      wide
+      title={text("调整运行预算", "Adjust run budget")}
+      onClose={close}
+    >
+      <form className="form" onSubmit={submit}>
+        <div className="budget-grid">
+          {BUDGET_FIELDS.filter(
+            (key) => !(antigravity && key.endsWith("_tokens")),
+          ).map((key) => (
+            <Field key={key} label={budgetFieldLabel(key, text)}>
+              <input
+                name={key}
+                type="number"
+                min={BUDGET_FIELD_MINS[key]}
+                defaultValue={merged[key] ?? ""}
+                placeholder={
+                  key.includes("provider_requests") ||
+                  key.endsWith("_tokens")
+                    ? text("不限制", "unlimited")
+                    : undefined
+                }
+              />
+            </Field>
+          ))}
+        </div>
+        <Field
+          label={text("调整理由（必填）", "Reason (required)")}
+          hint={text(
+            "将写入运行审计事件与预算调整历史。",
+            "Written to the run audit trail and adjustment history.",
+          )}
+        >
+          <textarea name="reason" required />
+        </Field>
+        <div className="budget-history">
+          <span className="budget-history__heading">
+            {text("调整历史", "Adjustment history")}
+          </span>
+          {overrides.length === 0 ? (
+            <p className="budget-history__empty">
+              {text("尚无调整记录。", "No adjustments yet.")}
+            </p>
+          ) : (
+            overrides.map((entry, index) => (
+              <div className="budget-history__entry" key={index}>
+                <strong>{budgetFieldLabel(entry.field, text)}</strong>
+                <span>{entry.value ?? "—"}</span>
+                <p>{entry.reason}</p>
+                <small>
+                  {entry.requested_by} ·{" "}
+                  {new Date(entry.requested_at).toLocaleString(locale)}
+                </small>
+              </div>
+            ))
+          )}
+        </div>
+        {error && <div className="inline-error">{error}</div>}
+        <div className="modal__actions">
+          <button
+            className="button button--ghost"
+            type="button"
+            disabled={adjust.isPending}
+            onClick={close}
+          >
+            {text("取消", "Cancel")}
+          </button>
+          <button
+            className="button"
+            type="submit"
+            disabled={adjust.isPending}
+          >
+            <SlidersHorizontal size={14} />
+            {adjust.isPending
+              ? text("正在提交…", "Submitting…")
+              : text("提交调整", "Apply adjustment")}
+          </button>
+        </div>
+      </form>
     </Modal>
   );
 }
@@ -3682,6 +3834,56 @@ function effortLabel(
     max: "最高",
   };
   return text(`${labels[value] ?? value} · ${value}`, value);
+}
+
+const BUDGET_FIELDS = [
+  "soft_seconds",
+  "hard_seconds",
+  "soft_tool_calls",
+  "hard_tool_calls",
+  "soft_provider_requests",
+  "hard_provider_requests",
+  "soft_total_tokens",
+  "hard_total_tokens",
+] as const;
+
+const BUDGET_FIELD_MINS: Record<string, number> = {
+  soft_seconds: 60,
+  hard_seconds: 300,
+  soft_tool_calls: 10,
+  hard_tool_calls: 20,
+  soft_provider_requests: 1,
+  hard_provider_requests: 2,
+  soft_total_tokens: 1_000,
+  hard_total_tokens: 2_000,
+};
+
+const BUDGET_FIELD_LABELS: Record<
+  string,
+  { chinese: string; english: string }
+> = {
+  soft_seconds: { chinese: "软时间限制（秒）", english: "Soft time (seconds)" },
+  hard_seconds: { chinese: "硬时间限制（秒）", english: "Hard time (seconds)" },
+  soft_tool_calls: { chinese: "软工具调用限制", english: "Soft tool calls" },
+  hard_tool_calls: { chinese: "硬工具调用限制", english: "Hard tool calls" },
+  soft_provider_requests: {
+    chinese: "软 Provider 请求限制",
+    english: "Soft Provider requests",
+  },
+  hard_provider_requests: {
+    chinese: "硬 Provider 请求限制",
+    english: "Hard Provider requests",
+  },
+  soft_total_tokens: { chinese: "软 Token 限制", english: "Soft tokens" },
+  hard_total_tokens: { chinese: "硬 Token 限制", english: "Hard tokens" },
+};
+
+function budgetFieldLabel(
+  field: string,
+  text: (chinese: string, english: string) => string,
+): string {
+  const pair = BUDGET_FIELD_LABELS[field];
+  return pair ? text(pair.chinese, pair.english) : field;
 }
 
 function label(value: string, locale: "zh-CN" | "en" = "en") {
