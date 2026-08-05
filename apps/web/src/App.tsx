@@ -72,6 +72,7 @@ import AccountPage from "./components/AccountPage";
 import AdminPage from "./components/AdminPage";
 import AuthScreen from "./components/AuthScreen";
 import CredentialsPage from "./components/CredentialsPage";
+import DiffViewer from "./components/DiffViewer";
 import LiveRunMonitor from "./components/LiveRunMonitor";
 import { api, ApiError } from "./lib/api";
 import { mergeBudgetOverrides, OPTIONAL_BUDGET_FIELDS } from "./lib/budget";
@@ -101,6 +102,7 @@ import type {
   ModelProfile,
   ModelProvider,
   Run,
+  RunDiff,
   RunEvent,
   RunStatus,
   SemanticJudgeReview,
@@ -2006,7 +2008,7 @@ function RunDetailPage() {
   const queryClient = useQueryClient();
   const eventQueryKey = ["events", runId] as const;
   const [tab, setTab] = useState<
-    "live" | "overview" | "graph" | "audit" | "score"
+    "live" | "overview" | "graph" | "audit" | "score" | "diff"
   >("live");
   const [confirmCancel, setConfirmCancel] = useState(false);
   const [confirmArchive, setConfirmArchive] = useState(false);
@@ -2241,6 +2243,12 @@ function RunDetailPage() {
         >
           <Radar size={14} /> {text("裁判", "Judge")}
         </button>
+        <button
+          className={tab === "diff" ? "active" : ""}
+          onClick={() => setTab("diff")}
+        >
+          <GitBranch size={14} /> {text("改动", "Diff")}
+        </button>
       </div>
       {tab === "live" && (
         <LiveRunMonitor
@@ -2454,6 +2462,7 @@ function RunDetailPage() {
           </section>
         </div>
       )}
+      {tab === "diff" && <DiffTab runId={runId} />}
       <div className="run-footer-actions">
         <a
           className="button button--ghost"
@@ -3168,6 +3177,57 @@ function AuditTimeline({ events }: { events: RunEvent[] }) {
       </div>
     </section>
   );
+}
+
+function DiffTab({ runId }: { runId: string }) {
+  const { text } = useLocale();
+  const diffs = useQuery({
+    queryKey: ["run-diffs", runId],
+    queryFn: async () => {
+      const res = await fetch(api.runDiffsUrl(runId));
+      if (!res.ok) throw new ApiError(res.status, "Failed to load run diffs");
+      return (await res.json()) as RunDiff[];
+    },
+  });
+  if (diffs.isLoading) return <LoadingState />;
+  if (diffs.isError) {
+    const status = (diffs.error as ApiError).status;
+    return (
+      <section className="panel panel--danger">
+        <PanelHeading
+          icon={<OctagonAlert size={16} />}
+          title={text("无法读取改动", "Could not load diffs")}
+        />
+        <EmptyState
+          title={
+            status === 404
+              ? text("该运行没有可用的归档", "No archive available for this run")
+              : text("加载失败", "Load failed")
+          }
+          detail={
+            status === 404
+              ? text(
+                  "运行尚未归档，或归档已从磁盘移除。",
+                  "The run is not archived yet, or the archive was removed.",
+                )
+              : diffs.error.message
+          }
+        />
+      </section>
+    );
+  }
+  if (!diffs.data?.length) {
+    return (
+      <EmptyState
+        title={text("没有改动", "No changes")}
+        detail={text(
+          "归档中没有找到任何仓库 diff。",
+          "No repository diffs were found in the archive.",
+        )}
+      />
+    );
+  }
+  return <DiffViewer diffs={diffs.data} />;
 }
 
 function SettingsPage() {

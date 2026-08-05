@@ -206,6 +206,7 @@ export const api = {
       body: JSON.stringify(payload),
     }),
   reportUrl: (id: string) => `${API_BASE}/reports/${id}`,
+  runDiffsUrl: (runId: string) => `${API_BASE}/runs/${runId}/diffs`,
   adminSummary: () => request<AdminSummary>("/admin/summary"),
   adminUsers: () => request<UserAccount[]>("/admin/users"),
   createUser: (payload: Record<string, unknown>) =>

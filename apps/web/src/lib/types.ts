@@ -448,6 +448,15 @@ export interface RunEvent {
   created_at: string;
 }
 
+export interface RunDiff {
+  repo: string;
+  diff_text: string;
+  status_text: string;
+  added_lines: number;
+  removed_lines: number;
+  file_count: number;
+}
+
 export interface Hypothesis {
   id: string;
   run_id: string;
