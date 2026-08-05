@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 from fastapi import HTTPException
 from sqlalchemy import create_engine, select
@@ -155,3 +157,95 @@ def test_dashboard_average_excludes_censored_completed_run() -> None:
 
         assert summary.completed_runs == 1
         assert summary.average_score is None
+
+def test_archive_schema_v3_includes_new_telemetry_files(tmp_path: Path) -> None:
+    import json
+    import tarfile
+
+    from app.scenario import PreparedScenario, ScenarioRunResult, load_scenario
+
+    scenario_root = (
+        Path(__file__).resolve().parents[3] / "scenarios" / "terminal-repository"
+    )
+    scenario = load_scenario(scenario_root)
+    prepared = PreparedScenario(
+        scenario_root=scenario_root,
+        workspace=tmp_path,
+        metadata=scenario.metadata,
+    )
+    result = ScenarioRunResult(
+        final_response="done",
+        elapsed_seconds=12,
+        tool_calls=1,
+        events=[
+            {"sequence": 1, "kind": "run.turn.begin", "turn": 1, "tool_calls": 0},
+            {
+                "sequence": 2,
+                "kind": "run.budget_adjusted",
+                "field": "hard_tool_calls",
+                "new_value": 5000,
+            },
+            {
+                "sequence": 3,
+                "kind": "run.turn.end",
+                "turn": 1,
+                "tool_calls": 2,
+                "duration_ms": 100,
+            },
+        ],
+        artifacts={"scorecard.json": '{"score": 777, "dimensions": {}}'},
+        private_state={
+            "resource_ledger": {"hard_tool_calls": 5000, "active_time_ms": 12_000},
+            "investigation_graph": {
+                "hypotheses": [],
+                "revisions": [],
+                "evidence": [],
+                "edges": [],
+            },
+        },
+    )
+
+    destination = scenario.archive(prepared, result, tmp_path / "run.tar.gz")
+
+    with tarfile.open(destination, "r:gz") as archive:
+        names = set(archive.getnames())
+        assert {
+            "telemetry/budget-adjustments.jsonl",
+            "telemetry/turn-boundaries.jsonl",
+            "resource-ledger.json",
+            "export.json",
+        } <= names
+        manifest = json.loads(archive.extractfile("run.json").read())
+        export = json.loads(archive.extractfile("export.json").read())
+        budget_lines = archive.extractfile(
+            "telemetry/budget-adjustments.jsonl"
+        ).read().decode().splitlines()
+        turn_lines = archive.extractfile(
+            "telemetry/turn-boundaries.jsonl"
+        ).read().decode().splitlines()
+        resource_ledger = json.loads(
+            archive.extractfile("resource-ledger.json").read()
+        )
+
+    assert manifest["archive_schema_version"] == 3
+    assert budget_lines == [
+        json.dumps(
+            {
+                "sequence": 2,
+                "kind": "run.budget_adjusted",
+                "field": "hard_tool_calls",
+                "new_value": 5000,
+            },
+            sort_keys=True,
+        )
+    ]
+    assert len(turn_lines) == 2
+    assert resource_ledger["hard_tool_calls"] == 5000
+    assert export["export_schema_version"] == 3
+    assert export["budget_adjustment_count"] == 1
+    assert export["turn_summary"] == {
+        "total_turns": 1,
+        "average_duration_ms": 100.0,
+        "max_duration_ms": 100.0,
+    }
+    assert export["scorecard"]["score"] == 777

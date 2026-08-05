@@ -195,7 +195,7 @@ def test_archive_contains_replayable_event_stream(tmp_path: Path) -> None:
     assert '"kind": "tool.call"' in event_text
     assert '"kind": "tool.result"' in event_text
     assert run_manifest["scenario"]["seed"] == prepared.metadata.seed
-    assert run_manifest["archive_schema_version"] == 2
+    assert run_manifest["archive_schema_version"] == 3
     assert telemetry["tools"]["calls"] == 1
     assert len(run_manifest["integrity"]["events_sha256"]) == 64
     assert len(

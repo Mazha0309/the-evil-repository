@@ -71,7 +71,7 @@ def build_telemetry_bundle(events: Iterable[Any]) -> dict[str, Any]:
     ]
     error_events = _error_events(normalized)
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "summary": _summary(
             normalized,
             provider_turns,
@@ -86,6 +86,16 @@ def build_telemetry_bundle(events: Iterable[Any]) -> dict[str, Any]:
         "context_compactions": context_compactions,
         "finalization_nudges": finalization_nudges,
         "error_events": error_events,
+        "budget_adjustments": [
+            event
+            for event in normalized
+            if event.get("kind") == "run.budget_adjusted"
+        ],
+        "turn_boundaries": [
+            event
+            for event in normalized
+            if event.get("kind") in {"run.turn.begin", "run.turn.end"}
+        ],
         "events": normalized,
     }
 
