@@ -221,17 +221,20 @@ def export_run_archive(
         if archive_path.exists():
             import tarfile as tarfile_module
 
-            with tarfile_module.open(archive_path, "r:gz") as source:
-                member = next(
-                    (m for m in source.getmembers() if m.isfile() and m.name == "report.html"),
-                    None,
-                )
-                if member is not None:
-                    return Response(
-                        source.extractfile(member).read(),
-                        media_type="text/html; charset=utf-8",
-                        headers={"Content-Disposition": f'inline; filename="run-{run_id}.html"'},
+            try:
+                with tarfile_module.open(archive_path, "r:gz") as source:
+                    member = next(
+                        (m for m in source.getmembers() if m.isfile() and m.name == "report.html"),
+                        None,
                     )
+                    if member is not None:
+                        return Response(
+                            source.extractfile(member).read(),
+                            media_type="text/html; charset=utf-8",
+                            headers={"Content-Disposition": f'inline; filename="run-{run_id}.html"'},
+                        )
+            except (tarfile_module.TarError, OSError):
+                pass
         from app.api.diffs import _archive_candidates, _read_members
         from app.api.reports import build_report_payload
         from app.report_html import render_report_html, report_payload_for_html
