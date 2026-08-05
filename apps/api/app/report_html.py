@@ -7,7 +7,8 @@ from typing import Any
 _STYLE = """
 :root { color-scheme: dark; }
 * { box-sizing: border-box; }
-body { margin: 0; background: #0a0c0a; color: #e6e6d4; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; line-height: 1.5; }
+body { margin: 0; background: #0a0c0a; color: #e6e6d4;
+font-family: system-ui, -apple-system, "Segoe UI", sans-serif; line-height: 1.5; }
 main { max-width: 960px; margin: 0 auto; padding: 24px 16px 64px; }
 header.top { border-bottom: 1px solid #262a26; padding-bottom: 16px; margin-bottom: 24px; }
 h1 { font-size: 20px; margin: 0 0 8px; }
@@ -16,10 +17,14 @@ section { background: #121512; border: 1px solid #262a26; border-radius: 10px; p
 table { width: 100%; border-collapse: collapse; font-size: 13px; }
 th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #1e221e; vertical-align: top; }
 th { color: #9aa08a; font-weight: 600; }
-.badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; background: #1e221e; margin-right: 6px; }
+.badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px;
+background: #1e221e; margin-right: 6px; }
 .badge--warn { background: #3d2f1a; color: #e8c46a; }
-pre { white-space: pre-wrap; word-break: break-all; background: #0d100d; border: 1px solid #1e221e; border-radius: 6px; padding: 10px; font-size: 12px; font-family: ui-monospace, "SF Mono", Consolas, monospace; }
-.dl { display: block; white-space: pre-wrap; font-family: ui-monospace, "SF Mono", Consolas, monospace; font-size: 12px; padding: 0 8px; }
+pre { white-space: pre-wrap; word-break: break-all; background: #0d100d;
+border: 1px solid #1e221e; border-radius: 6px; padding: 10px;
+font-size: 12px; font-family: ui-monospace, "SF Mono", Consolas, monospace; }
+.dl { display: block; white-space: pre-wrap;
+font-family: ui-monospace, "SF Mono", Consolas, monospace; font-size: 12px; padding: 0 8px; }
 .dl-add { background: rgba(74, 148, 74, 0.18); color: #9fd49f; }
 .dl-del { background: rgba(200, 74, 74, 0.18); color: #e0a0a0; }
 .dl-ctx { color: #9aa08a; }
@@ -31,6 +36,8 @@ summary { cursor: pointer; font-size: 13px; color: #c9ccb8; }
 _JS = """
 document.querySelectorAll("details").forEach((d) => { d.open = false; });
 """
+
+_NONE_ROW = '<tr><td colspan="2" class="meta">None</td></tr>'
 
 
 def _esc(value: Any) -> str:
@@ -60,8 +67,9 @@ def _render_diffs(diffs: list[dict[str, Any]]) -> str:
         blocks.append(
             "<details open>"
             f"<summary>{_esc(diff['repo'])} "
-            f'<span class="badge">+{diff["added_lines"]} -{diff["removed_lines"]} '
-            f"{diff['file_count']} files</span></summary>"
+            f'<span class="badge">+{_esc(diff.get("added_lines", 0))} '
+            f"-{_esc(diff.get('removed_lines', 0))} "
+            f"{_esc(diff.get('file_count', 0))} files</span></summary>"
             f'<pre class="meta" style="margin-bottom:8px">{status}</pre>'
             f"<div>{lines}</div>"
             "</details>"
@@ -136,8 +144,32 @@ def render_report_html(payload: dict[str, Any]) -> str:
     )
     budget_fields = "、".join(_esc(f) for f in (budget.get("fields") or []))
     budget_detail = (
-        f"{budget.get('count', 0)} 次调整 · 字段：{budget_fields or '—'}"
-        f" · 首次 {_esc(budget.get('first_at') or '—')} · 末次 {_esc(budget.get('last_at') or '—')}"
+        f"{_esc(budget.get('count', 0))} 次调整 · 字段：{budget_fields or '—'}"
+        f" · 首次 {_esc(budget.get('first_at') or '—')}"
+        f" · 末次 {_esc(budget.get('last_at') or '—')}"
+    )
+    overtime_block = (
+        overtime
+        and '<div class="meta" id="overtime_penalty">Overtime penalty: '
+        f"{_esc(overtime.get('total_penalty', 0))}</div>"
+        "<table><tr><th>Dimension</th><th>Overrun</th><th>Penalty</th></tr>"
+        f"{ot_rows}</table>"
+        or ""
+    )
+    graph_tables = (
+        "<table><tr><th>Hypothesis</th><th>Text</th></tr>"
+        f"{graph_rows or _NONE_ROW}</table>\n"
+        '<table style="margin-top:8px"><tr><th>Evidence</th><th>Text</th></tr>'
+        f"{evidence_rows or _NONE_ROW}</table>\n"
+        '<table style="margin-top:8px"><tr><th>Hypothesis</th><th>Evidence</th></tr>'
+        f"{link_rows or _NONE_ROW}</table>"
+    )
+    turns_block = (
+        '<div class="meta">Turns: '
+        f"{_esc(turns.get('total_turns', '—'))} completed "
+        f"{_esc(turns.get('completed_turns', '—'))} · avg "
+        f"{_esc(turns.get('average_duration_ms', '—'))} ms · max "
+        f"{_esc(turns.get('max_duration_ms', '—'))} ms</div>"
     )
 
     return f"""<!doctype html>
@@ -165,7 +197,7 @@ def render_report_html(payload: dict[str, Any]) -> str:
 <div class="meta" style="margin-top:8px">
 Score <strong>{_esc(scorecard.get("score", ""))}</strong> / {_esc(scorecard.get("maximum", ""))}
 </div>
-{overtime and f'<div class="meta" id="overtime_penalty">Overtime penalty: {_esc(overtime.get("total_penalty", 0))}</div><table><tr><th>Dimension</th><th>Overrun</th><th>Penalty</th></tr>{ot_rows}</table>' or ""}
+{overtime_block}
 </section>
 
 <section id="overview">
@@ -175,9 +207,7 @@ Score <strong>{_esc(scorecard.get("score", ""))}</strong> / {_esc(scorecard.get(
 
 <section id="graph">
 <h2>Hypothesis graph</h2>
-<table><tr><th>Hypothesis</th><th>Text</th></tr>{graph_rows or '<tr><td colspan="2" class="meta">None</td></tr>'}</table>
-<table style="margin-top:8px"><tr><th>Evidence</th><th>Text</th></tr>{evidence_rows or '<tr><td colspan="2" class="meta">None</td></tr>'}</table>
-<table style="margin-top:8px"><tr><th>Hypothesis</th><th>Evidence</th></tr>{link_rows or '<tr><td colspan="2" class="meta">None</td></tr>'}</table>
+{graph_tables}
 </section>
 
 <section id="audit">
@@ -192,7 +222,7 @@ Score <strong>{_esc(scorecard.get("score", ""))}</strong> / {_esc(scorecard.get(
 
 <section id="telemetry">
 <h2>Telemetry</h2>
-<div class="meta">Turns: {_esc(turns.get("total_turns", "—"))} completed {_esc(turns.get("completed_turns", "—"))} · avg {_esc(turns.get("average_duration_ms", "—"))} ms · max {_esc(turns.get("max_duration_ms", "—"))} ms</div>
+{turns_block}
 <div class="meta" style="margin-top:4px">Budget adjustments: {budget_detail}</div>
 </section>
 
@@ -201,7 +231,3 @@ Score <strong>{_esc(scorecard.get("score", ""))}</strong> / {_esc(scorecard.get(
 </body>
 </html>
 """
-
-
-def json_payload_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return events

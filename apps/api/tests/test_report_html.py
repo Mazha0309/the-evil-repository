@@ -1,5 +1,3 @@
-import json
-
 from app.report_html import render_report_html
 
 
@@ -25,7 +23,8 @@ def _payload() -> dict:
         "diffs": [
             {
                 "repo": "dead-letter",
-                "diff_text": "diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1,1 +1,2 @@\n- old\n+ new\n",
+                "diff_text": "diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n"
+                "@@ -1,1 +1,2 @@\n- old\n+ new\n",
                 "status_text": " M README.md",
                 "added_lines": 1,
                 "removed_lines": 1,
@@ -91,10 +90,23 @@ def test_html_escapes_content() -> None:
             "repo": "<script>",
             "diff_text": "<script>alert(1)</script>",
             "status_text": "",
-            "added_lines": 0,
-            "removed_lines": 0,
-            "file_count": 0,
+            "added_lines": "<script>alert(1)</script>",
+            "removed_lines": "<script>alert(1)</script>",
+            "file_count": "<script>alert(1)</script>",
         }
     ]
     html = render_report_html(payload)
     assert "<script>alert(1)</script>" not in html
+
+
+def test_html_diff_missing_optional_stats() -> None:
+    payload = _payload()
+    payload["diffs"] = [
+        {
+            "repo": "dead-letter",
+            "diff_text": "- old\n+ new\n",
+            "status_text": "",
+        }
+    ]
+    html = render_report_html(payload)
+    assert "+0 -0 0 files" in html
