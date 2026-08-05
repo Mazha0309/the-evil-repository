@@ -8,6 +8,7 @@ from app.api import (
     auth,
     credentials,
     dashboard,
+    diffs,
     model_profiles,
     reports,
     runs,
@@ -58,6 +59,7 @@ for api_router in [
     model_profiles.router,
     runs.router,
     reports.router,
+    diffs.router,
 ]:
     app.include_router(api_router, prefix=settings.api_prefix)
 
