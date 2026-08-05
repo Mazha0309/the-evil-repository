@@ -5,17 +5,24 @@ import pytest
 from fastapi import HTTPException
 
 import app.api.runs as runs_module
-from app.api.runs import cancel_run, pause_run, resume_run
+from app.api.runs import adjust_run_budget, cancel_run, pause_run, resume_run
 from app.model_identity import model_snapshot
-from app.models import RunStatus, UserRole
-from app.schemas import RunCreate
+from app.models import RunStatus, TaskDefinition, UserRole
+from app.schemas import BudgetAdjustment, RunCreate
 
 
 class FakeSession:
-    def __init__(self, run: SimpleNamespace) -> None:
+    def __init__(
+        self,
+        run: SimpleNamespace,
+        task: SimpleNamespace | None = None,
+    ) -> None:
         self.run = run
+        self.task = task
 
-    def get(self, _model: object, _identifier: object) -> SimpleNamespace:
+    def get(self, model: object, _identifier: object) -> SimpleNamespace | None:
+        if model is TaskDefinition:
+            return self.task
         return self.run
 
     def commit(self) -> None:
@@ -145,3 +152,85 @@ def test_cancel_is_terminal_and_clears_pause_request(monkeypatch) -> None:
     assert result.config["pause_requested"] is False
     assert result.completed_at is not None
     assert events == ["run.cancelled"]
+
+
+def test_adjust_budget_rejects_finished_run(monkeypatch) -> None:
+    run_id = uuid.uuid4()
+    run = SimpleNamespace(
+        id=run_id,
+        status=RunStatus.completed,
+        stage="Complete",
+        config={"candidate_model_snapshot": {"provider": "openai_compatible"}},
+    )
+    monkeypatch.setattr(runs_module, "append_event", lambda *_args: None)
+
+    with pytest.raises(HTTPException) as error:
+        adjust_run_budget(
+            run_id,
+            BudgetAdjustment(hard_tool_calls=5_000, reason="keep going"),
+            FakeSession(run),
+            SimpleNamespace(role=UserRole.admin),
+        )
+
+    assert error.value.status_code == 409
+
+
+def test_adjust_budget_appends_override(monkeypatch) -> None:
+    run_id = uuid.uuid4()
+    run = SimpleNamespace(
+        id=run_id,
+        task_id=uuid.uuid4(),
+        status=RunStatus.running,
+        stage="Candidate investigation",
+        config={
+            "candidate_model_snapshot": {"provider": "openai_compatible"},
+            "soft_seconds": 10_800,
+            "hard_seconds": 21_600,
+            "soft_tool_calls": 600,
+            "hard_tool_calls": 2_200,
+            "soft_provider_requests": None,
+            "hard_provider_requests": None,
+            "soft_total_tokens": None,
+            "hard_total_tokens": None,
+        },
+    )
+    events: list[str] = []
+    monkeypatch.setattr(
+        runs_module,
+        "append_event",
+        lambda _session, _run_id, kind, _payload: events.append(kind),
+    )
+
+    result = adjust_run_budget(
+        run_id,
+        BudgetAdjustment(hard_tool_calls=5_000, reason="keep going"),
+        FakeSession(run),
+        SimpleNamespace(role=UserRole.admin, username="mazha"),
+    )
+
+    assert result is run
+    overrides = run.config["budget_overrides"]
+    assert overrides[-1]["field"] == "hard_tool_calls"
+    assert overrides[-1]["value"] == 5_000
+    assert events == ["run.budget_adjustment_requested"]
+
+
+def test_adjust_budget_rejects_token_for_antigravity(monkeypatch) -> None:
+    run_id = uuid.uuid4()
+    run = SimpleNamespace(
+        id=run_id,
+        status=RunStatus.queued,
+        stage="Queued",
+        config={"candidate_model_snapshot": {"provider": "antigravity"}},
+    )
+    monkeypatch.setattr(runs_module, "append_event", lambda *_args: None)
+
+    with pytest.raises(HTTPException) as error:
+        adjust_run_budget(
+            run_id,
+            BudgetAdjustment(hard_total_tokens=1_000_000, reason="tokens"),
+            FakeSession(run),
+            SimpleNamespace(role=UserRole.admin),
+        )
+
+    assert error.value.status_code == 400

@@ -10,6 +10,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.challenge.spec import BudgetSpec
 from app.config import get_settings
 from app.database import SessionLocal, get_session
 from app.events import append_event
@@ -29,6 +30,7 @@ from app.models import (
 )
 from app.scenario.agent_graph import AgentGraph, derive_agent_graph
 from app.schemas import (
+    BudgetAdjustment,
     EventRead,
     InvestigationGraph,
     RunArtifactRead,
@@ -85,10 +87,7 @@ def create_run(
         not can_access_model(session, user, judge) or not judge.enabled or judge.archived_at is not None
     ):
         raise HTTPException(status_code=400, detail="Unknown judge model")
-    if (
-        candidate.provider == ModelProvider.antigravity
-        and payload.soft_total_tokens is not None
-    ):
+    if candidate.provider == ModelProvider.antigravity and payload.soft_total_tokens is not None:
         raise HTTPException(
             status_code=400,
             detail=(
@@ -296,6 +295,95 @@ def stream_events(
             time.sleep(1)
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+@router.post("/{run_id}/budget", response_model=RunRead)
+def adjust_run_budget(
+    run_id: uuid.UUID,
+    payload: BudgetAdjustment,
+    session: Session = Depends(get_session),
+    user: UserAccount = Depends(csrf_protection),
+) -> BenchmarkRun:
+    run = session.get(BenchmarkRun, run_id)
+    if not can_access_run(session, user, run):
+        raise HTTPException(status_code=404, detail="Run not found")
+    if run.status not in {RunStatus.queued, RunStatus.preparing, RunStatus.running}:
+        raise HTTPException(
+            status_code=409,
+            detail="Budget can only be adjusted while the run is active",
+        )
+    candidate_snapshot = dict(run.config).get("candidate_model_snapshot", {})
+    if candidate_snapshot.get("provider") == "antigravity" and (
+        payload.soft_total_tokens is not None or payload.hard_total_tokens is not None
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="Antigravity CLI does not expose machine-readable token usage",
+        )
+    task = session.get(TaskDefinition, run.task_id)
+    scenario_budget = dict(task.manifest.get("budget", {})) if task else {}
+    current = dict(scenario_budget)
+    current.update(dict(run.config))
+    for override in list(dict(run.config).get("budget_overrides", [])):
+        current[override["field"]] = override["value"]
+    merged = {
+        field: getattr(payload, field) if getattr(payload, field) is not None else current.get(field)
+        for field in (
+            "soft_seconds",
+            "hard_seconds",
+            "soft_tool_calls",
+            "hard_tool_calls",
+            "soft_provider_requests",
+            "hard_provider_requests",
+            "soft_total_tokens",
+            "hard_total_tokens",
+        )
+    }
+    try:
+        BudgetSpec(**merged)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    config = dict(run.config)
+    config.setdefault("budget_overrides", [])
+    overrides = list(config["budget_overrides"])
+    budget_fields = (
+        "soft_seconds",
+        "hard_seconds",
+        "soft_tool_calls",
+        "hard_tool_calls",
+        "soft_provider_requests",
+        "hard_provider_requests",
+        "soft_total_tokens",
+        "hard_total_tokens",
+    )
+    requested_fields: list[str] = []
+    for field in budget_fields:
+        value = getattr(payload, field)
+        if value is not None:
+            requested_fields.append(field)
+            overrides.append(
+                {
+                    "field": field,
+                    "value": value,
+                    "reason": payload.reason,
+                    "requested_by": user.username,
+                    "requested_at": datetime.now(UTC).isoformat(),
+                }
+            )
+    config["budget_overrides"] = overrides
+    run.config = config
+    append_event(
+        session,
+        run.id,
+        "run.budget_adjustment_requested",
+        {
+            "reason": payload.reason,
+            "fields": [entry["field"] for entry in overrides[-len(requested_fields) :]],
+        },
+    )
+    session.commit()
+    session.refresh(run)
+    return run
 
 
 @router.post("/{run_id}/cancel", response_model=RunRead)
