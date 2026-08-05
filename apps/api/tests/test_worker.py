@@ -584,3 +584,70 @@ def test_semantic_judge_success_archives_packet_and_raw_output(monkeypatch) -> N
     }
     assert stages[-1][1] == "judge.semantic.completed"
     assert stages[-1][2]["semantic_score"] == 84
+
+def test_worker_renders_offline_html_report_for_archive(monkeypatch) -> None:
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    testing_session = sessionmaker(
+        bind=engine,
+        expire_on_commit=False,
+        class_=Session,
+    )
+    run_id = uuid.uuid4()
+    with testing_session() as session:
+        session.add(
+            BenchmarkRun(
+                id=run_id,
+                task_id=uuid.uuid4(),
+                candidate_model_id=uuid.uuid4(),
+                status=RunStatus.scoring,
+                stage="Scorecard aggregation",
+                config={},
+            )
+        )
+        session.commit()
+    monkeypatch.setattr(worker_module, "SessionLocal", testing_session)
+    result = ScenarioRunResult(
+        final_response="done",
+        elapsed_seconds=12,
+        tool_calls=1,
+        events=[],
+        artifacts={
+            "dead-letter.diff": (
+                "diff --git a/README.md b/README.md\n"
+                "--- a/README.md\n"
+                "+++ b/README.md\n"
+                "@@ -1,1 +1,2 @@\n"
+                "- old\n"
+                "+ new\n"
+            ),
+            "dead-letter.status": " M README.md",
+        },
+    )
+    scorecard = {
+        "score": 900,
+        "maximum": 1_200,
+        "dimensions": {
+            "efficiency": {"score": 300, "maximum": 300, "label": "Efficiency"},
+        },
+        "outcome": {"status": "evaluated", "censored": False},
+    }
+    profile = SimpleNamespace(name="Candidate", model_id="candidate")
+
+    html = Worker()._render_offline_report(
+        run_id,
+        result,
+        scorecard,
+        profile,
+    )
+
+    assert html is not None
+    assert html.startswith("<!doctype html>")
+    assert "dead-letter" in html
+    assert "README.md" in html
+    assert "efficiency" in html
+    assert "evaluated" in html

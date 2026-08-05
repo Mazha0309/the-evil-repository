@@ -99,16 +99,13 @@ def _diff_manifest(
     return []
 
 
-@router.get("/{run_id}")
-def export_report(
+def build_report_payload(
     run_id: uuid.UUID,
+    session: Session,
     include: str = "compact",
-    session: Session = Depends(get_session),
-    user: UserAccount = Depends(current_user),
-) -> Response:
+) -> dict:
+    """Build the v3 report payload shared by the export endpoint and offline HTML reports."""
     run = session.get(BenchmarkRun, run_id)
-    if not can_access_run(session, user, run):
-        raise HTTPException(status_code=404, detail="Run not found")
     assert run is not None
     task = session.get(TaskDefinition, run.task_id)
     events = list(
@@ -230,6 +227,21 @@ def export_report(
             ),
         },
     }
+    return payload
+
+
+@router.get("/{run_id}")
+def export_report(
+    run_id: uuid.UUID,
+    include: str = "compact",
+    session: Session = Depends(get_session),
+    user: UserAccount = Depends(current_user),
+) -> Response:
+    run = session.get(BenchmarkRun, run_id)
+    if not can_access_run(session, user, run):
+        raise HTTPException(status_code=404, detail="Run not found")
+    assert run is not None
+    payload = build_report_payload(run_id, session, include=include)
     return Response(
         json.dumps(payload, indent=2, ensure_ascii=False),
         media_type="application/json",

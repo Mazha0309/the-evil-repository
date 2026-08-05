@@ -526,7 +526,18 @@ class Worker:
                 if self.is_cancelled(run_id):
                     return
                 archive_path = Path(settings.artifact_root) / f"{run_id}.tar.gz"
-                scenario.archive(prepared, result, archive_path)
+                report_html = self._render_offline_report(
+                    run_id,
+                    result,
+                    scorecard,
+                    profile,
+                )
+                scenario.archive(
+                    prepared,
+                    result,
+                    archive_path,
+                    report_html=report_html,
+                )
                 archive_sha = hashlib.sha256(archive_path.read_bytes()).hexdigest()
                 self.complete(run_id, result, scorecard, archive_path, archive_sha)
         except Exception as exc:
@@ -890,6 +901,56 @@ class Worker:
                 },
             )
             session.commit()
+
+    def _render_offline_report(
+        self,
+        run_id: uuid.UUID,
+        result: ScenarioRunResult,
+        scorecard: dict,
+        profile: ModelProfile,
+    ) -> str | None:
+        """Render the self-contained HTML report embedded in the run archive."""
+        try:
+            from app.api.diffs import _stats
+            from app.api.reports import build_report_payload
+            from app.report_html import render_report_html, report_payload_for_html
+
+            with SessionLocal() as session:
+                payload = build_report_payload(run_id, session, include="full-events")
+            payload["scorecard"] = scorecard
+            outcome = dict(scorecard.get("outcome") or {})
+            payload["run"]["status"] = outcome.get("status") or "evaluated"
+            payload["run"]["completed_at"] = datetime.now(UTC).isoformat()
+            diffs = []
+            for name in sorted(result.artifacts):
+                if not name.endswith(".diff"):
+                    continue
+                diff_text = result.artifacts[name]
+                if not diff_text:
+                    continue
+                repo = name[: -len(".diff")]
+                diffs.append(
+                    {
+                        "repo": repo,
+                        "diff_text": diff_text,
+                        "status_text": result.artifacts.get(f"{repo}.status", ""),
+                        **_stats(diff_text),
+                    }
+                )
+            payload["diffs"] = diffs
+            return render_report_html(
+                report_payload_for_html(
+                    payload,
+                    model={"name": profile.name, "model_id": profile.model_id},
+                )
+            )
+        except Exception:
+            logger.warning(
+                "Run %s: offline HTML report skipped, archive still created",
+                run_id,
+                exc_info=True,
+            )
+            return None
 
     def create_failure_checkpoint(
         self,

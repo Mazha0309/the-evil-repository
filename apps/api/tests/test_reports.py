@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.api import auth, diffs, reports
-from app.api.reports import export_report
+from app.api.reports import build_report_payload, export_report
 from app.database import Base, get_session
 from app.models import (
     BenchmarkRun,
@@ -26,6 +26,7 @@ from app.models import (
     UserAccount,
     UserRole,
 )
+from app.report_html import render_report_html, report_payload_for_html
 
 TOOL_ARGUMENTS = "path=README.md&lines=1,40&" + "x" * 300
 TOOL_OUTPUT = "# The Evil Repository\n" + "y" * 500
@@ -428,3 +429,68 @@ def test_report_v3_compact_events_hashes_dict_arguments() -> None:
     expected = json.dumps(dict_arguments, ensure_ascii=False, sort_keys=True)
     assert tool_calls[0]["arguments_preview"] == expected[:200]
     assert tool_calls[0]["arguments_size_bytes"] == len(expected.encode())
+
+
+def test_build_report_payload_matches_export_endpoint_payload() -> None:
+    client, sessions = build_client()
+    setup = client.post(
+        "/api/v1/auth/setup",
+        json={
+            "username": "report-admin",
+            "password": "correct horse battery staple",
+        },
+    )
+    assert setup.status_code == 201
+    run_id = seed_run(sessions)
+
+    response = client.get(f"/api/v1/reports/{run_id}")
+    assert response.status_code == 200
+    with sessions() as session:
+        payload = build_report_payload(run_id, session, include="compact")
+
+    payload.pop("generated_at")
+    expected = response.json()
+    expected.pop("generated_at")
+    assert payload == expected
+
+
+def test_offline_html_report_renders_from_build_payload() -> None:
+    client, sessions = build_client()
+    setup = client.post(
+        "/api/v1/auth/setup",
+        json={
+            "username": "report-admin",
+            "password": "correct horse battery staple",
+        },
+    )
+    assert setup.status_code == 201
+    run_id = seed_run(sessions)
+    with sessions() as session:
+        run = session.get(BenchmarkRun, run_id)
+        assert run is not None
+        run.scorecard = {
+            "score": 900,
+            "maximum": 1_200,
+            "dimensions": {
+                "efficiency": {
+                    "score": 300,
+                    "maximum": 300,
+                    "label": "Efficiency",
+                }
+            },
+            "overtime_penalty": {"total_penalty": 0},
+        }
+        session.commit()
+        payload = build_report_payload(run_id, session, include="full-events")
+
+    html = render_report_html(
+        report_payload_for_html(
+            payload,
+            model={"name": "Candidate", "model_id": "candidate"},
+        )
+    )
+
+    assert html.startswith("<!doctype html>")
+    assert "Scorecard" in html
+    assert "efficiency" in html
+    assert "Audit trail" in html

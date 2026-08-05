@@ -94,6 +94,58 @@ def _render_events(events: list[dict[str, Any]]) -> str:
     return "\n".join(rows)
 
 
+def report_payload_for_html(
+    payload: dict[str, Any],
+    *,
+    model: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Map a v3 report payload (app.api.reports.build_report_payload) onto the HTML render contract."""
+    report = dict(payload)
+    run = dict(report.get("run") or {})
+    scenario = report.get("scenario") or {}
+    run["model"] = model or {}
+    run.setdefault("scenario", scenario.get("slug") or "")
+    report["run"] = run
+    telemetry = dict(report.get("telemetry") or {})
+    telemetry["events"] = report.get("events") or []
+    report["telemetry"] = telemetry
+    scorecard = dict(report.get("scorecard") or {})
+    dimensions = scorecard.get("dimensions") or {}
+    if isinstance(dimensions, dict):
+        scorecard["dimensions"] = [
+            {
+                "name": name,
+                "points": metric.get("score", 0),
+                "maximum": metric.get("maximum", 0),
+            }
+            for name, metric in sorted(dimensions.items())
+        ]
+    if not scorecard.get("overtime_penalty") and report.get("overtime_penalty") is not None:
+        scorecard["overtime_penalty"] = report["overtime_penalty"]
+    report["scorecard"] = scorecard
+    investigation = report.get("investigation") or {}
+    report["graph"] = {
+        "hypotheses": [
+            {"id": h.get("id", ""), "text": h.get("statement", "")}
+            for h in (investigation.get("hypotheses") or [])
+        ],
+        "evidence": [
+            {"id": e.get("id", ""), "text": e.get("summary", "")}
+            for e in (investigation.get("evidence") or [])
+        ],
+        "links": [
+            {
+                "hypothesis_id": edge.get("source_key", ""),
+                "evidence_id": edge.get("target_key", ""),
+            }
+            for edge in (investigation.get("edges") or [])
+            if edge.get("source_type") == "hypothesis"
+            and edge.get("target_type") == "evidence"
+        ],
+    }
+    return report
+
+
 def render_report_html(payload: dict[str, Any]) -> str:
     run = payload.get("run", {})
     scorecard = payload.get("scorecard", {}) or {}
