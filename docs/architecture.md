@@ -166,6 +166,9 @@ Run archives follow schema v3. The gzipped tarball contains:
   model turns from raw Provider requests;
 - `export.json` — the compact export payload itself, so a single file suffices
   for basic analysis;
+- `report.html` — a self-contained offline HTML report rendering the
+  scorecard, hypothesis graph, audit trail, diffs, and telemetry with zero
+  external dependencies;
 - `investigation/graph.json` — hypotheses, revisions, evidence, and edges;
 - `artifacts/index.json` plus `artifacts/*` — candidate and judge outputs with
   their size and SHA-256 inventory.
