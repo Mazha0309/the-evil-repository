@@ -193,9 +193,14 @@ def test_scenario_run_passes_prepared_scenario_to_agent_engine(
     }
     assert result.events[0]["context_characters"] > 0
     assert result.events[0]["tool_calls"] == 0
-    assert result.events[1]["kind"] == "assistant.message"
+    assert result.events[1]["kind"] == "run.turn.begin"
     assert result.events[1]["turn"] == 1
-    assert result.events[1]["duration_ms"] >= 0
+    assistant_messages = [
+        event for event in result.events if event["kind"] == "assistant.message"
+    ]
+    assert len(assistant_messages) == 1
+    assert assistant_messages[0]["turn"] == 1
+    assert assistant_messages[0]["duration_ms"] >= 0
     assert any(
         event["kind"] == "agent.telemetry.snapshot"
         for event in result.events
@@ -1412,3 +1417,32 @@ def test_parallel_hard_budget_mid_turn_break_flushes_pending(
     assert [e["call_id"] for e in results] == ["h1"]
 
 
+def test_turn_boundary_events_emitted(tmp_path: Path, monkeypatch) -> None:
+    scenario = load_scenario(SCENARIO_ROOT)
+    prepared = PreparedScenario(
+        scenario_root=SCENARIO_ROOT,
+        workspace=tmp_path,
+        metadata=scenario.metadata,
+    )
+    monkeypatch.setattr(engine_module, "SessionLocal", lambda: BudgetOverrideDB({}))
+    engine = AgentEngine(
+        run_id=uuid.uuid4(),
+        client=FinalAnswerClient(),
+        sandbox=SimpleNamespace(),
+        prepared=prepared,
+        faults=FaultController([]),
+    )
+    monkeypatch.setattr(engine, "_event", lambda kind, payload: engine.events.append({"kind": kind, **payload}))
+    monkeypatch.setattr(engine, "_completion_gaps", lambda: [])
+    monkeypatch.setattr(engine, "_compact_context", lambda *a, **k: None)
+    engine.run(prepared)
+    begins = [e for e in engine.events if e["kind"] == "run.turn.begin"]
+    ends = [e for e in engine.events if e["kind"] == "run.turn.end"]
+    assert len(begins) >= 1
+    assert len(begins) == len(ends)
+    assert all("turn" in e for e in begins + ends)
+    assert ends[0]["tool_calls"] == 0
+    assert ends[0]["tool_call_count"] == 0
+    assert ends[0]["input_tokens"] == 17
+    assert ends[0]["output_tokens"] == 4
+    assert ends[0]["duration_ms"] >= 0

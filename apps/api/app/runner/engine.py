@@ -227,6 +227,11 @@ class AgentEngine:
                     "active_seconds": round(self._active_elapsed(), 3),
                 },
             )
+            turn_started = time.monotonic()
+            self._event(
+                "run.turn.begin",
+                {"turn": turn_number, "tool_calls": self.tool_calls},
+            )
             try:
                 turn, provider_duration_ms = self._complete_model_turn(
                     messages,
@@ -241,6 +246,19 @@ class AgentEngine:
                     "model turn could complete."
                 )
                 break
+            self._event(
+                "run.turn.end",
+                {
+                    "turn": turn_number,
+                    "tool_calls": self.tool_calls,
+                    "tool_call_count": len(turn.tool_calls),
+                    "duration_ms": round(
+                        (time.monotonic() - turn_started) * 1_000
+                    ),
+                    "input_tokens": turn.input_tokens,
+                    "output_tokens": turn.output_tokens,
+                },
+            )
             self.input_tokens += turn.input_tokens
             self.output_tokens += turn.output_tokens
             self.token_usage_available = (
