@@ -1700,26 +1700,46 @@ class AgentEngine:
                 self.run_id,
             )
             return
-        for entry in overrides[self.applied_budget_overrides :]:
-            self.applied_budget_overrides += 1
+        pending = overrides[self.applied_budget_overrides :]
+        if not pending:
+            return
+        old_values = {
+            field: getattr(self.budget, field)
+            for field in BudgetSpec.model_fields
+        }
+        candidate = self.budget.model_dump(mode="json")
+        applied: list[dict] = []
+        for entry in pending:
             field = str(entry.get("field", ""))
             if field not in BudgetSpec.model_fields:
                 continue
-            old_value = getattr(self.budget, field)
-            new_value = entry.get("value")
+            value = entry.get("value")
             try:
-                updated = self.budget.model_dump()
-                updated[field] = int(new_value) if new_value is not None else None
-                budget = BudgetSpec.model_validate(updated)
+                candidate[field] = int(value) if value is not None else None
             except (TypeError, ValueError):
                 continue
-            self.budget = budget
+            applied.append({"field": field, "entry": entry})
+        self.applied_budget_overrides = len(overrides)
+        if not applied:
+            return
+        try:
+            validated = BudgetSpec.model_validate(candidate)
+        except Exception:
+            logger.warning(
+                "Budget overrides rejected for run %s; keeping current budget",
+                self.run_id,
+            )
+            return
+        self.budget = validated
+        for item in applied:
+            field = item["field"]
+            entry = item["entry"]
             self._event(
                 "run.budget_adjusted",
                 {
                     "field": field,
-                    "old_value": old_value,
-                    "new_value": getattr(self.budget, field),
+                    "old_value": old_values[field],
+                    "new_value": getattr(validated, field),
                     "reason": str(entry.get("reason", "")),
                     "requested_by": str(entry.get("requested_by", "")),
                     "requested_at": str(entry.get("requested_at", "")),

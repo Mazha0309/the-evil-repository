@@ -1032,6 +1032,88 @@ def test_budget_no_override_terminates_at_hard(
     assert result.private_state["hard_budget_reasons"] == ["tool_calls"]
     assert not any(e["kind"] == "run.budget_adjusted" for e in engine.events)
 
+def test_budget_override_pair_applied_atomically(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config = {
+        "budget_overrides": [
+            {
+                "field": "soft_total_tokens",
+                "value": 100_000,
+                "reason": "token headroom",
+                "requested_by": "test",
+                "requested_at": "2026-08-05T00:00:00Z",
+            },
+            {
+                "field": "hard_total_tokens",
+                "value": 200_000,
+                "reason": "token headroom",
+                "requested_by": "test",
+                "requested_at": "2026-08-05T00:00:00Z",
+            },
+        ]
+    }
+    engine, prepared = _budget_override_engine(
+        tmp_path,
+        monkeypatch,
+        config,
+        tool_turns=1,
+    )
+
+    result = engine.run(prepared)
+
+    assert engine.budget.soft_total_tokens == 100_000
+    assert engine.budget.hard_total_tokens == 200_000
+    adjusted = [e for e in engine.events if e["kind"] == "run.budget_adjusted"]
+    assert len(adjusted) == 2
+    assert {e["field"] for e in adjusted} == {
+        "soft_total_tokens",
+        "hard_total_tokens",
+    }
+    assert result.tool_calls == 1
+
+
+def test_budget_override_pair_seconds_applied_together(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config = {
+        "budget_overrides": [
+            {
+                "field": "soft_seconds",
+                "value": 30_000,
+                "reason": "extend time",
+                "requested_by": "test",
+                "requested_at": "2026-08-05T00:00:00Z",
+            },
+            {
+                "field": "hard_seconds",
+                "value": 40_000,
+                "reason": "extend time",
+                "requested_by": "test",
+                "requested_at": "2026-08-05T00:00:00Z",
+            },
+        ]
+    }
+    engine, prepared = _budget_override_engine(
+        tmp_path,
+        monkeypatch,
+        config,
+        tool_turns=1,
+    )
+
+    result = engine.run(prepared)
+
+    assert engine.budget.soft_seconds == 30_000
+    assert engine.budget.hard_seconds == 40_000
+    adjusted = [e for e in engine.events if e["kind"] == "run.budget_adjusted"]
+    assert len(adjusted) == 2
+    assert {e["field"] for e in adjusted} == {"soft_seconds", "hard_seconds"}
+    assert result.tool_calls == 1
+
+
+
 
 def test_budget_override_invalid_entry_skipped_without_duplicate_events(
     tmp_path: Path,
