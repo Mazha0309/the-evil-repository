@@ -24,13 +24,17 @@ export function splitDiffFiles(diffText: string): DiffFileBlock[] {
   for (const raw of diffText.split("\n")) {
     if (raw.startsWith("diff --git ")) {
       if (current) blocks.push(current);
-      const match = /diff --git a\/(\S+) b\//.exec(raw);
+      const match = /diff --git "?a\/(.+?) "?b\//.exec(raw);
       current = {
-        path: match?.[1] ?? raw.replace("diff --git ", ""),
+        path: (match?.[1] ?? raw.replace("diff --git ", "")).replace(
+          /^"|"$/g,
+          "",
+        ),
         lines: [],
       };
+    } else if (current) {
+      current.lines.push({ type: classifyLine(raw), text: raw });
     }
-    if (current) current.lines.push({ type: classifyLine(raw), text: raw });
   }
   if (current) blocks.push(current);
   return blocks;

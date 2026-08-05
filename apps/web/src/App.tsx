@@ -102,7 +102,6 @@ import type {
   ModelProfile,
   ModelProvider,
   Run,
-  RunDiff,
   RunEvent,
   RunStatus,
   SemanticJudgeReview,
@@ -3183,15 +3182,12 @@ function DiffTab({ runId }: { runId: string }) {
   const { text } = useLocale();
   const diffs = useQuery({
     queryKey: ["run-diffs", runId],
-    queryFn: async () => {
-      const res = await fetch(api.runDiffsUrl(runId));
-      if (!res.ok) throw new ApiError(res.status, "Failed to load run diffs");
-      return (await res.json()) as RunDiff[];
-    },
+    queryFn: () => api.runDiffs(runId),
   });
   if (diffs.isLoading) return <LoadingState />;
   if (diffs.isError) {
-    const status = (diffs.error as ApiError).status;
+    const error = diffs.error as ApiError;
+    const missingArchive = error.status === 404;
     return (
       <section className="panel panel--danger">
         <PanelHeading
@@ -3200,17 +3196,18 @@ function DiffTab({ runId }: { runId: string }) {
         />
         <EmptyState
           title={
-            status === 404
-              ? text("该运行没有可用的归档", "No archive available for this run")
+            missingArchive
+              ? error.message ||
+                text("该运行没有可用的归档", "No archive available for this run")
               : text("加载失败", "Load failed")
           }
           detail={
-            status === 404
+            missingArchive
               ? text(
                   "运行尚未归档，或归档已从磁盘移除。",
                   "The run is not archived yet, or the archive was removed.",
                 )
-              : diffs.error.message
+              : error.message
           }
         />
       </section>

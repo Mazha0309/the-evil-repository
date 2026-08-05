@@ -8,14 +8,14 @@ const PAGE_SIZE = 500;
 
 function DiffFileBlockView({
   block,
-  index,
+  limitKey,
   limit,
   onLoadMore,
 }: {
   block: DiffFileBlock;
-  index: number;
+  limitKey: string;
   limit: number;
-  onLoadMore: (index: number) => void;
+  onLoadMore: (limitKey: string) => void;
 }) {
   const { text } = useLocale();
   const added = block.lines.filter(
@@ -48,7 +48,7 @@ function DiffFileBlockView({
       {block.lines.length > limit && (
         <button
           className="button button--ghost diff-file__more"
-          onClick={() => onLoadMore(index)}
+          onClick={() => onLoadMore(limitKey)}
         >
           {text("加载更多", "Load more")}
         </button>
@@ -60,8 +60,9 @@ function DiffFileBlockView({
 export default function DiffViewer({ diffs }: { diffs: RunDiff[] }) {
   const { text } = useLocale();
   const [selected, setSelected] = useState(0);
-  const [limits, setLimits] = useState<Record<number, number>>({});
-  const active = diffs[Math.min(selected, diffs.length - 1)] ?? null;
+  const [limits, setLimits] = useState<Record<string, number>>({});
+  const activeIndex = Math.min(selected, diffs.length - 1);
+  const active = diffs[activeIndex] ?? null;
   const blocks = useMemo(
     () => (active ? splitDiffFiles(active.diff_text) : []),
     [active],
@@ -82,7 +83,7 @@ export default function DiffViewer({ diffs }: { diffs: RunDiff[] }) {
         {diffs.map((diff, index) => (
           <button
             className={
-              index === Math.min(selected, diffs.length - 1)
+              index === activeIndex
                 ? "diff-repo-bar__button active"
                 : "diff-repo-bar__button"
             }
@@ -109,20 +110,23 @@ export default function DiffViewer({ diffs }: { diffs: RunDiff[] }) {
       )}
       <div className="diff-files">
         {blocks.length ? (
-          blocks.map((block, index) => (
-            <DiffFileBlockView
-              block={block}
-              index={index}
-              key={`${block.path}-${index}`}
-              limit={limits[index] ?? PAGE_SIZE}
-              onLoadMore={(i) =>
-                setLimits((prev) => ({
-                  ...prev,
-                  [i]: (prev[i] ?? PAGE_SIZE) + PAGE_SIZE,
-                }))
-              }
-            />
-          ))
+          blocks.map((block, index) => {
+            const limitKey = `${active.repo}-${index}`;
+            return (
+              <DiffFileBlockView
+                block={block}
+                limitKey={limitKey}
+                key={`${block.path}-${index}`}
+                limit={limits[limitKey] ?? PAGE_SIZE}
+                onLoadMore={(key) =>
+                  setLimits((prev) => ({
+                    ...prev,
+                    [key]: (prev[key] ?? PAGE_SIZE) + PAGE_SIZE,
+                  }))
+                }
+              />
+            );
+          })
         ) : (
           <div className="empty-state">
             <h3>{text("没有改动", "No changes")}</h3>
