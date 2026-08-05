@@ -202,11 +202,26 @@ class AgentEngine:
             turn_number += 1
             self.current_turn = turn_number
             self.client.logical_turn = turn_number
-            self._compact_context(
-                messages,
-                reason="soft_character_limit",
-                target_characters=self.context_target_characters,
-            )
+            estimated_tokens = None
+            if self.token_usage_available:
+                estimated_tokens = json_size(messages) // 4
+            if self._should_compact(
+                characters=json_size(messages),
+                estimated_tokens=estimated_tokens,
+                soft_characters=self.context_soft_characters,
+            ):
+                self._compact_context(
+                    messages,
+                    reason=(
+                        "token_estimate"
+                        if (
+                            estimated_tokens is not None
+                            and json_size(messages) < self.context_soft_characters
+                        )
+                        else "soft_character_limit"
+                    ),
+                    target_characters=self.context_target_characters,
+                )
             context_role_counts = Counter(
                 str(message.get("role", "unknown")) for message in messages
             )
@@ -811,6 +826,19 @@ class AgentEngine:
             total_duration_ms += duration_ms
             self.provider_durations_ms.append(duration_ms)
             return turn, total_duration_ms
+
+    def _should_compact(
+        self,
+        *,
+        characters: int,
+        estimated_tokens: int | None,
+        soft_characters: int,
+    ) -> bool:
+        if characters >= soft_characters:
+            return True
+        if self.token_usage_available and estimated_tokens is not None:
+            return estimated_tokens >= soft_characters // 4
+        return False
 
     def _compact_context(
         self,

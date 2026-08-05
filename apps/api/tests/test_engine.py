@@ -1446,3 +1446,42 @@ def test_turn_boundary_events_emitted(tmp_path: Path, monkeypatch) -> None:
     assert ends[0]["input_tokens"] == 17
     assert ends[0]["output_tokens"] == 4
     assert ends[0]["duration_ms"] >= 0
+
+
+def test_should_compact_uses_token_estimate_when_chars_under_limit(tmp_path: Path, monkeypatch) -> None:
+    scenario = load_scenario(SCENARIO_ROOT)
+    prepared = PreparedScenario(
+        scenario_root=SCENARIO_ROOT,
+        workspace=tmp_path,
+        metadata=scenario.metadata,
+    )
+    monkeypatch.setattr(engine_module, "SessionLocal", lambda: BudgetOverrideDB({}))
+    engine = AgentEngine(
+        run_id=uuid.uuid4(),
+        client=FinalAnswerClient(),
+        sandbox=SimpleNamespace(),
+        prepared=prepared,
+        faults=FaultController([]),
+    )
+    engine.token_usage_available = True
+    assert engine._should_compact(
+        characters=40_000,
+        estimated_tokens=90_000,
+        soft_characters=100_000,
+    ) is True
+    assert engine._should_compact(
+        characters=120_000,
+        estimated_tokens=1_000,
+        soft_characters=100_000,
+    ) is True
+    assert engine._should_compact(
+        characters=40_000,
+        estimated_tokens=10_000,
+        soft_characters=100_000,
+    ) is False
+    engine.token_usage_available = False
+    assert engine._should_compact(
+        characters=40_000,
+        estimated_tokens=90_000,
+        soft_characters=100_000,
+    ) is False
