@@ -4,7 +4,6 @@ import hashlib
 import importlib.util
 import io
 import json
-import math
 import tarfile
 from abc import ABC, abstractmethod
 from collections.abc import Callable
@@ -18,7 +17,12 @@ from pydantic import BaseModel, Field
 
 from app.challenge.spec import BudgetSpec, RepositorySpec
 from app.runner.protocol import ToolResult
-from app.telemetry import build_telemetry_bundle, json_bytes, jsonl_bytes
+from app.telemetry import (
+    build_telemetry_bundle,
+    json_bytes,
+    jsonl_bytes,
+    turn_summary,
+)
 from app.version import VERSION
 
 if TYPE_CHECKING:
@@ -391,51 +395,9 @@ def _lean_export(
         "telemetry_summary": manifest["telemetry_summary"],
         "artifact_inventory": manifest["artifact_inventory"],
         "budget_adjustment_count": len(telemetry["budget_adjustments"]),
-        "turn_summary": _turn_summary(telemetry["turn_boundaries"]),
+        "turn_summary": turn_summary(telemetry["turn_boundaries"]),
         "investigation_graph": investigation_graph,
     }
-
-
-def _turn_summary(boundaries: list[dict[str, Any]]) -> dict[str, Any]:
-    begin_turns: set[int] = set()
-    completed_turns: set[int] = set()
-    end_durations: list[float] = []
-    for event in boundaries:
-        turn = int(_number(event.get("turn")))
-        kind = event.get("kind")
-        if kind == "run.turn.begin":
-            begin_turns.add(turn)
-        elif (
-            kind == "run.turn.end"
-            and turn in begin_turns
-            and turn not in completed_turns
-        ):
-            completed_turns.add(turn)
-            duration = _number(event.get("duration_ms"))
-            if duration > 0:
-                end_durations.append(duration)
-    if end_durations:
-        average_duration_ms = round(
-            sum(end_durations) / len(end_durations), 3
-        )
-        max_duration_ms = round(max(end_durations), 3)
-    else:
-        average_duration_ms = None
-        max_duration_ms = None
-    return {
-        "total_turns": len(begin_turns),
-        "completed_turns": len(completed_turns),
-        "average_duration_ms": average_duration_ms,
-        "max_duration_ms": max_duration_ms,
-    }
-
-
-def _number(value: Any) -> float:
-    try:
-        number = float(value or 0)
-    except (TypeError, ValueError):
-        return 0.0
-    return number if math.isfinite(number) else 0.0
 
 
 def load_scenario(root: Path) -> Scenario:

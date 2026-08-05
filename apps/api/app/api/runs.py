@@ -5,12 +5,13 @@ from collections.abc import Generator
 from datetime import UTC, datetime
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.api.reports import export_report
 from app.challenge.spec import BudgetSpec
 from app.config import get_settings
 from app.database import SessionLocal, get_session
@@ -195,6 +196,76 @@ def get_run(
     if not can_access_run(session, user, run):
         raise HTTPException(status_code=404, detail="Run not found")
     return run
+
+
+@router.get("/{run_id}/export")
+def export_run_archive(
+    run_id: uuid.UUID,
+    format: str = "json",
+    include: str = "all",
+    session: Session = Depends(get_session),
+    user: UserAccount = Depends(csrf_protection),
+) -> Response:
+    run = session.get(BenchmarkRun, run_id)
+    if not can_access_run(session, user, run):
+        raise HTTPException(status_code=404, detail="Run not found")
+    if format == "json":
+        return export_report(
+            run_id,
+            include=("full-events" if include == "all" else "compact"),
+            session=session,
+            user=user,
+        )
+    if format != "tar.gz":
+        raise HTTPException(status_code=400, detail="format must be json or tar.gz")
+    archive_path = Path(get_settings().artifact_root) / f"{run_id}.tar.gz"
+    if not archive_path.exists():
+        raise HTTPException(status_code=404, detail="No run archive available")
+    if include == "all":
+        return FileResponse(
+            archive_path,
+            media_type="application/gzip",
+            filename=archive_path.name,
+        )
+    allowed = set(part.strip() for part in include.split(","))
+    path_markers = {
+        "events": ["events.jsonl"],
+        "telemetry": ["telemetry/"],
+        "diffs": ["artifacts/"],
+        "graph": ["investigation/"],
+    }
+    keep = [
+        marker
+        for name, markers in path_markers.items()
+        if name in allowed
+        for marker in markers
+    ]
+    if not keep:
+        raise HTTPException(status_code=400, detail="No matching archive content")
+    import io
+    import tarfile as tarfile_module
+
+    buffer = io.BytesIO()
+    with (
+        tarfile_module.open(archive_path, "r:gz") as source,
+        tarfile_module.open(fileobj=buffer, mode="w:gz") as out,
+    ):
+        for member in source.getmembers():
+            if member.isfile() and any(
+                member.name.startswith(marker) for marker in keep
+            ):
+                payload = source.extractfile(member)
+                out.addfile(member, payload)
+    buffer.seek(0)
+    return Response(
+        buffer.getvalue(),
+        media_type="application/gzip",
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="run-{run_id}-filtered.tar.gz"'
+            )
+        },
+    )
 
 
 @router.get("/{run_id}/artifacts", response_model=list[RunArtifactRead])

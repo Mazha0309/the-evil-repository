@@ -1,3 +1,4 @@
+import hashlib
 import json
 import uuid
 from datetime import UTC, datetime
@@ -22,15 +23,49 @@ from app.telemetry import (
     build_telemetry_bundle,
     sanitize_for_export,
     serialize_run_event,
+    turn_summary,
 )
 from app.version import VERSION
 
 router = APIRouter(prefix="/reports", tags=["reports"])
 
 
+def _compact_events(events: list[dict]) -> list[dict]:
+    compacted = []
+    for event in events:
+        item = dict(event)
+        if event.get("kind") in {"tool.call", "tool.result"}:
+            for key in ("arguments", "output"):
+                if key in item:
+                    raw = item.pop(key)
+                    if isinstance(raw, str):
+                        encoded = raw.encode()
+                        item[f"{key}_sha256"] = hashlib.sha256(encoded).hexdigest()
+                        item[f"{key}_size_bytes"] = len(encoded)
+                        item[f"{key}_preview"] = raw[:200]
+        compacted.append(item)
+    return compacted
+
+
+def _budget_adjustment_summary(
+    adjustments: list[dict],
+) -> dict[str, int | str | None]:
+    def stamp(item: dict) -> str | None:
+        return item.get("requested_at") or item.get("applied_at")
+
+    return {
+        "count": len(adjustments),
+        "first_at": stamp(adjustments[0]) if adjustments else None,
+        "last_at": stamp(adjustments[-1]) if adjustments else None,
+    }
+
+
+
+
 @router.get("/{run_id}")
 def export_report(
     run_id: uuid.UUID,
+    include: str = "compact",
     session: Session = Depends(get_session),
     user: UserAccount = Depends(current_user),
 ) -> Response:
@@ -64,7 +99,7 @@ def export_report(
         graph_payload(session, run_id)
     ).model_dump(mode="json")
     payload = {
-        "export_schema_version": 2,
+        "export_schema_version": 3,
         "platform_version": VERSION,
         "generated_at": datetime.now(UTC).isoformat(),
         "run": {
@@ -110,13 +145,22 @@ def export_report(
             else None
         ),
         "scorecard": normalize_scorecard_outcome(run.scorecard),
+        "overtime_penalty": dict(run.scorecard or {}).get("overtime_penalty"),
         "telemetry": {
             key: value
             for key, value in telemetry.items()
             if key != "events"
         },
+        "budget_adjustments": _budget_adjustment_summary(
+            telemetry["budget_adjustments"]
+        ),
+        "turn_summary": turn_summary(telemetry["turn_boundaries"]),
         "investigation": investigation,
-        "events": telemetry["events"],
+        "events": (
+            telemetry["events"]
+            if include == "full-events"
+            else _compact_events(telemetry["events"])
+        ),
         "artifacts": [
             {
                 "id": str(artifact.id),
