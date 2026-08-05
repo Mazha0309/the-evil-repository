@@ -3366,7 +3366,7 @@ function AuditTimeline({ events }: { events: RunEvent[] }) {
         detail={text(`${events.length} 个事件`, `${events.length} events`)}
       />
       <div className="audit-list">
-        {events.map((event) => (
+        {[...events].reverse().map((event) => (
           <details key={event.id} className="audit-event">
             <summary>
               <span
