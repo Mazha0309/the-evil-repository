@@ -1761,6 +1761,70 @@ pre {
   margin: 18px -21px -21px;
 }
 
+.budget-history {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.budget-history__heading {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.budget-history__empty {
+  margin: 0;
+  border: 1px dashed var(--line);
+  border-radius: 6px;
+  padding: 12px;
+  color: var(--muted);
+  font-size: 9px;
+  text-align: center;
+}
+
+.budget-history__entry {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 2px 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 10px 12px;
+  background: #090b09;
+}
+
+.budget-history__entry strong {
+  color: #e6ede2;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.budget-history__entry span {
+  color: var(--lime-dim);
+  font-family: var(--mono);
+  font-size: 10px;
+}
+
+.budget-history__entry p {
+  grid-column: 1 / -1;
+  margin: 3px 0 0;
+  color: #b8c0b3;
+  font-size: 9px;
+  line-height: 1.5;
+}
+
+.budget-history__entry small {
+  grid-column: 1 / -1;
+  color: var(--muted);
+  font-size: 8px;
+}
+
+.budget-history .inline-error {
+  margin-top: 4px;
+}
+
 .table-scroll {
   overflow-x: auto;
 }
