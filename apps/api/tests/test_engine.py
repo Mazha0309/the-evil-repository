@@ -1633,6 +1633,7 @@ def test_token_estimate_trigger_compacts_and_emits_event(tmp_path: Path, monkeyp
         reason=reason,
         target_characters=80_000,
         force=True,
+        aggressive_truncation=False,
     )
     assert report is not None
     assert report["reason"] == "token_estimate"
@@ -1642,3 +1643,118 @@ def test_token_estimate_trigger_compacts_and_emits_event(tmp_path: Path, monkeyp
     assert compacted_events
     assert compacted_events[-1]["reason"] == "token_estimate"
     assert json_size(messages) < context_size
+
+
+def test_run_compaction_passes_non_aggressive_truncation(tmp_path: Path, monkeypatch) -> None:
+    scenario = load_scenario(SCENARIO_ROOT)
+    prepared = PreparedScenario(
+        scenario_root=SCENARIO_ROOT,
+        workspace=tmp_path,
+        metadata=scenario.metadata,
+    )
+    monkeypatch.setattr(engine_module, "SessionLocal", lambda: BudgetOverrideDB({}))
+    engine = AgentEngine(
+        run_id=uuid.uuid4(),
+        client=FinalAnswerClient(),
+        sandbox=SimpleNamespace(),
+        prepared=prepared,
+        faults=FaultController([]),
+    )
+    calls: list[dict] = []
+    monkeypatch.setattr(
+        engine,
+        "_compact_reason",
+        lambda **_kwargs: "soft_character_limit",
+    )
+    monkeypatch.setattr(
+        engine,
+        "_compact_context",
+        lambda *args, **kwargs: calls.append({"args": args, "kwargs": kwargs}),
+    )
+    monkeypatch.setattr(
+        engine,
+        "_event",
+        lambda kind, payload: engine.events.append({"kind": kind, **payload}),
+    )
+    monkeypatch.setattr(engine, "_completion_gaps", lambda: [])
+    engine.run(prepared)
+    assert calls
+    assert calls[0]["kwargs"] == {
+        "reason": "soft_character_limit",
+        "target_characters": engine.context_target_characters,
+        "force": True,
+        "aggressive_truncation": False,
+    }
+    assert all(call["kwargs"]["aggressive_truncation"] is False for call in calls)
+
+
+def test_compact_context_truncation_limit_follows_aggressive_flag(tmp_path: Path, monkeypatch) -> None:
+    scenario = load_scenario(SCENARIO_ROOT)
+    prepared = PreparedScenario(
+        scenario_root=SCENARIO_ROOT,
+        workspace=tmp_path,
+        metadata=scenario.metadata,
+    )
+    monkeypatch.setattr(engine_module, "SessionLocal", lambda: BudgetOverrideDB({}))
+    engine = AgentEngine(
+        run_id=uuid.uuid4(),
+        client=FinalAnswerClient(),
+        sandbox=SimpleNamespace(),
+        prepared=prepared,
+        faults=FaultController([]),
+    )
+    received_limits: list[int] = []
+
+    def fake_compact(
+        messages: list[dict],
+        *,
+        checkpoint: dict,
+        target_characters: int,
+        tool_content_limit: int,
+        retain_recent_history: bool = True,
+    ) -> tuple[list[dict], dict[str, int]]:
+        received_limits.append(tool_content_limit)
+        return list(messages), {
+            "messages_removed": 0,
+            "compacted_characters": json_size(messages),
+            "tool_results_truncated": 0,
+            "assistant_content_truncated": 0,
+            "tool_arguments_truncated": 0,
+        }
+
+    monkeypatch.setattr(engine_module, "compact_message_history", fake_compact)
+    monkeypatch.setattr(
+        engine,
+        "_context_checkpoint_message",
+        lambda **_kwargs: {
+            "role": "user",
+            "content": "RUNNER_CONTEXT_CHECKPOINT_V1\n{}",
+        },
+    )
+    monkeypatch.setattr(
+        engine,
+        "_event",
+        lambda kind, payload: engine.events.append({"kind": kind, **payload}),
+    )
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "opening"},
+    ]
+    engine._compact_context(
+        messages,
+        reason="provider_context_rejection",
+        target_characters=16_000,
+        force=True,
+    )
+    engine._compact_context(
+        messages,
+        reason="soft_character_limit",
+        target_characters=16_000,
+        force=True,
+        aggressive_truncation=False,
+    )
+    assert received_limits == [2_000, 12_000]
+    assert messages == [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "opening"},
+    ]

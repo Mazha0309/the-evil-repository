@@ -217,6 +217,7 @@ class AgentEngine:
                     reason=reason,
                     target_characters=self.context_target_characters,
                     force=True,
+                    aggressive_truncation=False,
                 )
             context_role_counts = Counter(
                 str(message.get("role", "unknown")) for message in messages
@@ -856,6 +857,7 @@ class AgentEngine:
         reason: str,
         target_characters: int,
         force: bool = False,
+        aggressive_truncation: bool = True,
         retain_recent_history: bool = True,
     ) -> dict[str, Any] | None:
         original_characters = json_size(messages)
@@ -872,7 +874,7 @@ class AgentEngine:
             checkpoint=checkpoint,
             target_characters=target_characters,
             tool_content_limit=(
-                2_000 if force else 12_000
+                2_000 if aggressive_truncation else 12_000
             ),
             retain_recent_history=retain_recent_history,
         )
