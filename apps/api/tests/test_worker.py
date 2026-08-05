@@ -649,5 +649,79 @@ def test_worker_renders_offline_html_report_for_archive(monkeypatch) -> None:
     assert html.startswith("<!doctype html>")
     assert "dead-letter" in html
     assert "README.md" in html
+    assert 'style="margin-bottom:8px">M README.md</pre>' in html
     assert "efficiency" in html
     assert "evaluated" in html
+
+
+def test_worker_offline_report_render_failure_skips_html_but_archives(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    testing_session = sessionmaker(
+        bind=engine,
+        expire_on_commit=False,
+        class_=Session,
+    )
+    run_id = uuid.uuid4()
+    with testing_session() as session:
+        session.add(
+            BenchmarkRun(
+                id=run_id,
+                task_id=uuid.uuid4(),
+                candidate_model_id=uuid.uuid4(),
+                status=RunStatus.scoring,
+                stage="Scorecard aggregation",
+                config={},
+            )
+        )
+        session.commit()
+    monkeypatch.setattr(worker_module, "SessionLocal", testing_session)
+
+    def _boom(_payload: object) -> str:
+        raise RuntimeError("render exploded")
+
+    monkeypatch.setattr("app.report_html.render_report_html", _boom)
+    result = ScenarioRunResult(
+        final_response="done",
+        elapsed_seconds=12,
+        tool_calls=1,
+        events=[],
+        artifacts={},
+    )
+    scorecard = {
+        "score": 900,
+        "maximum": 1_200,
+        "dimensions": {},
+        "outcome": {"status": "evaluated", "censored": False},
+    }
+    profile = SimpleNamespace(name="Candidate", model_id="candidate")
+
+    html = Worker()._render_offline_report(
+        run_id,
+        result,
+        scorecard,
+        profile,
+    )
+    assert html is None
+
+    scenario = load_scenario(SCENARIO_ROOT)
+    prepared = PreparedScenario(
+        scenario_root=SCENARIO_ROOT,
+        workspace=tmp_path / "workspace",
+        metadata=scenario.metadata,
+    )
+    archive_path = scenario.archive(
+        prepared,
+        result,
+        tmp_path / "run.tar.gz",
+        report_html=html,
+    )
+    with tarfile.open(archive_path, "r:gz") as archive:
+        assert "report.html" not in set(archive.getnames())

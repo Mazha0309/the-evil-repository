@@ -494,3 +494,29 @@ def test_offline_html_report_renders_from_build_payload() -> None:
     assert "Scorecard" in html
     assert "efficiency" in html
     assert "Audit trail" in html
+
+
+def test_report_payload_for_html_completes_v3_diff_entries() -> None:
+    payload = {
+        "run": {"id": "run-1", "status": "evaluated"},
+        "diffs": [
+            {
+                "repo": "dead-letter",
+                "added_lines": 1,
+                "removed_lines": 1,
+                "file_count": 1,
+                "sha256": "abc",
+            }
+        ],
+    }
+    adapted = report_payload_for_html(payload)
+    assert adapted["diffs"] == [
+        {
+            "repo": "dead-letter",
+            "diff_text": "",
+            "status_text": "",
+            "added_lines": 1,
+            "removed_lines": 1,
+            "file_count": 1,
+        }
+    ]

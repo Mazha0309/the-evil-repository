@@ -59,10 +59,14 @@ def _render_diffs(diffs: list[dict[str, Any]]) -> str:
         return '<div class="meta">No repository changes recorded.</div>'
     blocks: list[str] = []
     for diff in diffs:
-        lines = "".join(
-            f'<span class="dl {_classify_diff_line(line)}">{_esc(line)}</span>\n'
-            for line in diff["diff_text"].splitlines()
-        )
+        diff_text = diff.get("diff_text") or ""
+        if diff_text:
+            lines = "".join(
+                f'<span class="dl {_classify_diff_line(line)}">{_esc(line)}</span>\n'
+                for line in diff_text.splitlines()
+            )
+        else:
+            lines = '<div class="meta">（无 diff 文本）</div>'
         status = _esc(diff.get("status_text", "")).strip()
         blocks.append(
             "<details open>"
@@ -143,6 +147,17 @@ def report_payload_for_html(
             and edge.get("target_type") == "evidence"
         ],
     }
+    report["diffs"] = [
+        {
+            "repo": entry.get("repo", ""),
+            "diff_text": entry.get("diff_text", ""),
+            "status_text": entry.get("status_text", ""),
+            "added_lines": entry.get("added_lines", 0),
+            "removed_lines": entry.get("removed_lines", 0),
+            "file_count": entry.get("file_count", 0),
+        }
+        for entry in (report.get("diffs") or [])
+    ]
     return report
 
 

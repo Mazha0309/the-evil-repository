@@ -110,3 +110,19 @@ def test_html_diff_missing_optional_stats() -> None:
     ]
     html = render_report_html(payload)
     assert "+0 -0 0 files" in html
+
+
+def test_html_renders_diff_entry_without_diff_text() -> None:
+    payload = _payload()
+    payload["diffs"] = [
+        {
+            "repo": "dead-letter",
+            "added_lines": 1,
+            "removed_lines": 1,
+            "file_count": 1,
+            "sha256": "abc",
+        }
+    ]
+    html = render_report_html(payload)
+    assert "dead-letter" in html
+    assert "（无 diff 文本）" in html
