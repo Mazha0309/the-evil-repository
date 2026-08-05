@@ -1014,6 +1014,25 @@ def test_budget_overrides_applied_at_runtime(tmp_path: Path, monkeypatch) -> Non
     assert "applied_at" in adjusted[0]
 
 
+def test_budget_no_override_terminates_at_hard(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config = {}
+    engine, prepared = _budget_override_engine(
+        tmp_path,
+        monkeypatch,
+        config,
+        tool_turns=5,
+    )
+
+    result = engine.run(prepared)
+
+    assert result.tool_calls == 2
+    assert result.private_state["hard_budget_reasons"] == ["tool_calls"]
+    assert not any(e["kind"] == "run.budget_adjusted" for e in engine.events)
+
+
 def test_budget_override_invalid_entry_skipped_without_duplicate_events(
     tmp_path: Path,
     monkeypatch,
