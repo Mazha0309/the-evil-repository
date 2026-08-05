@@ -369,17 +369,18 @@ class Worker:
                     kind="sandbox.started",
                     payload=sandbox.security_posture(),
                 )
-                candidate_client = ModelClient(
-                    profile,
-                    None,
-                    credential_resolver=CredentialResolver(profile.id),
-                    timeout_seconds=settings.provider_turn_timeout_seconds,
-                    on_retry=lambda payload: self.record_provider_retry(
+                candidate_kwargs = {
+                    "credential_resolver": CredentialResolver(profile.id),
+                    "retry_jitter": settings.provider_retry_jitter,
+                    "on_retry": lambda payload: self.record_provider_retry(
                         run_id,
                         "candidate",
                         payload,
                     ),
-                )
+                }
+                if settings.provider_turn_timeout_seconds > 0:
+                    candidate_kwargs["timeout_seconds"] = settings.provider_turn_timeout_seconds
+                candidate_client = ModelClient(profile, None, **candidate_kwargs)
                 faults = FaultController.load([Path(path) for path in prepared.private_state["fault_scripts"]])
                 engine = AgentEngine(
                     run_id=run_id,
@@ -612,6 +613,7 @@ class Worker:
                 None,
                 credential_resolver=CredentialResolver(judge_profile.id),
                 timeout_seconds=settings.semantic_judge_timeout,
+                retry_jitter=settings.provider_retry_jitter,
                 on_retry=lambda payload: self.record_provider_retry(
                     run_id,
                     "semantic_judge",

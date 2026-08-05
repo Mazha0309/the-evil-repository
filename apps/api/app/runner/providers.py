@@ -77,6 +77,7 @@ class ModelClient:
         api_key: str | None,
         *,
         timeout_seconds: float = 180,
+        retry_jitter: float = 0.25,
         max_retries: int = 5,
         on_retry: Callable[[dict[str, Any]], None] | None = None,
         on_request: Callable[[dict[str, Any]], None] | None = None,
@@ -85,6 +86,7 @@ class ModelClient:
         self.profile = profile
         self.api_key = api_key
         self.timeout_seconds = timeout_seconds
+        self.retry_jitter = retry_jitter
         self.max_retries = max(0, max_retries)
         self.on_retry = on_retry
         self.on_request = on_request
@@ -472,7 +474,7 @@ class ModelClient:
                     f"Antigravity CLI remained unavailable after bounded retries for model {self.profile.model_id}"
                 ) from error
 
-            delay = provider_transport_retry_delay(attempt)
+            delay = provider_transport_retry_delay(attempt, self.retry_jitter)
             retry = {
                 "provider": self.profile.provider.value,
                 "transport": "official_antigravity_cli",
@@ -615,7 +617,7 @@ class ModelClient:
             except ProviderTransientError as exc:
                 if attempt >= self.max_retries:
                     raise
-                delay = provider_transport_retry_delay(attempt)
+                delay = provider_transport_retry_delay(attempt, self.retry_jitter)
                 retry = {
                     "provider": self.profile.provider.value,
                     "transport": "claude_agent_sdk",
@@ -639,7 +641,7 @@ class ModelClient:
                     raise ProviderTransientError(
                         f"Claude Code timed out after bounded retries for model {self.profile.model_id}"
                     ) from exc
-                delay = provider_transport_retry_delay(attempt)
+                delay = provider_transport_retry_delay(attempt, self.retry_jitter)
                 retry = {
                     "provider": self.profile.provider.value,
                     "transport": "claude_agent_sdk",
@@ -663,7 +665,7 @@ class ModelClient:
                     raise ProviderTransientError(
                         f"The Claude Agent SDK process failed after bounded retries for model {self.profile.model_id}"
                     ) from exc
-                delay = provider_transport_retry_delay(attempt)
+                delay = provider_transport_retry_delay(attempt, self.retry_jitter)
                 retry = {
                     "provider": self.profile.provider.value,
                     "transport": "claude_agent_sdk",
@@ -772,7 +774,7 @@ class ModelClient:
                         f"Provider transport failure ({type(exc).__name__}) persisted after "
                         f"{maximum_attempts} attempts for model {self.profile.model_id}"
                     ) from exc
-                delay = provider_transport_retry_delay(attempt)
+                delay = provider_transport_retry_delay(attempt, self.retry_jitter)
                 retry = {
                     "provider": self.profile.provider.value,
                     "model_id": self.profile.model_id,
@@ -821,7 +823,7 @@ class ModelClient:
                         f"{maximum_attempts} attempts for model {self.profile.model_id}"
                     ) from exc
 
-            delay = provider_retry_delay(response, attempt)
+            delay = provider_retry_delay(response, attempt, self.retry_jitter)
             retry = {
                 "provider": self.profile.provider.value,
                 "model_id": self.profile.model_id,
@@ -1724,7 +1726,11 @@ def _jittered(delay: float, ratio: float = 0.25) -> float:
     return round(max(0.25, delay * (1 + random.uniform(-ratio, ratio))), 3)
 
 
-def provider_retry_delay(response: httpx.Response, attempt: int) -> float:
+def provider_retry_delay(
+    response: httpx.Response,
+    attempt: int,
+    ratio: float = 0.25,
+) -> float:
     base = 4.0 if response.status_code == 429 else 1.0
     fallback = min(30.0, base * (2**attempt))
     retry_after = response.headers.get("retry-after", "").strip()
@@ -1738,12 +1744,12 @@ def provider_retry_delay(response: httpx.Response, attempt: int) -> float:
             except (TypeError, ValueError, OverflowError):
                 seconds = None
         if seconds is not None:
-            return _jittered(round(max(0.25, min(30.0, seconds)), 3))
-    return _jittered(fallback)
+            return min(30.0, _jittered(round(max(0.25, min(30.0, seconds)), 3), ratio))
+    return min(30.0, _jittered(fallback, ratio))
 
 
-def provider_transport_retry_delay(attempt: int) -> float:
-    return _jittered(min(30.0, float(2 ** (attempt + 1))))
+def provider_transport_retry_delay(attempt: int, ratio: float = 0.25) -> float:
+    return min(30.0, _jittered(min(30.0, float(2 ** (attempt + 1))), ratio))
 
 
 def append_tool_call(

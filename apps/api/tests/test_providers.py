@@ -1072,3 +1072,6 @@ def test_retry_delay_is_status_class_based_and_jittered() -> None:
     assert all(0.75 <= d <= 1.25 for d in delays_503)
     assert len(set(round(d, 3) for d in delays_429)) > 1
     assert len(set(round(d, 3) for d in delays_503)) > 1
+    # attempt=2: 1s 基数 × 2^2 = 4s，抖动 ±25%
+    delays_503_attempt_2 = [p.provider_retry_delay(response_503, 2) for _ in range(20)]
+    assert all(3.0 <= d <= 5.0 for d in delays_503_attempt_2)
