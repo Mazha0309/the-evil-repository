@@ -84,7 +84,6 @@ def seed_run(
     session.commit()
     return user, run
 
-
 def test_archive_run_hides_terminal_result_without_deleting_evidence() -> None:
     engine = create_engine("sqlite://")
     Base.metadata.create_all(engine)
@@ -126,7 +125,6 @@ def test_archive_run_hides_terminal_result_without_deleting_evidence() -> None:
             get_run(run_id, session, user)
         assert error.value.status_code == 404
 
-
 def test_archive_run_rejects_active_result() -> None:
     engine = create_engine("sqlite://")
     Base.metadata.create_all(engine)
@@ -141,7 +139,6 @@ def test_archive_run_rejects_active_result() -> None:
         assert "finish or be cancelled" in error.value.detail
         session.refresh(run)
         assert run.archived_at is None
-
 
 def test_dashboard_average_excludes_censored_completed_run() -> None:
     engine = create_engine("sqlite://")
@@ -348,60 +345,3 @@ def test_archive_v3_turn_summary_handles_unpaired_begins_and_missing_duration(
     }
     assert export["budget_adjustment_count"] == 0
 
-
-def test_archive_contains_offline_html_report(tmp_path: Path) -> None:
-    import json
-    import tarfile
-
-    from app.scenario import PreparedScenario, ScenarioRunResult, load_scenario
-
-    scenario_root = (
-        Path(__file__).resolve().parents[3] / "scenarios" / "terminal-repository"
-    )
-    scenario = load_scenario(scenario_root)
-    prepared = PreparedScenario(
-        scenario_root=scenario_root,
-        workspace=tmp_path,
-        metadata=scenario.metadata,
-    )
-    result = ScenarioRunResult(
-        final_response="done",
-        elapsed_seconds=12,
-        tool_calls=1,
-        events=[
-            {"sequence": 1, "kind": "run.turn.begin", "turn": 1, "tool_calls": 0},
-        ],
-        artifacts={
-            "scorecard.json": '{"score": 777, "dimensions": {}}',
-        },
-        private_state={
-            "resource_ledger": {"hard_tool_calls": 5000},
-            "investigation_graph": {
-                "hypotheses": [],
-                "revisions": [],
-                "evidence": [],
-                "edges": [],
-            },
-        },
-    )
-
-    destination = scenario.archive(
-        prepared,
-        result,
-        tmp_path / "run.tar.gz",
-        report_html="<!doctype html>\n<p>offline report</p>",
-    )
-
-    with tarfile.open(destination, "r:gz") as archive:
-        names = set(archive.getnames())
-        assert "report.html" in names
-        report = archive.extractfile("report.html").read().decode("utf-8")
-        manifest = json.loads(archive.extractfile("run.json").read())
-
-    assert report.startswith("<!doctype html>")
-    assert manifest["archive_schema_version"] == 3
-    assert "report.html" in manifest["integrity"]["detail_entry_sha256"]
-
-    plain = scenario.archive(prepared, result, tmp_path / "plain.tar.gz")
-    with tarfile.open(plain, "r:gz") as archive:
-        assert "report.html" not in set(archive.getnames())

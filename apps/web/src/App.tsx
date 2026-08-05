@@ -2030,7 +2030,7 @@ function RunDetailPage() {
   const [budgetAdjustOpen, setBudgetAdjustOpen] = useState(false);
   const [cancelError, setCancelError] = useState("");
   const [exportFormat, setExportFormat] = useState<
-    "json" | "tar.gz" | "html"
+    "json" | "tar.gz"
   >("tar.gz");
   const [exportInclude, setExportInclude] = useState<ExportArchiveContent[]>([
     ...EXPORT_ARCHIVE_CONTENT,
@@ -2038,8 +2038,6 @@ function RunDetailPage() {
   const [downloadStarted, setDownloadStarted] = useState(false);
   const [downloadError, setDownloadError] = useState("");
   const [downloading, setDownloading] = useState(false);
-  const [snapshotBusy, setSnapshotBusy] = useState(false);
-  const [snapshotError, setSnapshotError] = useState("");
   useEffect(() => {
     if (!downloadStarted) return;
     const timer = window.setTimeout(() => setDownloadStarted(false), 4_000);
@@ -2073,127 +2071,6 @@ function RunDetailPage() {
       setDownloading(false);
     }
   };
-  const snapshotTabs = [
-    "live",
-    "overview",
-    "graph",
-    "audit",
-    "score",
-    "diff",
-  ] as const;
-  const handleSnapshot = async () => {
-    setSnapshotError("");
-    setSnapshotBusy(true);
-    try {
-      const originalTab = tab;
-      const hero =
-        document.querySelector(".run-hero")?.outerHTML ?? "";
-      const contentByTab: Record<string, string> = {};
-      for (const snapTab of snapshotTabs) {
-        setTab(snapTab);
-        await new Promise((resolve) =>
-          window.setTimeout(resolve, 800),
-        );
-        const tabsNode = document.querySelector(".tabs");
-        const exportNode = document.querySelector(".export-center");
-        let content = "";
-        if (tabsNode && exportNode) {
-          let node: ChildNode | null = tabsNode.nextSibling;
-          while (node && node !== exportNode) {
-            if (node.nodeType === Node.ELEMENT_NODE) {
-              content += (node as HTMLElement).outerHTML;
-            }
-            node = node.nextSibling;
-          }
-        }
-        contentByTab[snapTab] = content;
-      }
-      setTab(originalTab);
-      let css = "";
-      for (const sheet of Array.from(document.styleSheets)) {
-        try {
-          if (sheet.href) {
-            const response = await fetch(sheet.href);
-            if (response.ok) css += await response.text();
-          } else {
-            css += Array.from(sheet.cssRules)
-              .map((rule) => rule.cssText)
-              .join("\n");
-          }
-        } catch {
-          // 跨域或异常样式表跳过
-        }
-      }
-      const tabButtons = snapshotTabs
-        .map(
-          (snapTab) =>
-            `<button type="button" class="snap-tab" data-snap="${snapTab}">${snapTab}</button>`,
-        )
-        .join("");
-      const sections = snapshotTabs
-        .map(
-          (snapTab) =>
-            `<section class="snap-section" data-snap-section="${snapTab}">${
-              contentByTab[snapTab] ?? ""
-            }</section>`,
-        )
-        .join("");
-      const html = `<!doctype html>
-<html lang="${isChinese ? "zh-CN" : "en"}">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>${shortId(data?.id ?? runId)} · ${text("运行快照", "Run snapshot")}</title>
-<style>${css}
-.snap-tabs{display:flex;gap:8px;flex-wrap:wrap;padding:16px 0;}
-.snap-tab{appearance:none;background:#1e221e;color:#c9ccb8;border:1px solid #2a2f2a;border-radius:8px;padding:6px 14px;font-size:13px;cursor:pointer;}
-.snap-tab.active{background:#2c332c;color:#e6e6d4;border-color:#4a5a4a;}
-.snap-section{display:none;}
-.snap-section.snap-active{display:block;}
-</style>
-</head>
-<body>
-<main class="main"><div class="page-wrap">
-${hero}
-<div class="snap-tabs">${tabButtons}</div>
-${sections}
-</div></main>
-<script>
-document.querySelectorAll(".snap-tab").forEach(function (btn) {
-  btn.addEventListener("click", function () {
-    document.querySelectorAll(".snap-tab").forEach(function (b) { b.classList.remove("active"); });
-    document.querySelectorAll(".snap-section").forEach(function (s) { s.classList.remove("snap-active"); });
-    btn.classList.add("active");
-    var section = document.querySelector('[data-snap-section="' + btn.dataset.snap + '"]');
-    if (section) section.classList.add("snap-active");
-  });
-});
-document.querySelector('.snap-tab[data-snap="overview"]').classList.add("active");
-document.querySelector('[data-snap-section="overview"]').classList.add("snap-active");
-</script>
-</body>
-</html>`;
-      const blob = new Blob([html], {
-        type: "text/html;charset=utf-8",
-      });
-      const url = URL.createObjectURL(blob);
-      const anchor = document.createElement("a");
-      anchor.href = url;
-      anchor.download = `run-${runId}-page.html`;
-      document.body.appendChild(anchor);
-      anchor.click();
-      anchor.remove();
-      URL.revokeObjectURL(url);
-    } catch (error) {
-      setSnapshotError(
-        error instanceof Error
-          ? error.message
-          : text("快照生成失败", "Snapshot failed"),
-      );
-    } finally {
-      setSnapshotBusy(false);
-    }
-  };
   const run = useQuery({
     queryKey: ["run", runId],
     queryFn: () => api.run(runId),
@@ -2201,7 +2078,7 @@ document.querySelector('[data-snap-section="overview"]').classList.add("snap-act
       isTerminal(query.state.data?.status) ? false : 2_000,
   });
   const downloadDisabled =
-    (exportFormat !== "html" && exportInclude.length === 0) ||
+    exportInclude.length === 0 ||
     (exportFormat === "tar.gz" && !isTerminal(run.data?.status));
   const events = useQuery({
     queryKey: eventQueryKey,
@@ -2701,31 +2578,6 @@ document.querySelector('[data-snap-section="overview"]').classList.add("snap-act
               </small>
             </span>
           </label>
-          <label
-            className={
-              exportFormat === "html"
-                ? "export-center__format export-center__format--active"
-                : "export-center__format"
-            }
-          >
-            <input
-              type="radio"
-              name="export_format"
-              value="html"
-              checked={exportFormat === "html"}
-              onChange={() => setExportFormat("html")}
-            />
-            <FileCode2 size={14} />
-            <span>
-              <strong>{text("HTML 报告", "HTML report")}</strong>
-              <small>
-                {text(
-                  "自包含离线报告，打开即可查看。",
-                  "Self-contained offline report, viewable directly.",
-                )}
-              </small>
-            </span>
-          </label>
         </div>
         {exportFormat === "tar.gz" ? (
           <div className="export-center__includes">
@@ -2766,23 +2618,13 @@ document.querySelector('[data-snap-section="overview"]').classList.add("snap-act
               </label>
             ))}
           </div>
-        ) : exportFormat === "json" ? (
+        ) : (
           <div className="callout">
             <Lightbulb size={14} />
             <span>
               {text(
                 "JSON 导出为精简格式（含摘要与 scorecard，不含全文）。",
                 "JSON export is a compact format (summary and scorecard, without full content).",
-              )}
-            </span>
-          </div>
-        ) : (
-          <div className="callout">
-            <Lightbulb size={14} />
-            <span>
-              {text(
-                "包含完整页面内容（分数、图谱、审计、Diff、遥测），零外部依赖，离线可看。",
-                "Includes full page content (score, graph, audit, diffs, telemetry), zero external dependencies, viewable offline.",
               )}
             </span>
           </div>
@@ -2843,33 +2685,6 @@ document.querySelector('[data-snap-section="overview"]').classList.add("snap-act
             </ul>
           </div>
         ) : null}
-        <div className="export-center__snapshot">
-          <h4>
-            {text("页面快照", "Page snapshot")}
-          </h4>
-          <p className="meta">
-            {text(
-              "把整个运行详情页保存为一个离线 HTML 文件，与页面上看到的一致，可离线切换全部标签页。",
-              "Save the entire run detail page as a self-contained offline HTML file, identical to what you see, with all tabs switchable offline.",
-            )}
-          </p>
-          <button
-            className="button"
-            type="button"
-            disabled={snapshotBusy}
-            onClick={handleSnapshot}
-          >
-            <FileCode2 size={14} />
-            {snapshotBusy
-              ? text("生成中…", "Generating…")
-              : text("生成页面快照", "Generate page snapshot")}
-          </button>
-          {snapshotError && (
-            <span className="inline-error" role="alert">
-              {snapshotError}
-            </span>
-          )}
-        </div>
       </section>
       <div className="run-footer-actions">
         {data.status === "running" &&

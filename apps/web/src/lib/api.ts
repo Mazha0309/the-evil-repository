@@ -218,7 +218,7 @@ export const api = {
   reportUrl: (id: string) => `${API_BASE}/reports/${id}`,
   exportUrl: (
     runId: string,
-    format: "json" | "tar.gz" | "html",
+    format: "json" | "tar.gz",
     include: string[],
   ) => {
     const params = new URLSearchParams({ format });
@@ -232,7 +232,7 @@ export const api = {
   },
   exportDownload: async (
     runId: string,
-    format: "json" | "tar.gz" | "html",
+    format: "json" | "tar.gz",
     include: string[],
   ) => {
     const response = await fetch(api.exportUrl(runId, format, include), {

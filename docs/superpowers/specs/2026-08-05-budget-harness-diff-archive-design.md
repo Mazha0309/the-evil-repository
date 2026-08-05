@@ -1,4 +1,4 @@
-# v0.14.0 设计：预算动态调整 · Harness 优化 · Diff 页面 · 归档与导出优化 · 离线 HTML 报告
+# v0.14.0 设计：预算动态调整 · Harness 优化 · Diff 页面 · 归档与导出优化
 
 日期：2026-08-05
 目标版本：0.14.0（当前 0.13.0）
@@ -164,7 +164,7 @@
 - censored 判定从"硬预算触发"扩展为"最终用量超默认预算"：`run_outcomes.py` 兼容层同步扩展；dashboard 平均分逻辑不变（仍排除 censored）。
 - 归档契约变更 → `scenario/sdk.py` 归档版本号递增（run.json 内）。
 
-### 7.1 离线 HTML 报告（与 v0.14.0 一起发布）
+### 7.1 ~~离线 HTML 报告~~（已废弃，2026-08-05 决定删除全部 HTML 功能，仅保留历史记录）
 
 - **归档**：worker 生成归档时同步渲染 `report.html`（自包含）并打进 tar.gz（`telemetry/` 旁）；完整性哈希覆盖，README 更新。worker.complete 阶段数据齐全（scorecard/事件/diff/图谱），渲染时机天然合适。
 - **导出中心 3 格式**：

@@ -31,13 +31,7 @@ Versioning while individual benchmark scenarios retain independent versions.
   summary fields, served by `GET /runs/{id}/export` with `format` and
   `include` selection.
 - Export center UI on the run detail page with explicit format (JSON archive,
-  gzipped tarball, or HTML report) and content (compact, full-events)
-  selection.
-- Offline HTML report: each run archive embeds a self-contained `report.html`
-  with the scorecard, hypothesis graph, audit trail, diffs, and telemetry
-  rendered inline with zero external dependencies, and the export center
-  offers it as a third format served from the archive when present, with
-  dynamic rendering as fallback.
+  gzipped tarball) and content (compact, full-events) selection.
 - Parallel execution of read-only tools within a single model turn, bounded by
   a fixed worker pool, with results returned in the callers' original order.
 - Turn lifecycle events (`run.turn.begin` / `run.turn.end`) covering

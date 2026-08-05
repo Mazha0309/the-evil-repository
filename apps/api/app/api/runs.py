@@ -216,53 +216,8 @@ def export_run_archive(
             session=session,
             user=user,
         )
-    if format == "html":
-        archive_path = Path(get_settings().artifact_root) / f"{run_id}.tar.gz"
-        if archive_path.exists():
-            import tarfile as tarfile_module
-
-            try:
-                with tarfile_module.open(archive_path, "r:gz") as source:
-                    member = next(
-                        (m for m in source.getmembers() if m.isfile() and m.name == "report.html"),
-                        None,
-                    )
-                    if member is not None:
-                        return Response(
-                            source.extractfile(member).read(),
-                            media_type="text/html; charset=utf-8",
-                            headers={"Content-Disposition": f'inline; filename="run-{run_id}.html"'},
-                        )
-            except (tarfile_module.TarError, OSError, EOFError):
-                pass
-        from app.api.diffs import _archive_candidates, _read_members
-        from app.api.reports import build_report_payload
-        from app.report_html import render_report_html, report_payload_for_html
-
-        payload = build_report_payload(run_id, session, include="compact")
-        text_by_repo = {}
-        for candidate in _archive_candidates(run_id):
-            if not candidate.exists():
-                continue
-            try:
-                text_by_repo = {entry["repo"]: entry for entry in _read_members(candidate)}
-            except (tarfile_module.TarError, OSError, EOFError):
-                text_by_repo = {}
-            break
-        for diff in payload.get("diffs") or []:
-            entry = text_by_repo.get(diff["repo"])
-            if entry:
-                diff["diff_text"] = entry.get("diff_text", "")
-                diff["status_text"] = entry.get("status_text", "")
-        model = dict(run.config).get("candidate_model_snapshot") or {}
-        html = render_report_html(report_payload_for_html(payload, model=model))
-        return Response(
-            html.encode("utf-8"),
-            media_type="text/html; charset=utf-8",
-            headers={"Content-Disposition": f'inline; filename="run-{run_id}.html"'},
-        )
     if format != "tar.gz":
-        raise HTTPException(status_code=400, detail="format must be json, tar.gz or html")
+        raise HTTPException(status_code=400, detail="format must be json or tar.gz")
     archive_path = Path(get_settings().artifact_root) / f"{run_id}.tar.gz"
     if not archive_path.exists():
         raise HTTPException(status_code=404, detail="No run archive available")

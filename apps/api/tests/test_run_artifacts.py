@@ -57,7 +57,6 @@ def write_run_archive(
     artifact_root: Path,
     run_id: uuid.UUID,
     *,
-    report_html: str | None = None,
     diffs: dict[str, str] | None = None,
 ) -> None:
     archive = artifact_root / f"{run_id}.tar.gz"
@@ -73,8 +72,6 @@ def write_run_archive(
         add(tar, "events.jsonl", '{"sequence": 1}\n')
         add(tar, "telemetry/summary.json", '{"event_count": 1}')
         add(tar, "artifacts/note.txt", "hello archive")
-        if report_html is not None:
-            add(tar, "report.html", report_html)
         for repo, diff_text in (diffs or {}).items():
             add(tar, f"artifacts/{repo}.diff", diff_text)
 
@@ -288,116 +285,3 @@ def test_run_export_endpoint_returns_lean_json_and_filtered_tar_gz(
     with tarfile.open(fileobj=io.BytesIO(response.content), mode="r:gz") as archive:
         names = archive.getnames()
     assert names == ["telemetry/summary.json"]
-
-
-def test_export_html_from_archive(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    monkeypatch.setattr(runs_module.settings, "artifact_root", str(tmp_path))
-    client, sessions = build_client()
-    setup = client.post(
-        "/api/v1/auth/setup",
-        json={
-            "username": "export-html-admin",
-            "password": "correct horse battery staple",
-        },
-    )
-    assert setup.status_code == 201
-    run_id = seed_export_run(sessions)
-    write_run_archive(
-        tmp_path,
-        run_id,
-        report_html="<!doctype html>\n<p>archived offline report marker</p>",
-    )
-
-    response = client.get(f"/api/v1/runs/{run_id}/export?format=html")
-
-    assert response.status_code == 200
-    assert response.headers["content-type"].startswith("text/html")
-    assert b"<!doctype html>" in response.content
-    assert b"archived offline report marker" in response.content
-    assert response.headers["content-disposition"].startswith("inline")
-
-
-def test_export_html_fallback_for_legacy_archive_without_report(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    monkeypatch.setattr(runs_module.settings, "artifact_root", str(tmp_path))
-    client, sessions = build_client()
-    setup = client.post(
-        "/api/v1/auth/setup",
-        json={
-            "username": "export-html-legacy",
-            "password": "correct horse battery staple",
-        },
-    )
-    assert setup.status_code == 201
-    run_id = seed_export_run(sessions)
-    write_run_archive(tmp_path, run_id)
-
-    response = client.get(f"/api/v1/runs/{run_id}/export?format=html")
-
-    assert response.status_code == 200
-    assert response.headers["content-type"].startswith("text/html")
-    assert b"<!doctype html>" in response.content
-    assert b"archived offline report marker" not in response.content
-
-
-def test_export_html_fallback_without_archive(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    monkeypatch.setattr(runs_module.settings, "artifact_root", str(tmp_path))
-    client, sessions = build_client()
-    setup = client.post(
-        "/api/v1/auth/setup",
-        json={
-            "username": "export-html-noarchive",
-            "password": "correct horse battery staple",
-        },
-    )
-    assert setup.status_code == 201
-    run_id = seed_export_run(sessions)
-
-    response = client.get(f"/api/v1/runs/{run_id}/export?format=html")
-
-    assert response.status_code == 200
-    assert response.headers["content-type"].startswith("text/html")
-    assert b"<!doctype html>" in response.content
-
-
-def test_export_html_fallback_renders_real_diffs(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    monkeypatch.setattr(runs_module.settings, "artifact_root", str(tmp_path))
-    client, sessions = build_client()
-    setup = client.post(
-        "/api/v1/auth/setup",
-        json={
-            "username": "export-html-diffs",
-            "password": "correct horse battery staple",
-        },
-    )
-    assert setup.status_code == 201
-    run_id = seed_export_run(sessions)
-    write_run_archive(
-        tmp_path,
-        run_id,
-        diffs={
-            "dead-letter": (
-                "diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1,1 +1,2 @@\n- old\n+ new\n"
-            )
-        },
-    )
-
-    response = client.get(f"/api/v1/runs/{run_id}/export?format=html")
-
-    assert response.status_code == 200
-    assert response.headers["content-type"].startswith("text/html")
-    assert b"<!doctype html>" in response.content
-    assert b"dead-letter" in response.content
-    assert b"README.md" in response.content
-    assert b"+ new" in response.content

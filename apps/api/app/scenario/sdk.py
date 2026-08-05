@@ -218,7 +218,6 @@ class Scenario(ABC):
         prepared: PreparedScenario,
         result: ScenarioRunResult,
         destination: Path,
-        report_html: str | None = None,
     ) -> Path:
         destination.parent.mkdir(parents=True, exist_ok=True)
         telemetry = build_telemetry_bundle(result.events)
@@ -240,7 +239,7 @@ class Scenario(ABC):
             "The Evil Repository run archive · schema v3\n\n"
             "run.json                         canonical manifest and integrity roots\n"
             "events.jsonl                     full timestamped immutable event stream\n"
-            "report.html                      offline self-contained HTML report\n"
+
             "export.json                      compact JSON export for single-file analysis\n"
             "telemetry/summary.json           derived latency, token, tool and error metrics\n"
             "telemetry/provider-turns.jsonl   one normalized row per model turn\n"
@@ -329,8 +328,6 @@ class Scenario(ABC):
                 )
             ),
         }
-        if report_html is not None:
-            detailed_payloads["report.html"] = report_html.encode("utf-8")
         manifest["integrity"] = {
             "events_sha256": hashlib.sha256(event_data).hexdigest(),
             "artifact_sha256": {

@@ -26,11 +26,9 @@ from app.models import (
     UserAccount,
     UserRole,
 )
-from app.report_html import render_report_html, report_payload_for_html
 
 TOOL_ARGUMENTS = "path=README.md&lines=1,40&" + "x" * 300
 TOOL_OUTPUT = "# The Evil Repository\n" + "y" * 500
-
 
 def build_client() -> tuple[TestClient, sessionmaker[Session]]:
     engine = create_engine(
@@ -54,7 +52,6 @@ def build_client() -> tuple[TestClient, sessionmaker[Session]]:
 
     app.dependency_overrides[get_session] = override_session
     return TestClient(app), testing_session
-
 
 def seed_run(
     sessions: sessionmaker[Session],
@@ -154,7 +151,6 @@ def seed_run(
         session.add_all(events)
         session.commit()
         return run.id
-
 
 def test_detailed_report_exports_replayable_telemetry_without_secrets(
     tmp_path: Path,
@@ -275,7 +271,6 @@ def test_detailed_report_exports_replayable_telemetry_without_secrets(
     assert payload["overtime_penalty"] == {"total_penalty": 0.25}
     assert payload["diffs"] == []
 
-
 def test_report_v3_compact_events_and_lean_fields() -> None:
     client, sessions = build_client()
     setup = client.post(
@@ -319,7 +314,6 @@ def test_report_v3_compact_events_and_lean_fields() -> None:
     }
     assert payload["overtime_penalty"]["total_penalty"] == 0.5
 
-
 def test_report_v3_full_events_query_param() -> None:
     client, sessions = build_client()
     setup = client.post(
@@ -342,7 +336,6 @@ def test_report_v3_full_events_query_param() -> None:
     assert "arguments" in tool_calls[0]
     assert tool_calls[0]["arguments"] == TOOL_ARGUMENTS
     assert "arguments_sha256" not in tool_calls[0]
-
 
 def test_report_v3_diffs_manifest_from_archive(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(diffs.settings, "artifact_root", str(tmp_path))
@@ -398,7 +391,6 @@ def test_report_v3_diffs_manifest_from_archive(tmp_path: Path, monkeypatch) -> N
         }
     ]
 
-
 def test_report_v3_compact_events_hashes_dict_arguments() -> None:
     client, sessions = build_client()
     setup = client.post(
@@ -430,7 +422,6 @@ def test_report_v3_compact_events_hashes_dict_arguments() -> None:
     assert tool_calls[0]["arguments_preview"] == expected[:200]
     assert tool_calls[0]["arguments_size_bytes"] == len(expected.encode())
 
-
 def test_build_report_payload_matches_export_endpoint_payload() -> None:
     client, sessions = build_client()
     setup = client.post(
@@ -453,70 +444,3 @@ def test_build_report_payload_matches_export_endpoint_payload() -> None:
     expected.pop("generated_at")
     assert payload == expected
 
-
-def test_offline_html_report_renders_from_build_payload() -> None:
-    client, sessions = build_client()
-    setup = client.post(
-        "/api/v1/auth/setup",
-        json={
-            "username": "report-admin",
-            "password": "correct horse battery staple",
-        },
-    )
-    assert setup.status_code == 201
-    run_id = seed_run(sessions)
-    with sessions() as session:
-        run = session.get(BenchmarkRun, run_id)
-        assert run is not None
-        run.scorecard = {
-            "score": 900,
-            "maximum": 1_200,
-            "dimensions": {
-                "efficiency": {
-                    "score": 300,
-                    "maximum": 300,
-                    "label": "Efficiency",
-                }
-            },
-            "overtime_penalty": {"total_penalty": 0},
-        }
-        session.commit()
-        payload = build_report_payload(run_id, session, include="full-events")
-
-    html = render_report_html(
-        report_payload_for_html(
-            payload,
-            model={"name": "Candidate", "model_id": "candidate"},
-        )
-    )
-
-    assert html.startswith("<!doctype html>")
-    assert "Scorecard" in html
-    assert "efficiency" in html
-    assert "Audit trail" in html
-
-
-def test_report_payload_for_html_completes_v3_diff_entries() -> None:
-    payload = {
-        "run": {"id": "run-1", "status": "evaluated"},
-        "diffs": [
-            {
-                "repo": "dead-letter",
-                "added_lines": 1,
-                "removed_lines": 1,
-                "file_count": 1,
-                "sha256": "abc",
-            }
-        ],
-    }
-    adapted = report_payload_for_html(payload)
-    assert adapted["diffs"] == [
-        {
-            "repo": "dead-letter",
-            "diff_text": "",
-            "status_text": "",
-            "added_lines": 1,
-            "removed_lines": 1,
-            "file_count": 1,
-        }
-    ]
