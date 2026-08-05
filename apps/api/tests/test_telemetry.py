@@ -240,4 +240,4 @@ def test_bundle_includes_budget_adjustments_and_turn_boundaries() -> None:
     assert len(bundle["budget_adjustments"]) == 1
     assert bundle["budget_adjustments"][0]["field"] == "hard_tool_calls"
     assert len(bundle["turn_boundaries"]) == 2
-    assert bundle["schema_version"] >= 2
+    assert bundle["schema_version"] == 3

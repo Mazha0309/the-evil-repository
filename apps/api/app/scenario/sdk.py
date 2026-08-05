@@ -4,6 +4,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import math
 import tarfile
 from abc import ABC, abstractmethod
 from collections.abc import Callable
@@ -317,7 +318,9 @@ class Scenario(ABC):
             "investigation/graph.json": json_bytes(investigation_graph),
             "artifacts/index.json": json_bytes(artifact_inventory),
             "export.json": json_bytes(
-                _lean_export(manifest, telemetry, investigation_graph, scorecard)
+                _lean_export(
+                    manifest, telemetry, investigation_graph, scorecard, result
+                )
             ),
         }
         manifest["integrity"] = {
@@ -371,6 +374,7 @@ def _lean_export(
     telemetry: dict[str, Any],
     investigation_graph: dict[str, Any],
     scorecard: dict[str, Any] | None,
+    result: ScenarioRunResult,
 ) -> dict[str, Any]:
     """Return the compact export payload: manifest subset without events or artifact bodies."""
     return {
@@ -378,6 +382,11 @@ def _lean_export(
         "platform_version": manifest["platform_version"],
         "run": manifest["run"],
         "scenario": manifest["scenario"],
+        "result": {
+            "elapsed_seconds": result.elapsed_seconds,
+            "tool_calls": result.tool_calls,
+            "final_response_length": len(result.final_response),
+        },
         "scorecard": scorecard,
         "telemetry_summary": manifest["telemetry_summary"],
         "artifact_inventory": manifest["artifact_inventory"],
@@ -389,23 +398,33 @@ def _lean_export(
 
 def _turn_summary(boundaries: list[dict[str, Any]]) -> dict[str, Any]:
     begin_turns: set[int] = set()
+    completed_turns: set[int] = set()
     end_durations: list[float] = []
     for event in boundaries:
         turn = int(_number(event.get("turn")))
-        if event.get("kind") == "run.turn.begin":
+        kind = event.get("kind")
+        if kind == "run.turn.begin":
             begin_turns.add(turn)
-        elif event.get("kind") == "run.turn.end" and turn in begin_turns:
-            end_durations.append(_number(event.get("duration_ms")))
+        elif (
+            kind == "run.turn.end"
+            and turn in begin_turns
+            and turn not in completed_turns
+        ):
+            completed_turns.add(turn)
+            duration = _number(event.get("duration_ms"))
+            if duration > 0:
+                end_durations.append(duration)
     if end_durations:
-        total_turns = len(end_durations)
-        average_duration_ms = round(sum(end_durations) / total_turns, 3)
+        average_duration_ms = round(
+            sum(end_durations) / len(end_durations), 3
+        )
         max_duration_ms = round(max(end_durations), 3)
     else:
-        total_turns = len(begin_turns)
         average_duration_ms = None
         max_duration_ms = None
     return {
-        "total_turns": total_turns,
+        "total_turns": len(begin_turns),
+        "completed_turns": len(completed_turns),
         "average_duration_ms": average_duration_ms,
         "max_duration_ms": max_duration_ms,
     }
@@ -416,7 +435,7 @@ def _number(value: Any) -> float:
         number = float(value or 0)
     except (TypeError, ValueError):
         return 0.0
-    return number if number == number else 0.0
+    return number if math.isfinite(number) else 0.0
 
 
 def load_scenario(root: Path) -> Scenario:

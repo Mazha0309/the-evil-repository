@@ -245,7 +245,77 @@ def test_archive_schema_v3_includes_new_telemetry_files(tmp_path: Path) -> None:
     assert export["budget_adjustment_count"] == 1
     assert export["turn_summary"] == {
         "total_turns": 1,
+        "completed_turns": 1,
         "average_duration_ms": 100.0,
         "max_duration_ms": 100.0,
     }
+    assert export["result"] == {
+        "elapsed_seconds": 12,
+        "tool_calls": 1,
+        "final_response_length": 4,
+    }
     assert export["scorecard"]["score"] == 777
+
+def test_archive_v3_turn_summary_handles_unpaired_begins_and_missing_duration(
+    tmp_path: Path,
+) -> None:
+    import json
+    import tarfile
+
+    from app.scenario import PreparedScenario, ScenarioRunResult, load_scenario
+
+    scenario_root = (
+        Path(__file__).resolve().parents[3] / "scenarios" / "terminal-repository"
+    )
+    scenario = load_scenario(scenario_root)
+    prepared = PreparedScenario(
+        scenario_root=scenario_root,
+        workspace=tmp_path,
+        metadata=scenario.metadata,
+    )
+    result = ScenarioRunResult(
+        final_response="done",
+        elapsed_seconds=12,
+        tool_calls=1,
+        events=[
+            {"sequence": 1, "kind": "run.turn.begin", "turn": 1, "tool_calls": 0},
+            {"sequence": 2, "kind": "run.turn.begin", "turn": 2, "tool_calls": 0},
+            {"sequence": 3, "kind": "run.turn.begin", "turn": 3, "tool_calls": 0},
+            {
+                "sequence": 4,
+                "kind": "run.turn.end",
+                "turn": 1,
+                "tool_calls": 2,
+                "duration_ms": 100,
+            },
+            {
+                "sequence": 5,
+                "kind": "run.turn.end",
+                "turn": 1,
+                "tool_calls": 2,
+                "duration_ms": 999,
+            },
+            {"sequence": 6, "kind": "run.turn.end", "turn": 2, "tool_calls": 1},
+            {
+                "sequence": 7,
+                "kind": "run.turn.end",
+                "turn": 4,
+                "tool_calls": 1,
+                "duration_ms": 50,
+            },
+        ],
+        artifacts={},
+    )
+
+    destination = scenario.archive(prepared, result, tmp_path / "run.tar.gz")
+
+    with tarfile.open(destination, "r:gz") as archive:
+        export = json.loads(archive.extractfile("export.json").read())
+
+    assert export["turn_summary"] == {
+        "total_turns": 3,
+        "completed_turns": 2,
+        "average_duration_ms": 100.0,
+        "max_duration_ms": 100.0,
+    }
+    assert export["budget_adjustment_count"] == 0
