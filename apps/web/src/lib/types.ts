@@ -404,6 +404,26 @@ export interface Run {
   completed_at: string | null;
 }
 
+export interface BudgetOverrideEntry {
+  field: string;
+  value: number | null;
+  reason: string;
+  requested_by: string;
+  requested_at: string;
+}
+
+export interface BudgetAdjustment {
+  soft_seconds?: number;
+  hard_seconds?: number;
+  soft_tool_calls?: number;
+  hard_tool_calls?: number;
+  soft_provider_requests?: number | null;
+  hard_provider_requests?: number | null;
+  soft_total_tokens?: number | null;
+  hard_total_tokens?: number | null;
+  reason: string;
+}
+
 export interface RunArtifact {
   id: string;
   run_id: string;
@@ -426,6 +446,15 @@ export interface RunEvent {
   kind: string;
   payload: Record<string, unknown>;
   created_at: string;
+}
+
+export interface RunDiff {
+  repo: string;
+  diff_text: string;
+  status_text: string;
+  added_lines: number;
+  removed_lines: number;
+  file_count: number;
 }
 
 export interface Hypothesis {

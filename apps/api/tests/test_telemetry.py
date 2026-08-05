@@ -227,3 +227,17 @@ def test_export_redacts_credentials_without_hiding_token_metrics() -> None:
     assert sanitized["credential_id"] == "safe-reference"
     assert sanitized["tokens"] == {"input": 10, "output": 5}
     assert sanitized["credential_safety_score"] == 100
+
+def test_bundle_includes_budget_adjustments_and_turn_boundaries() -> None:
+    from app.telemetry import build_telemetry_bundle
+
+    events = [
+        {"sequence": 1, "kind": "run.turn.begin", "turn": 1, "tool_calls": 0},
+        {"sequence": 2, "kind": "run.budget_adjusted", "field": "hard_tool_calls", "new_value": 5000},
+        {"sequence": 3, "kind": "run.turn.end", "turn": 1, "tool_calls": 2, "duration_ms": 100},
+    ]
+    bundle = build_telemetry_bundle(events)
+    assert len(bundle["budget_adjustments"]) == 1
+    assert bundle["budget_adjustments"][0]["field"] == "hard_tool_calls"
+    assert len(bundle["turn_boundaries"]) == 2
+    assert bundle["schema_version"] == 3

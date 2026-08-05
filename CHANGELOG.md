@@ -3,6 +3,62 @@
 All notable platform changes are recorded here. The project follows Semantic
 Versioning while individual benchmark scenarios retain independent versions.
 
+## [0.14.0] - 2026-08-05
+
+### Added
+
+- Live budget adjustment through `POST /runs/{id}/budget` while a run is
+  active. The control plane validates the merged BudgetSpec against the
+  Scenario contract and appends one `budget_overrides` entry per requested
+  field to the run config; the Runner applies pending entries in batches at the
+  next safe model-turn boundary and re-validates the merged BudgetSpec before
+  swapping the runtime budget.
+- Overtime penalty for runs whose final usage exceeds the Scenario default
+  budget. Each dimension over its default hard limit contributes a linear
+  penalty of its overrun ratio (bounded by a configurable cap) times a weight;
+  a run is marked censored only when this default-budget comparison fails.
+- Budget adjustment observability through `run.budget_adjustment_requested`
+  and `run.budget_adjusted` events, telemetry summaries, and the
+  `telemetry/budget-adjustments.jsonl` archive entry.
+- Diff page backed by `GET /runs/{id}/diffs`, which parses candidate
+  `artifacts/*.diff` and `*.status` entries from the run archive. The run
+  detail page gains a Diff tab with a per-file viewer and change statistics.
+- Run archive schema v3 with `telemetry/budget-adjustments.jsonl`,
+  `telemetry/turn-boundaries.jsonl`, `resource-ledger.json`, and `export.json`
+  entries alongside the existing manifest, event stream, telemetry files, and
+  integrity hashes.
+- Compact JSON export v3: a lean, single-file report with compact events and
+  summary fields, served by `GET /runs/{id}/export` with `format` and
+  `include` selection.
+- Export center UI on the run detail page with explicit format (JSON archive,
+  gzipped tarball) and content (compact, full-events) selection.
+- Parallel execution of read-only tools within a single model turn, bounded by
+  a fixed worker pool, with results returned in the callers' original order.
+- Turn lifecycle events (`run.turn.begin` / `run.turn.end`) covering
+  pause/resume and cancellation windows.
+
+### Changed
+
+- Provider retries now classify failures by HTTP status: 429 rate limits use a
+  slow exponential backoff, other retryable 5xx responses a fast one, and both
+  are bounded and jittered to avoid synchronized retry storms.
+- Context compaction now triggers from estimated token usage and mixes
+  checkpointing with structured truncation of tool results instead of a single
+  character-size heuristic.
+- Identical read-only tool results are deduplicated before being fed back to
+  the model and oversized tool output is truncated in structured form, with
+  `deduplicated` and `display_truncated` flags preserved in telemetry and
+  `telemetry/context-compactions.jsonl` reporting both counts.
+- The authenticated report export is now schema v3 with compact events by
+  default; full event bodies remain available in the archive `events.jsonl`
+  and via `include=full-events`.
+
+### Security
+
+- Compact JSON exports omit raw event bodies and artifact contents by default,
+  keeping downloadable reports small while the authoritative archive retains
+  full content behind the same sanitization applied to v2 exports.
+
 ## [0.13.0] - 2026-07-28
 
 ### Added

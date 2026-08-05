@@ -44,6 +44,17 @@ class Settings(BaseSettings):
     runner_context_soft_characters: int = Field(default=360_000, ge=64_000)
     runner_context_target_characters: int = Field(default=240_000, ge=32_000)
     runner_context_emergency_characters: int = Field(default=120_000, ge=16_000)
+    overtime_penalty_cap: float = Field(default=2.0, ge=0.0)
+    overtime_penalty_weights: dict[str, float] = Field(
+        default_factory=lambda: {
+            "active_time": 30,
+            "tool_calls": 30,
+            "provider_requests": 15,
+            "total_tokens": 15,
+        }
+    )
+    provider_retry_jitter: float = Field(default=0.25, ge=0.0, le=0.5)
+    provider_turn_timeout_seconds: int = Field(default=300, ge=0)
     semantic_judge_timeout: int = 120
 
     docker_host: str = "unix:///var/run/docker.sock"

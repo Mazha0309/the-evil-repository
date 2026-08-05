@@ -72,8 +72,16 @@ import AccountPage from "./components/AccountPage";
 import AdminPage from "./components/AdminPage";
 import AuthScreen from "./components/AuthScreen";
 import CredentialsPage from "./components/CredentialsPage";
+import DiffViewer from "./components/DiffViewer";
 import LiveRunMonitor from "./components/LiveRunMonitor";
-import { api, ApiError } from "./lib/api";
+import {
+  api,
+  ApiError,
+  EXPORT_ARCHIVE_CONTENT,
+  type ExportArchiveContent,
+} from "./lib/api";
+import { mergeBudgetOverrides, OPTIONAL_BUDGET_FIELDS } from "./lib/budget";
+import { bytes } from "./lib/format";
 import { useLocale } from "./lib/i18n";
 import {
   buildModelParameters,
@@ -94,6 +102,8 @@ import {
 import type {
   AuthConfig,
   AuthResponse,
+  BudgetAdjustment,
+  BudgetOverrideEntry,
   CredentialKind,
   ModelProfile,
   ModelProvider,
@@ -1996,6 +2006,16 @@ function NewRunPage() {
   );
 }
 
+const EXPORT_INCLUDE_LABELS: Record<
+  ExportArchiveContent,
+  { labelZh: string; labelEn: string }
+> = {
+  telemetry: { labelZh: "遥测", labelEn: "Telemetry" },
+  events: { labelZh: "事件", labelEn: "Events" },
+  diffs: { labelZh: "Diff", labelEn: "Diff" },
+  graph: { labelZh: "图谱", labelEn: "Graph" },
+};
+
 function RunDetailPage() {
   const { isChinese, locale, text } = useLocale();
   const { runId = "" } = useParams();
@@ -2003,17 +2023,63 @@ function RunDetailPage() {
   const queryClient = useQueryClient();
   const eventQueryKey = ["events", runId] as const;
   const [tab, setTab] = useState<
-    "live" | "overview" | "graph" | "audit" | "score"
+    "live" | "overview" | "graph" | "audit" | "score" | "diff"
   >("live");
   const [confirmCancel, setConfirmCancel] = useState(false);
   const [confirmArchive, setConfirmArchive] = useState(false);
+  const [budgetAdjustOpen, setBudgetAdjustOpen] = useState(false);
   const [cancelError, setCancelError] = useState("");
+  const [exportFormat, setExportFormat] = useState<
+    "json" | "tar.gz"
+  >("tar.gz");
+  const [exportInclude, setExportInclude] = useState<ExportArchiveContent[]>([
+    ...EXPORT_ARCHIVE_CONTENT,
+  ]);
+  const [downloadStarted, setDownloadStarted] = useState(false);
+  const [downloadError, setDownloadError] = useState("");
+  const [downloading, setDownloading] = useState(false);
+  useEffect(() => {
+    if (!downloadStarted) return;
+    const timer = window.setTimeout(() => setDownloadStarted(false), 4_000);
+    return () => window.clearTimeout(timer);
+  }, [downloadStarted]);
+  const handleDownload = async () => {
+    setDownloadError("");
+    setDownloading(true);
+    try {
+      const { blob, filename } = await api.exportDownload(
+        runId,
+        exportFormat,
+        exportInclude,
+      );
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = filename;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(url);
+      setDownloadStarted(true);
+    } catch (error) {
+      setDownloadError(
+        error instanceof Error
+          ? error.message
+          : text("下载失败", "Download failed"),
+      );
+    } finally {
+      setDownloading(false);
+    }
+  };
   const run = useQuery({
     queryKey: ["run", runId],
     queryFn: () => api.run(runId),
     refetchInterval: (query) =>
       isTerminal(query.state.data?.status) ? false : 2_000,
   });
+  const downloadDisabled =
+    exportInclude.length === 0 ||
+    (exportFormat === "tar.gz" && !isTerminal(run.data?.status));
   const events = useQuery({
     queryKey: eventQueryKey,
     queryFn: async () => {
@@ -2237,6 +2303,12 @@ function RunDetailPage() {
         >
           <Radar size={14} /> {text("裁判", "Judge")}
         </button>
+        <button
+          className={tab === "diff" ? "active" : ""}
+          onClick={() => setTab("diff")}
+        >
+          <GitBranch size={14} /> {text("改动", "Diff")}
+        </button>
       </div>
       {tab === "live" && (
         <LiveRunMonitor
@@ -2450,27 +2522,171 @@ function RunDetailPage() {
           </section>
         </div>
       )}
-      <div className="run-footer-actions">
-        <a
-          className="button button--ghost"
-          href={api.reportUrl(data.id)}
-          download={`run-${data.id}-telemetry.json`}
-        >
-          <Download size={14} /> {text("导出完整遥测", "Export full telemetry")}
-        </a>
-        {artifacts.data?.map((artifact) => (
-          <a
-            className="button button--ghost"
-            href={api.runArtifactUrl(data.id, artifact.id)}
-            download={artifact.name}
-            key={artifact.id}
+      {tab === "diff" && <DiffTab runId={runId} />}
+      <section className="panel export-center">
+        <PanelHeading
+          icon={<Download size={16} />}
+          title={text("导出中心", "Export center")}
+          detail={text("格式与内容选择", "Format and content selection")}
+        />
+        <div className="export-center__formats" role="radiogroup">
+          <label
+            className={
+              exportFormat === "tar.gz"
+                ? "export-center__format export-center__format--active"
+                : "export-center__format"
+            }
           >
-            <Download size={14} />{" "}
-            {artifact.metadata_json.kind === "failure-checkpoint"
-              ? text("下载失败检查点", "Download failure checkpoint")
-              : text("下载运行归档", "Download run archive")}
-          </a>
-        ))}
+            <input
+              type="radio"
+              name="export_format"
+              value="tar.gz"
+              checked={exportFormat === "tar.gz"}
+              onChange={() => setExportFormat("tar.gz")}
+            />
+            <span>
+              <strong>{text("归档（tar.gz）", "Archive (tar.gz)")}</strong>
+              <small>
+                {text(
+                  "完整遥测、事件、diff 与图谱原始数据包。",
+                  "Bundle with full telemetry, events, diffs and investigation graph.",
+                )}
+              </small>
+            </span>
+          </label>
+          <label
+            className={
+              exportFormat === "json"
+                ? "export-center__format export-center__format--active"
+                : "export-center__format"
+            }
+          >
+            <input
+              type="radio"
+              name="export_format"
+              value="json"
+              checked={exportFormat === "json"}
+              onChange={() => setExportFormat("json")}
+            />
+            <span>
+              <strong>{text("精简 JSON", "Compact JSON")}</strong>
+              <small>
+                {text(
+                  "汇总与评分卡，适合报告与审计。",
+                  "Summary and scorecard, for reports and audits.",
+                )}
+              </small>
+            </span>
+          </label>
+        </div>
+        {exportFormat === "tar.gz" ? (
+          <div className="export-center__includes">
+            <span className="export-center__label">
+              {text("内容", "Content")}
+            </span>
+            <label className="check-row">
+              <input
+                type="checkbox"
+                checked={exportInclude.length === EXPORT_ARCHIVE_CONTENT.length}
+                onChange={(event) =>
+                  setExportInclude(
+                    event.target.checked ? [...EXPORT_ARCHIVE_CONTENT] : [],
+                  )
+                }
+              />
+              <span>{text("全选", "Select all")}</span>
+            </label>
+            {EXPORT_ARCHIVE_CONTENT.map((value) => (
+              <label className="check-row" key={value}>
+                <input
+                  type="checkbox"
+                  checked={exportInclude.includes(value)}
+                  onChange={(event) =>
+                    setExportInclude((prev) =>
+                      event.target.checked
+                        ? [...prev, value]
+                        : prev.filter((item) => item !== value),
+                    )
+                  }
+                />
+                <span>
+                  {text(
+                    EXPORT_INCLUDE_LABELS[value].labelZh,
+                    EXPORT_INCLUDE_LABELS[value].labelEn,
+                  )}
+                </span>
+              </label>
+            ))}
+          </div>
+        ) : (
+          <div className="callout">
+            <Lightbulb size={14} />
+            <span>
+              {text(
+                "JSON 导出为精简格式（含摘要与 scorecard，不含全文）。",
+                "JSON export is a compact format (summary and scorecard, without full content).",
+              )}
+            </span>
+          </div>
+        )}
+        <div className="export-center__footer">
+          {downloadDisabled ? (
+            <button className="button" disabled type="button">
+              <Download size={14} /> {text("下载导出", "Download export")}
+            </button>
+          ) : (
+            <button
+              className="button"
+              type="button"
+              disabled={downloading}
+              onClick={handleDownload}
+            >
+              <Download size={14} />
+              {downloading
+                ? text("下载中…", "Downloading…")
+                : text("下载导出", "Download export")}
+            </button>
+          )}
+          {downloadStarted && (
+            <span className="export-center__notice" role="status">
+              {text(
+                "已开始下载，若未收到文件请检查运行状态。",
+                "Download started; if no file arrives, check the run status.",
+              )}
+            </span>
+          )}
+          {downloadError && (
+            <span className="inline-error" role="alert">
+              {downloadError}
+            </span>
+          )}
+        </div>
+        {downloadDisabled && (
+          <div className="callout callout--warning">
+            {exportInclude.length === 0
+              ? text("请至少选择一项内容", "Select at least one content item")
+              : text(
+                  "运行完成后可用。",
+                  "Available after the run completes.",
+                )}
+          </div>
+        )}
+        {artifacts.data?.length ? (
+          <div className="export-center__manifest">
+            <h4>{text("归档清单", "Archive manifest")}</h4>
+            <ul>
+              {artifacts.data.map((artifact) => (
+                <li key={artifact.id}>
+                  <code>{artifact.name}</code>
+                  <span>{bytes(artifact.size)}</span>
+                  <small title={artifact.sha256}>{artifact.sha256}</small>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
+      </section>
+      <div className="run-footer-actions">
         {data.status === "running" &&
           (pauseRequested ? (
             <button
@@ -2481,13 +2697,22 @@ function RunDetailPage() {
               <Play size={14} /> {text("继续运行", "Resume run")}
             </button>
           ) : (
-            <button
-              className="button button--warning"
-              disabled={pauseRun.isPending}
-              onClick={() => pauseRun.mutate()}
-            >
-              <Pause size={14} /> {text("安全暂停", "Pause safely")}
-            </button>
+            <>
+              <button
+                className="button button--ghost"
+                onClick={() => setBudgetAdjustOpen(true)}
+              >
+                <SlidersHorizontal size={14} />
+                {text("调整预算", "Adjust budget")}
+              </button>
+              <button
+                className="button button--warning"
+                disabled={pauseRun.isPending}
+                onClick={() => pauseRun.mutate()}
+              >
+                <Pause size={14} /> {text("安全暂停", "Pause safely")}
+              </button>
+            </>
           ))}
         {!isTerminal(data.status) && (
           <button
@@ -2572,6 +2797,9 @@ function RunDetailPage() {
           onClose={() => setConfirmArchive(false)}
           onArchived={() => navigate("/runs")}
         />
+      )}
+      {budgetAdjustOpen && (
+        <BudgetAdjustDialog run={data} onClose={() => setBudgetAdjustOpen(false)} />
       )}
     </>
   );
@@ -2679,6 +2907,148 @@ function ArchiveRunDialog({
           </button>
         </div>
       </div>
+    </Modal>
+  );
+}
+
+function BudgetAdjustDialog({
+  run,
+  onClose,
+}: {
+  run: Run;
+  onClose: () => void;
+}) {
+  const { locale, text } = useLocale();
+  const queryClient = useQueryClient();
+  const [error, setError] = useState("");
+  const config = run.config;
+  const overrides = (config.budget_overrides as
+    | BudgetOverrideEntry[]
+    | undefined) ?? [];
+  const baseBudget: Record<string, number | null> = {};
+  for (const key of BUDGET_FIELDS) {
+    const value = config[key];
+    baseBudget[key] = typeof value === "number" ? value : null;
+  }
+  const merged = mergeBudgetOverrides(baseBudget, overrides);
+  const antigravity =
+    (config.candidate_model_snapshot as { provider?: string } | undefined)
+      ?.provider === "antigravity";
+  const adjust = useMutation({
+    mutationFn: (payload: BudgetAdjustment) =>
+      api.adjustBudget(run.id, payload),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["run", run.id] });
+      onClose();
+    },
+    onError: (cause) =>
+      setError(cause instanceof Error ? cause.message : String(cause)),
+  });
+  const submit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const data = new FormData(event.currentTarget);
+    const changed: Record<string, number | null> = {};
+    for (const key of BUDGET_FIELDS) {
+      const raw = String(data.get(key) ?? "").trim();
+      const current = merged[key];
+      if (!raw) {
+        if (OPTIONAL_BUDGET_FIELDS.has(key) && current !== null) {
+          changed[key] = null;
+        }
+        continue;
+      }
+      const value = Number(raw);
+      if (value !== current) {
+        changed[key] = value;
+      }
+    }
+    adjust.mutate({
+      ...changed,
+      reason: String(data.get("reason") ?? "").trim(),
+    } as BudgetAdjustment);
+  };
+  const close = () => {
+    if (!adjust.isPending) onClose();
+  };
+  return (
+    <Modal
+      wide
+      title={text("调整运行预算", "Adjust run budget")}
+      onClose={close}
+    >
+      <form className="form" onSubmit={submit}>
+        <div className="budget-grid">
+          {BUDGET_FIELDS.filter(
+            (key) => !(antigravity && key.endsWith("_tokens")),
+          ).map((key) => (
+            <Field key={key} label={budgetFieldLabel(key, text)}>
+              <input
+                name={key}
+                type="number"
+                min={BUDGET_FIELD_MINS[key]}
+                defaultValue={merged[key] ?? ""}
+                placeholder={
+                  OPTIONAL_BUDGET_FIELDS.has(key)
+                    ? text("不限制", "unlimited")
+                    : undefined
+                }
+              />
+            </Field>
+          ))}
+        </div>
+        <Field
+          label={text("调整理由（必填）", "Reason (required)")}
+          hint={text(
+            "将写入运行审计事件与预算调整历史。",
+            "Written to the run audit trail and adjustment history.",
+          )}
+        >
+          <textarea name="reason" required />
+        </Field>
+        <div className="budget-history">
+          <span className="budget-history__heading">
+            {text("调整历史", "Adjustment history")}
+          </span>
+          {overrides.length === 0 ? (
+            <p className="budget-history__empty">
+              {text("尚无调整记录。", "No adjustments yet.")}
+            </p>
+          ) : (
+            overrides.map((entry, index) => (
+              <div className="budget-history__entry" key={index}>
+                <strong>{budgetFieldLabel(entry.field, text)}</strong>
+                <span>{entry.value ?? "—"}</span>
+                <p>{entry.reason}</p>
+                <small>
+                  {entry.requested_by} ·{" "}
+                  {new Date(entry.requested_at).toLocaleString(locale)}
+                </small>
+              </div>
+            ))
+          )}
+        </div>
+        {error && <div className="inline-error">{error}</div>}
+        <div className="modal__actions">
+          <button
+            className="button button--ghost"
+            type="button"
+            disabled={adjust.isPending}
+            onClick={close}
+          >
+            {text("取消", "Cancel")}
+          </button>
+          <button
+            className="button"
+            type="submit"
+            disabled={adjust.isPending}
+          >
+            <SlidersHorizontal size={14} />
+            {adjust.isPending
+              ? text("正在提交…", "Submitting…")
+              : text("提交调整", "Apply adjustment")}
+          </button>
+        </div>
+      </form>
     </Modal>
   );
 }
@@ -3010,6 +3380,55 @@ function AuditTimeline({ events }: { events: RunEvent[] }) {
       </div>
     </section>
   );
+}
+
+function DiffTab({ runId }: { runId: string }) {
+  const { text } = useLocale();
+  const diffs = useQuery({
+    queryKey: ["run-diffs", runId],
+    queryFn: () => api.runDiffs(runId),
+  });
+  if (diffs.isLoading) return <LoadingState />;
+  if (diffs.isError) {
+    const error = diffs.error as ApiError;
+    const missingArchive = error.status === 404;
+    return (
+      <section className="panel panel--danger">
+        <PanelHeading
+          icon={<OctagonAlert size={16} />}
+          title={text("无法读取改动", "Could not load diffs")}
+        />
+        <EmptyState
+          title={
+            missingArchive
+              ? error.message ||
+                text("该运行没有可用的归档", "No archive available for this run")
+              : text("加载失败", "Load failed")
+          }
+          detail={
+            missingArchive
+              ? text(
+                  "运行尚未归档，或归档已从磁盘移除。",
+                  "The run is not archived yet, or the archive was removed.",
+                )
+              : error.message
+          }
+        />
+      </section>
+    );
+  }
+  if (!diffs.data?.length) {
+    return (
+      <EmptyState
+        title={text("没有改动", "No changes")}
+        detail={text(
+          "归档中没有找到任何仓库 diff。",
+          "No repository diffs were found in the archive.",
+        )}
+      />
+    );
+  }
+  return <DiffViewer diffs={diffs.data} />;
 }
 
 function SettingsPage() {
@@ -3682,6 +4101,56 @@ function effortLabel(
     max: "最高",
   };
   return text(`${labels[value] ?? value} · ${value}`, value);
+}
+
+const BUDGET_FIELDS = [
+  "soft_seconds",
+  "hard_seconds",
+  "soft_tool_calls",
+  "hard_tool_calls",
+  "soft_provider_requests",
+  "hard_provider_requests",
+  "soft_total_tokens",
+  "hard_total_tokens",
+] as const;
+
+const BUDGET_FIELD_MINS: Record<string, number> = {
+  soft_seconds: 60,
+  hard_seconds: 300,
+  soft_tool_calls: 10,
+  hard_tool_calls: 20,
+  soft_provider_requests: 1,
+  hard_provider_requests: 2,
+  soft_total_tokens: 1_000,
+  hard_total_tokens: 2_000,
+};
+
+const BUDGET_FIELD_LABELS: Record<
+  string,
+  { chinese: string; english: string }
+> = {
+  soft_seconds: { chinese: "软时间限制（秒）", english: "Soft time (seconds)" },
+  hard_seconds: { chinese: "硬时间限制（秒）", english: "Hard time (seconds)" },
+  soft_tool_calls: { chinese: "软工具调用限制", english: "Soft tool calls" },
+  hard_tool_calls: { chinese: "硬工具调用限制", english: "Hard tool calls" },
+  soft_provider_requests: {
+    chinese: "软 Provider 请求限制",
+    english: "Soft Provider requests",
+  },
+  hard_provider_requests: {
+    chinese: "硬 Provider 请求限制",
+    english: "Hard Provider requests",
+  },
+  soft_total_tokens: { chinese: "软 Token 限制", english: "Soft tokens" },
+  hard_total_tokens: { chinese: "硬 Token 限制", english: "Hard tokens" },
+};
+
+function budgetFieldLabel(
+  field: string,
+  text: (chinese: string, english: string) => string,
+): string {
+  const pair = BUDGET_FIELD_LABELS[field];
+  return pair ? text(pair.chinese, pair.english) : field;
 }
 
 function label(value: string, locale: "zh-CN" | "en" = "en") {

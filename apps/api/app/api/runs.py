@@ -5,11 +5,14 @@ from collections.abc import Generator
 from datetime import UTC, datetime
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from fastapi.responses import FileResponse, StreamingResponse
+from pydantic import ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.api.reports import export_report
+from app.challenge.spec import BudgetSpec
 from app.config import get_settings
 from app.database import SessionLocal, get_session
 from app.events import append_event
@@ -29,6 +32,7 @@ from app.models import (
 )
 from app.scenario.agent_graph import AgentGraph, derive_agent_graph
 from app.schemas import (
+    BudgetAdjustment,
     EventRead,
     InvestigationGraph,
     RunArtifactRead,
@@ -39,6 +43,26 @@ from app.security import can_access_model, can_access_run, csrf_protection, curr
 
 router = APIRouter(prefix="/runs", tags=["runs"])
 settings = get_settings()
+
+_BUDGET_FIELDS = (
+    "soft_seconds",
+    "hard_seconds",
+    "soft_tool_calls",
+    "hard_tool_calls",
+    "soft_provider_requests",
+    "hard_provider_requests",
+    "soft_total_tokens",
+    "hard_total_tokens",
+)
+
+_OPTIONAL_BUDGET_FIELDS = frozenset(
+    {
+        "soft_provider_requests",
+        "hard_provider_requests",
+        "soft_total_tokens",
+        "hard_total_tokens",
+    }
+)
 
 
 @router.get("", response_model=list[RunRead])
@@ -85,10 +109,7 @@ def create_run(
         not can_access_model(session, user, judge) or not judge.enabled or judge.archived_at is not None
     ):
         raise HTTPException(status_code=400, detail="Unknown judge model")
-    if (
-        candidate.provider == ModelProvider.antigravity
-        and payload.soft_total_tokens is not None
-    ):
+    if candidate.provider == ModelProvider.antigravity and payload.soft_total_tokens is not None:
         raise HTTPException(
             status_code=400,
             detail=(
@@ -175,6 +196,65 @@ def get_run(
     if not can_access_run(session, user, run):
         raise HTTPException(status_code=404, detail="Run not found")
     return run
+
+
+@router.get("/{run_id}/export")
+def export_run_archive(
+    run_id: uuid.UUID,
+    format: str = "json",
+    include: str = "all",
+    session: Session = Depends(get_session),
+    user: UserAccount = Depends(current_user),
+) -> Response:
+    run = session.get(BenchmarkRun, run_id)
+    if not can_access_run(session, user, run):
+        raise HTTPException(status_code=404, detail="Run not found")
+    if format == "json":
+        return export_report(
+            run_id,
+            include=("full-events" if include == "full-events" else "compact"),
+            session=session,
+            user=user,
+        )
+    if format != "tar.gz":
+        raise HTTPException(status_code=400, detail="format must be json or tar.gz")
+    archive_path = Path(get_settings().artifact_root) / f"{run_id}.tar.gz"
+    if not archive_path.exists():
+        raise HTTPException(status_code=404, detail="No run archive available")
+    if include == "all":
+        return FileResponse(
+            archive_path,
+            media_type="application/gzip",
+            filename=archive_path.name,
+        )
+    allowed = set(part.strip() for part in include.split(","))
+    path_markers = {
+        "events": ["events.jsonl"],
+        "telemetry": ["telemetry/"],
+        "diffs": ["artifacts/"],
+        "graph": ["investigation/"],
+    }
+    keep = [marker for name, markers in path_markers.items() if name in allowed for marker in markers]
+    if not keep:
+        raise HTTPException(status_code=400, detail="No matching archive content")
+    import io
+    import tarfile as tarfile_module
+
+    buffer = io.BytesIO()
+    with (
+        tarfile_module.open(archive_path, "r:gz") as source,
+        tarfile_module.open(fileobj=buffer, mode="w:gz") as out,
+    ):
+        for member in source.getmembers():
+            if member.isfile() and any(member.name.startswith(marker) for marker in keep):
+                payload = source.extractfile(member)
+                out.addfile(member, payload)
+    buffer.seek(0)
+    return Response(
+        buffer.getvalue(),
+        media_type="application/gzip",
+        headers={"Content-Disposition": (f'attachment; filename="run-{run_id}-filtered.tar.gz"')},
+    )
 
 
 @router.get("/{run_id}/artifacts", response_model=list[RunArtifactRead])
@@ -296,6 +376,89 @@ def stream_events(
             time.sleep(1)
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+@router.post("/{run_id}/budget", response_model=RunRead)
+def adjust_run_budget(
+    run_id: uuid.UUID,
+    payload: BudgetAdjustment,
+    session: Session = Depends(get_session),
+    user: UserAccount = Depends(csrf_protection),
+) -> BenchmarkRun:
+    run = session.get(BenchmarkRun, run_id)
+    if not can_access_run(session, user, run):
+        raise HTTPException(status_code=404, detail="Run not found")
+    if run.status not in {RunStatus.queued, RunStatus.preparing, RunStatus.running}:
+        raise HTTPException(
+            status_code=409,
+            detail="Budget can only be adjusted while the run is active",
+        )
+    candidate_snapshot = dict(run.config).get("candidate_model_snapshot", {})
+    if candidate_snapshot.get("provider") == "antigravity" and (
+        payload.soft_total_tokens is not None or payload.hard_total_tokens is not None
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="Antigravity CLI does not expose machine-readable token usage",
+        )
+    task = session.get(TaskDefinition, run.task_id)
+    scenario_budget = dict(task.manifest.get("budget", {})) if task else {}
+    current = dict(scenario_budget)
+    current.update(dict(run.config))
+    for override in list(dict(run.config).get("budget_overrides", [])):
+        current[override["field"]] = override["value"]
+    merged: dict[str, int | None] = {}
+    for field in _BUDGET_FIELDS:
+        payload_value = getattr(payload, field)
+        if payload_value is not None:
+            merged[field] = payload_value
+        elif field in payload.model_fields_set and field in _OPTIONAL_BUDGET_FIELDS:
+            merged[field] = None
+        else:
+            merged[field] = current.get(field)
+    try:
+        BudgetSpec(**merged)
+    except ValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    completion = task.manifest.get("completion", {}) if task else {}
+    minimum_calls = int(completion.get("min_tool_calls", 0))
+    if merged["hard_tool_calls"] is not None and merged["hard_tool_calls"] < minimum_calls:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Hard tool-call budget must be at least {minimum_calls} for this Scenario",
+        )
+    config = dict(run.config)
+    config.setdefault("budget_overrides", [])
+    overrides = list(config["budget_overrides"])
+    requested_fields: list[str] = []
+    for field in _BUDGET_FIELDS:
+        value = getattr(payload, field)
+        if value is None and (field not in _OPTIONAL_BUDGET_FIELDS or field not in payload.model_fields_set):
+            continue
+        requested_fields.append(field)
+        overrides.append(
+            {
+                "field": field,
+                "value": value,
+                "reason": payload.reason,
+                "requested_by": user.username,
+                "requested_at": datetime.now(UTC).isoformat(),
+            }
+        )
+    config["budget_overrides"] = overrides
+    run.config = config
+    append_event(
+        session,
+        run.id,
+        "run.budget_adjustment_requested",
+        {
+            "reason": payload.reason,
+            "fields": requested_fields,
+        },
+    )
+    session.commit()
+    session.refresh(run)
+    return run
 
 
 @router.post("/{run_id}/cancel", response_model=RunRead)

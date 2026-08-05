@@ -133,17 +133,75 @@ Trusted host-side grading receives the patch and recorded telemetry. Static,
 regression, mutation, golden-replay, resource, and security checks run outside
 the model's tool surface. Only normalized outcomes become public run data.
 
-Run archive schema v2 contains replay metadata, timestamped events,
+Run archive schema v3 contains replay metadata, timestamped events,
 patch/report artifacts, and a SHA-256 inventory. It additionally normalizes
 Provider turns, tool call/result lifecycles, stage transitions, periodic
-resource snapshots, errors, and the Hypothesis/Evidence graph into separate
-JSON/JSONL entries. The authenticated report endpoint can produce the same
-detail from the live database before terminal archival. Neither path may
+resource snapshots, budget adjustments, model turn boundaries, errors, and the
+Hypothesis/Evidence graph into separate JSON/JSONL entries, and bundles the
+final resource ledger together with a compact export payload. The full
+directory contract is described under Archive contract below. The
+authenticated report endpoint can produce the same detail from the live
+database before terminal archival. Neither path may
 contain API keys, OAuth tokens, hidden fixtures, thought signatures, or
 control-plane credentials. Compose gives the Runner read/write access to the
 host artifact directory and the API read-only access to that same directory;
 database metadata alone is not considered proof that a downloadable file
 exists.
+
+### Archive contract
+
+Run archives follow schema v3. The gzipped tarball contains:
+
+- `run.json` — canonical manifest: scenario metadata, run context, result
+  summary, telemetry summary, and artifact inventory, plus `integrity` roots
+  (`events_sha256`, per-artifact `artifact_sha256`, and
+  `detail_entry_sha256` for every telemetry and derived entry);
+- `events.jsonl` — the full timestamped, immutable event stream;
+- `telemetry/*` — per-aspect JSON/JSONL entries: `summary.json`,
+  `provider-turns.jsonl`, `tool-lifecycle.jsonl`, `stage-timeline.jsonl`,
+  `resource-snapshots.jsonl`, `context-compactions.jsonl`,
+  `finalization-nudges.jsonl`, `budget-adjustments.jsonl`,
+  `turn-boundaries.jsonl`, and `errors.jsonl`;
+- `resource-ledger.json` — final resource usage ledger separating logical
+  model turns from raw Provider requests;
+- `export.json` — the compact export payload itself, so a single file suffices
+  for basic analysis;
+- `investigation/graph.json` — hypotheses, revisions, evidence, and edges;
+- `artifacts/index.json` plus `artifacts/*` — candidate and judge outputs with
+  their size and SHA-256 inventory.
+
+`export.json` uses `export_schema_version: 3` and carries only summary data:
+`platform_version`, the run context, scenario metadata, a result summary
+(elapsed seconds, tool-call count, final-response length), the normalized
+scorecard when available, `telemetry_summary`, `artifact_inventory`,
+`budget_adjustment_count`, `turn_summary`, and `investigation_graph`. It never
+contains event bodies or artifact contents; those remain in `events.jsonl` and
+`artifacts/*`. The authenticated `GET /runs/{id}/export` endpoint serves the
+same payload (compact events by default, `include=full-events` to inline event
+bodies) or the raw archive tarball.
+
+Budget adjustment is append-only control-plane state. Each
+`POST /runs/{id}/budget` request validates the merged BudgetSpec against the
+Scenario contract and appends one `budget_overrides` entry (`field`, `value`,
+`reason`, `requested_by`, `requested_at`) to `benchmark_runs.config`. The
+Runner polls the config at model-turn boundaries and applies pending entries
+as a batch, re-validating the merged candidate through
+`BudgetSpec.model_validate` before swapping the runtime budget; invalid or
+unknown fields are skipped with a warning and no partial application occurs.
+Every applied entry emits a `run.budget_adjusted` event that lands in
+`telemetry/budget-adjustments.jsonl`.
+
+Scoring compares final usage against the Scenario's default budget, not any
+dynamically adjusted runtime budget. Each dimension over its default hard
+limit (active time, tool calls, Provider requests, total tokens) contributes
+`min(overrun_ratio, cap) × weight` to a linear score penalty — weights default
+to 30/30/15/15 across the four dimensions and the cap defaults to 2.0, both
+configurable through `overtime_penalty_weights` and `overtime_penalty_cap`.
+The resulting `overtime_penalty` block records per-dimension usage, overrun,
+and penalty plus the score before and after. A run is censored
+(`outcome.censored`, stage "Budget exhausted") only when final usage exceeds
+the default budget; adjusting the runtime budget therefore never changes
+censor status by itself.
 
 A terminal run may be soft-deleted by setting `benchmark_runs.archived_at`.
 Normal list, detail, report, graph, event, dashboard, and administrator

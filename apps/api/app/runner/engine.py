@@ -1,15 +1,21 @@
 import copy
 import hashlib
 import json
+import logging
 import re
 import shlex
+import threading
 import time
 import uuid
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import SQLAlchemyError
 
+from app.challenge.spec import BudgetSpec
 from app.database import SessionLocal
 from app.events import append_event
 from app.investigation import link_evidence, record_evidence, record_hypothesis
@@ -37,6 +43,8 @@ from app.scenario.incident import IncidentDirector
 from app.scenario.release import RELEASE_TOOLS, ReleaseDirector
 from app.scenario.sdk import PreparedScenario, ScenarioRunResult
 
+logger = logging.getLogger(__name__)
+
 
 class HardResourceBudgetExceeded(RuntimeError):
     """Raised before a Provider retry would exceed the configured hard cap."""
@@ -54,6 +62,16 @@ POLICY_RECOVERY_MARKER = "RUNNER_PROVIDER_POLICY_RECOVERY_V1"
 FINALIZATION_BUDGET_NUMERATOR = 4
 FINALIZATION_BUDGET_DENOMINATOR = 5
 
+# Read-only tools safe to run concurrently: list_files/read_file only read
+# the workspace; browser_search/browser_find/browser_open query the offline
+# mirror with fresh sqlite connections per call, and browser_open's relay
+# write replaces its per-ref_id inbox file atomically (last-write-wins).
+# Do not add tools that mutate shared runner state.
+PARALLEL_SAFE_TOOLS = frozenset(
+    {"list_files", "read_file", "browser_search", "browser_open", "browser_find"}
+)
+PARALLEL_MAX_WORKERS = 4
+
 
 class AgentEngine:
     def __init__(
@@ -67,6 +85,7 @@ class AgentEngine:
         context_soft_characters: int = DEFAULT_CONTEXT_SOFT_CHARACTERS,
         context_target_characters: int = DEFAULT_CONTEXT_TARGET_CHARACTERS,
         context_emergency_characters: int = DEFAULT_CONTEXT_EMERGENCY_CHARACTERS,
+        default_budget: BudgetSpec | None = None,
     ) -> None:
         if not (
             16_000 <= context_emergency_characters
@@ -89,6 +108,7 @@ class AgentEngine:
         )
         self.read_counts: Counter[str] = Counter()
         self.write_counts: Counter[str] = Counter()
+        self._ledger_lock = threading.Lock()
         self.started = time.monotonic()
         self.input_tokens = 0
         self.output_tokens = 0
@@ -107,18 +127,24 @@ class AgentEngine:
         self.tool_durations_ms: list[int] = []
         self.tool_status_counts: Counter[str] = Counter()
         self.tool_signature_counts: Counter[str] = Counter()
+        self.tool_result_cache: dict[str, tuple[int, str]] = {}
+        self.result_display_limit = 8_192
         self.events: list[dict[str, Any]] = []
         self.final_rejections = 0
         self.invalid_tool_call_batches = 0
         self.invalid_tool_calls = 0
         self.completion_gaps: list[str] = []
         self.paused_seconds = 0.0
+        self.budget = self.prepared.metadata.budget
+        self.default_budget = default_budget or self.prepared.metadata.budget
+        self.applied_budget_overrides = 0
         self.soft_budget_warnings: set[str] = set()
         self.finalization_nudge_sent = False
         self.hard_budget_reasons: list[str] = []
         self.context_soft_characters = context_soft_characters
         self.context_target_characters = context_target_characters
         self.context_emergency_characters = context_emergency_characters
+        self.context_characters_seen = 0
         self.context_compactions = 0
         self.context_messages_removed = 0
         self.context_characters_removed = 0
@@ -160,14 +186,16 @@ class AgentEngine:
         ]
         final_response = ""
         tool_definitions = tool_definitions_for(self.prepared.metadata.tools)
-        hard_calls = self.prepared.metadata.budget.hard_tool_calls
-        hard_seconds = self.prepared.metadata.budget.hard_seconds
         turn_number = 0
 
-        while self.tool_calls < hard_calls and self._active_elapsed() < hard_seconds:
+        while (
+            self.tool_calls < self.budget.hard_tool_calls
+            and self._active_elapsed() < self.budget.hard_seconds
+        ):
             if not self._wait_for_resume():
                 final_response = "Run cancelled."
                 break
+            self._apply_budget_overrides()
             soft_warning = self._soft_budget_warning()
             if soft_warning:
                 messages.append({"role": "user", "content": soft_warning})
@@ -177,11 +205,22 @@ class AgentEngine:
             turn_number += 1
             self.current_turn = turn_number
             self.client.logical_turn = turn_number
-            self._compact_context(
-                messages,
-                reason="soft_character_limit",
-                target_characters=self.context_target_characters,
+            context_size = json_size(messages)
+            self.context_characters_seen += context_size
+            estimated_tokens = self._estimated_tokens(context_size)
+            reason = self._compact_reason(
+                characters=context_size,
+                estimated_tokens=estimated_tokens,
+                soft_characters=self.context_soft_characters,
             )
+            if reason is not None:
+                self._compact_context(
+                    messages,
+                    reason=reason,
+                    target_characters=self.context_target_characters,
+                    force=True,
+                    aggressive_truncation=False,
+                )
             context_role_counts = Counter(
                 str(message.get("role", "unknown")) for message in messages
             )
@@ -202,6 +241,11 @@ class AgentEngine:
                     "active_seconds": round(self._active_elapsed(), 3),
                 },
             )
+            turn_started = time.monotonic()
+            self._event(
+                "run.turn.begin",
+                {"turn": turn_number, "tool_calls": self.tool_calls},
+            )
             try:
                 turn, provider_duration_ms = self._complete_model_turn(
                     messages,
@@ -216,6 +260,19 @@ class AgentEngine:
                     "model turn could complete."
                 )
                 break
+            self._event(
+                "run.turn.end",
+                {
+                    "turn": turn_number,
+                    "tool_calls": self.tool_calls,
+                    "tool_call_count": len(turn.tool_calls),
+                    "duration_ms": round(
+                        (time.monotonic() - turn_started) * 1_000
+                    ),
+                    "input_tokens": turn.input_tokens,
+                    "output_tokens": turn.output_tokens,
+                },
+            )
             self.input_tokens += turn.input_tokens
             self.output_tokens += turn.output_tokens
             self.token_usage_available = (
@@ -338,13 +395,54 @@ class AgentEngine:
                     )
                 break
             stop_requested = False
+            pending: list[tuple[ToolCall, int]] = []
+
+            def run_one(call: ToolCall) -> tuple[ToolResult, float]:
+                started = time.monotonic()
+                return self._execute(call), started
+
+            def flush_parallel(turn_number: int) -> None:
+                nonlocal pending
+                if not pending:
+                    return
+
+                if len(pending) == 1:
+                    call, ordinal = pending[0]
+                    result, started = run_one(call)
+                    self._process_tool_result(
+                        call,
+                        result,
+                        turn_number,
+                        ordinal=ordinal,
+                        started=started,
+                        messages=messages,
+                        native=native,
+                    )
+                else:
+                    with ThreadPoolExecutor(max_workers=PARALLEL_MAX_WORKERS) as pool:
+                        futures = [pool.submit(run_one, call) for call, _ in pending]
+                        for (call, ordinal), future in zip(pending, futures, strict=True):
+                            result, started = future.result()
+                            self._process_tool_result(
+                                call,
+                                result,
+                                turn_number,
+                                ordinal=ordinal,
+                                started=started,
+                                messages=messages,
+                                native=native,
+                            )
+                pending = []
+
             for call in turn.tool_calls:
-                if self.tool_calls >= hard_calls:
+                if self.tool_calls >= self.budget.hard_tool_calls:
                     break
                 if not self._wait_for_resume():
                     final_response = "Run cancelled."
                     stop_requested = True
                     break
+                if call.name not in PARALLEL_SAFE_TOOLS:
+                    flush_parallel(turn_number)
                 self.tool_calls += 1
                 signature = tool_call_signature(call)
                 self.tool_signature_counts[signature] += 1
@@ -364,70 +462,28 @@ class AgentEngine:
                         "active_seconds": round(self._active_elapsed(), 3),
                     },
                 )
-                tool_started = time.monotonic()
-                result = self._execute(call)
-                if self.incident:
-                    checkpoint = self.incident.advance(call.name, result.status)
-                    result.metadata["incident_state"] = checkpoint
-                    if checkpoint["new_alerts"]:
-                        self._event(
-                            "incident.alert",
-                            {
-                                "tickets": checkpoint["new_alerts"],
-                                "logical_time": checkpoint["logical_time"],
-                            },
-                        )
-                if self.release:
-                    checkpoint = self.release.advance(call.name, result.status)
-                    result.metadata["release_state"] = checkpoint
-                    if checkpoint["new_reports"]:
-                        self._event(
-                            "release.report",
-                            {
-                                "tickets": checkpoint["new_reports"],
-                                "logical_time": checkpoint["logical_time"],
-                            },
-                        )
-                tool_duration_ms = round((time.monotonic() - tool_started) * 1_000)
-                self.tool_durations_ms.append(tool_duration_ms)
-                self.tool_status_counts[result.status] += 1
-                self._event(
-                    "tool.result",
-                    {
-                        "name": result.name,
-                        "call_id": result.call_id,
-                        "status": result.status,
-                        "output": result.output,
-                        "exit_code": result.exit_code,
-                        "truncated": result.truncated,
-                        "duration_ms": tool_duration_ms,
-                        "output_size_bytes": len(result.output.encode()),
-                        "output_lines": result.output.count("\n")
-                        + bool(result.output),
-                        "turn": turn_number,
-                        "ordinal": self.tool_calls,
-                        "active_seconds": round(self._active_elapsed(), 3),
-                        **result.metadata,
-                    },
+                if call.name in PARALLEL_SAFE_TOOLS:
+                    pending.append((call, self.tool_calls))
+                    continue
+                result, started = run_one(call)
+                self._process_tool_result(
+                    call,
+                    result,
+                    turn_number,
+                    ordinal=self.tool_calls,
+                    started=started,
+                    messages=messages,
+                    native=native,
                 )
-                if (
-                    self.tool_calls % 10 == 0
-                    or result.status not in {"ok", "success"}
-                    or tool_duration_ms >= 30_000
-                ):
-                    self._emit_telemetry_snapshot(
-                        trigger="tool_checkpoint",
-                        turn=turn_number,
-                    )
-                messages.append(tool_message(call, result.model_dump_json(), native))
+            flush_parallel(turn_number)
             if stop_requested:
                 break
         else:
             active_seconds = self._active_elapsed()
             reached = []
-            if self.tool_calls >= hard_calls:
+            if self.tool_calls >= self.budget.hard_tool_calls:
                 reached.append("tool_calls")
-            if active_seconds >= hard_seconds:
+            if active_seconds >= self.budget.hard_seconds:
                 reached.append("active_time")
             self.hard_budget_reasons = reached
             self._emit_hard_budget_event(reached)
@@ -469,6 +525,162 @@ class AgentEngine:
                 "release_audit": self.release.audit() if self.release else {},
             },
         )
+
+    def _process_tool_result(
+        self,
+        call: ToolCall,
+        result: ToolResult,
+        turn_number: int,
+        *,
+        ordinal: int,
+        started: float,
+        messages: list[dict[str, Any]],
+        native: bool,
+    ) -> None:
+        if self.incident:
+            checkpoint = self.incident.advance(call.name, result.status)
+            result.metadata["incident_state"] = checkpoint
+            if checkpoint["new_alerts"]:
+                self._event(
+                    "incident.alert",
+                    {
+                        "tickets": checkpoint["new_alerts"],
+                        "logical_time": checkpoint["logical_time"],
+                    },
+                )
+        if self.release:
+            checkpoint = self.release.advance(call.name, result.status)
+            result.metadata["release_state"] = checkpoint
+            if checkpoint["new_reports"]:
+                self._event(
+                    "release.report",
+                    {
+                        "tickets": checkpoint["new_reports"],
+                        "logical_time": checkpoint["logical_time"],
+                    },
+                )
+        tool_duration_ms = round((time.monotonic() - started) * 1_000)
+        self.tool_durations_ms.append(tool_duration_ms)
+        self.tool_status_counts[result.status] += 1
+        visible = self._model_visible_result(result, tool_call_signature(call), ordinal)
+        self._event(
+            "tool.result",
+            {
+                "name": result.name,
+                "call_id": result.call_id,
+                "status": result.status,
+                "output": result.output,
+                "exit_code": result.exit_code,
+                "truncated": result.truncated,
+                "deduplicated": visible["deduplicated"],
+                "display_truncated": visible["display_truncated"],
+                "display_truncated_bytes": visible["display_truncated_bytes"],
+                "display_truncated_lines": visible["display_truncated_lines"],
+                "duration_ms": tool_duration_ms,
+                "output_size_bytes": len(result.output.encode()),
+                "output_lines": result.output.count("\n") + bool(result.output),
+                "turn": turn_number,
+                "ordinal": ordinal,
+                "active_seconds": round(self._active_elapsed(), 3),
+                **result.metadata,
+            },
+        )
+        if ordinal % 10 == 0 or result.status not in {"ok", "success"} or tool_duration_ms >= 30_000:
+            self._emit_telemetry_snapshot(
+                trigger="tool_checkpoint",
+                turn=turn_number,
+            )
+        messages.append(
+            tool_message(
+                call,
+                json.dumps(visible, ensure_ascii=False),
+                native,
+            )
+        )
+
+    def _model_visible_result(
+        self,
+        result: ToolResult,
+        signature: str,
+        ordinal: int,
+    ) -> dict[str, Any]:
+        """Shape the tool output text fed back to the model.
+
+        Deduplication and structured truncation only affect the model-visible
+        text; telemetry events keep the full, untouched tool output.
+        """
+        if result.name not in PARALLEL_SAFE_TOOLS:
+            return {
+                **result.model_dump(mode="json"),
+                "deduplicated": False,
+                "display_truncated": False,
+                "display_truncated_bytes": 0,
+                "display_truncated_lines": 0,
+            }
+        cached = self.tool_result_cache.get(signature)
+        if cached is not None:
+            ordinal, cached_output = cached
+            if cached_output == result.output:
+                summary = (
+                    f"[Runner] Identical to tool call #{ordinal} "
+                    f"({len(result.output)} bytes). Repeating the full output would "
+                    f"waste budget.\nPreview: {result.output[:200]}"
+                )
+                visible = result.model_dump(mode="json")
+                visible.update(
+                    {
+                        "output": summary,
+                        "truncated": True,
+                        "deduplicated": True,
+                        "display_truncated": False,
+                        "display_truncated_bytes": 0,
+                        "display_truncated_lines": 0,
+                    }
+                )
+                return visible
+        else:
+            self.tool_result_cache[signature] = (ordinal, result.output)
+        truncated_output, truncated, truncated_bytes, truncated_lines = self._truncate_output(
+            result.output, self.result_display_limit
+        )
+        visible = result.model_dump(mode="json")
+        if truncated:
+            visible.update(
+                {
+                    "output": truncated_output,
+                    "truncated": True,
+                    "deduplicated": False,
+                    "display_truncated": True,
+                    "display_truncated_bytes": truncated_bytes,
+                    "display_truncated_lines": truncated_lines,
+                }
+            )
+        else:
+            visible.update(
+                {
+                    "deduplicated": False,
+                    "display_truncated": False,
+                    "display_truncated_bytes": 0,
+                    "display_truncated_lines": 0,
+                }
+            )
+        return visible
+
+    def _truncate_output(self, text: str, limit: int) -> tuple[str, bool, int, int]:
+        if len(text) <= limit:
+            return text, False, 0, 0
+        head_size = int(limit * 0.6)
+        tail_size = limit - head_size
+        head = text[:head_size]
+        tail = text[-tail_size:] if tail_size else ""
+        omitted = text[head_size : len(text) - tail_size]
+        marker = f"\n[truncated {len(omitted.encode())} bytes]\n"
+        while len(head) + len(marker) + len(tail) > limit and tail_size > 0:
+            tail_size -= 1
+            tail = text[-tail_size:] if tail_size else ""
+            omitted = text[head_size : len(text) - tail_size]
+            marker = f"\n[truncated {len(omitted.encode())} bytes]\n"
+        return f"{head}{marker}{tail}", True, len(omitted.encode()), omitted.count("\n")
 
     def checkpoint_result(self, error: Exception) -> ScenarioRunResult:
         """Capture the bounded in-memory ledger after an unexpected interruption."""
@@ -709,6 +921,32 @@ class AgentEngine:
             self.provider_durations_ms.append(duration_ms)
             return turn, total_duration_ms
 
+    def _estimated_tokens(self, context_size: int) -> int | None:
+        if not self.token_usage_available or self.context_characters_seen <= 0:
+            return None
+        total_tokens = self.input_tokens + self.output_tokens
+        if total_tokens <= 0:
+            return None
+        ratio = total_tokens / self.context_characters_seen
+        return int(context_size * ratio)
+
+    def _compact_reason(
+        self,
+        *,
+        characters: int,
+        estimated_tokens: int | None,
+        soft_characters: int,
+    ) -> str | None:
+        if characters >= soft_characters:
+            return "soft_character_limit"
+        if (
+            characters >= self.context_emergency_characters
+            and estimated_tokens is not None
+            and estimated_tokens >= soft_characters // 4
+        ):
+            return "token_estimate"
+        return None
+
     def _compact_context(
         self,
         messages: list[dict[str, Any]],
@@ -716,6 +954,7 @@ class AgentEngine:
         reason: str,
         target_characters: int,
         force: bool = False,
+        aggressive_truncation: bool = True,
         retain_recent_history: bool = True,
     ) -> dict[str, Any] | None:
         original_characters = json_size(messages)
@@ -732,7 +971,7 @@ class AgentEngine:
             checkpoint=checkpoint,
             target_characters=target_characters,
             tool_content_limit=(
-                2_000 if force else 12_000
+                2_000 if aggressive_truncation else 12_000
             ),
             retain_recent_history=retain_recent_history,
         )
@@ -1165,11 +1404,13 @@ class AgentEngine:
                 else:
                     result = self.sandbox.execute(call)
                     if call.name == "read_file":
-                        self.read_counts[path] += 1
+                        with self._ledger_lock:
+                            self.read_counts[path] += 1
                     elif call.name == "write_file":
-                        result.metadata["blind_write"] = not self._path_was_observed(path)
-                        self.write_counts[path] += 1
-                        result.metadata["write_ordinal"] = self.write_counts[path]
+                        with self._ledger_lock:
+                            result.metadata["blind_write"] = not self._path_was_observed(path)
+                            self.write_counts[path] += 1
+                            result.metadata["write_ordinal"] = self.write_counts[path]
             elif call.name.startswith("browser_"):
                 result = self._browser(call)
             elif call.name == "record_hypothesis":
@@ -1469,7 +1710,7 @@ class AgentEngine:
         return max(0.0, time.monotonic() - self.started - self.paused_seconds)
 
     def _soft_budget_warning(self) -> str | None:
-        budget = self.prepared.metadata.budget
+        budget = self.budget
         active_seconds = self._active_elapsed()
         crossed: list[str] = []
         if (
@@ -1551,7 +1792,7 @@ class AgentEngine:
         if self.finalization_nudge_sent:
             return None
 
-        budget = self.prepared.metadata.budget
+        budget = self.budget
         active_seconds = self._active_elapsed()
         total_tokens = self.input_tokens + self.output_tokens
         usage = {
@@ -1658,7 +1899,7 @@ class AgentEngine:
 
     def _on_provider_request(self, request: dict[str, Any]) -> None:
         next_request = int(request["request_number"])
-        hard_limit = self.prepared.metadata.budget.hard_provider_requests
+        hard_limit = self.budget.hard_provider_requests
         if hard_limit is not None and next_request > hard_limit:
             raise HardResourceBudgetExceeded
         self.provider_requests = next_request
@@ -1671,6 +1912,69 @@ class AgentEngine:
                 "active_seconds": round(self._active_elapsed(), 3),
             },
         )
+
+    def _apply_budget_overrides(self) -> None:
+        try:
+            with SessionLocal() as session:
+                run = session.get(BenchmarkRun, self.run_id)
+                overrides = (
+                    list(dict(run.config).get("budget_overrides", []))
+                    if run
+                    else []
+                )
+        except SQLAlchemyError:
+            logger.warning(
+                "Budget override read failed for run %s; continuing with "
+                "current budget",
+                self.run_id,
+            )
+            return
+        pending = overrides[self.applied_budget_overrides :]
+        if not pending:
+            return
+        old_values = {
+            field: getattr(self.budget, field)
+            for field in BudgetSpec.model_fields
+        }
+        candidate = self.budget.model_dump(mode="json")
+        applied: list[dict] = []
+        for entry in pending:
+            field = str(entry.get("field", ""))
+            if field not in BudgetSpec.model_fields:
+                continue
+            value = entry.get("value")
+            try:
+                candidate[field] = int(value) if value is not None else None
+            except (TypeError, ValueError):
+                continue
+            applied.append({"field": field, "entry": entry})
+        self.applied_budget_overrides = len(overrides)
+        if not applied:
+            return
+        try:
+            validated = BudgetSpec.model_validate(candidate)
+        except Exception:
+            logger.warning(
+                "Budget overrides rejected for run %s; keeping current budget",
+                self.run_id,
+            )
+            return
+        self.budget = validated
+        for item in applied:
+            field = item["field"]
+            entry = item["entry"]
+            self._event(
+                "run.budget_adjusted",
+                {
+                    "field": field,
+                    "old_value": old_values[field],
+                    "new_value": getattr(validated, field),
+                    "reason": str(entry.get("reason", "")),
+                    "requested_by": str(entry.get("requested_by", "")),
+                    "requested_at": str(entry.get("requested_at", "")),
+                    "applied_at": datetime.now(UTC).isoformat(),
+                },
+            )
 
     def _emit_telemetry_snapshot(self, *, trigger: str, turn: int) -> None:
         active_seconds = self._active_elapsed()
@@ -1737,7 +2041,7 @@ class AgentEngine:
         )
 
     def _hard_resource_reasons(self) -> list[str]:
-        budget = self.prepared.metadata.budget
+        budget = self.budget
         reasons: list[str] = []
         total_tokens = self.input_tokens + self.output_tokens
         if (
@@ -1749,7 +2053,7 @@ class AgentEngine:
         return reasons
 
     def _emit_hard_budget_event(self, reached: list[str]) -> None:
-        budget = self.prepared.metadata.budget
+        budget = self.budget
         self._event(
             "run.hard_budget_exceeded",
             {
@@ -1767,7 +2071,7 @@ class AgentEngine:
         )
 
     def _resource_ledger(self) -> dict[str, Any]:
-        budget = self.prepared.metadata.budget
+        budget = self.budget
         return {
             "logical_model_turns": sum(
                 1 for event in self.events if event.get("kind") == "model.request"
@@ -1782,6 +2086,7 @@ class AgentEngine:
             "invalid_tool_calls": self.invalid_tool_calls,
             "context_management": self._context_ledger(),
             "budgets": budget.model_dump(mode="json"),
+            "default_budget": self.default_budget.model_dump(mode="json"),
             "soft_limits_crossed": sorted(self.soft_budget_warnings),
             "finalization_nudge_sent": self.finalization_nudge_sent,
             "hard_limits_crossed": self.hard_budget_reasons,

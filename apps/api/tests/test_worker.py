@@ -584,3 +584,4 @@ def test_semantic_judge_success_archives_packet_and_raw_output(monkeypatch) -> N
     }
     assert stages[-1][1] == "judge.semantic.completed"
     assert stages[-1][2]["semantic_score"] == 84
+

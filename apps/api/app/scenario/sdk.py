@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import io
+import json
 import tarfile
 from abc import ABC, abstractmethod
 from collections.abc import Callable
@@ -16,7 +17,12 @@ from pydantic import BaseModel, Field
 
 from app.challenge.spec import BudgetSpec, RepositorySpec
 from app.runner.protocol import ToolResult
-from app.telemetry import build_telemetry_bundle, json_bytes, jsonl_bytes
+from app.telemetry import (
+    build_telemetry_bundle,
+    json_bytes,
+    jsonl_bytes,
+    turn_summary,
+)
 from app.version import VERSION
 
 if TYPE_CHECKING:
@@ -230,9 +236,11 @@ class Scenario(ABC):
         )
         run_context = result.private_state.get("run_export", {})
         archive_readme = (
-            "The Evil Repository run archive · schema v2\n\n"
+            "The Evil Repository run archive · schema v3\n\n"
             "run.json                         canonical manifest and integrity roots\n"
             "events.jsonl                     full timestamped immutable event stream\n"
+
+            "export.json                      compact JSON export for single-file analysis\n"
             "telemetry/summary.json           derived latency, token, tool and error metrics\n"
             "telemetry/provider-turns.jsonl   one normalized row per model turn\n"
             "telemetry/tool-lifecycle.jsonl   paired tool call/result records\n"
@@ -240,7 +248,10 @@ class Scenario(ABC):
             "telemetry/resource-snapshots.jsonl periodic Agent resource snapshots\n"
             "telemetry/context-compactions.jsonl bounded transcript rollovers and recoveries\n"
             "telemetry/finalization-nudges.jsonl trusted end-window prompts and remaining budgets\n"
+            "telemetry/budget-adjustments.jsonl dynamic budget override history\n"
+            "telemetry/turn-boundaries.jsonl  model turn begin/end boundaries\n"
             "telemetry/errors.jsonl           Provider, tool, Runner and judge failures\n"
+            "resource-ledger.json             final resource usage ledger\n"
             "investigation/graph.json         hypotheses, revisions, evidence and edges\n"
             "artifacts/index.json             artifact size and SHA-256 inventory\n"
             "artifacts/*                      candidate and judge outputs\n\n"
@@ -256,6 +267,28 @@ class Scenario(ABC):
             }
             for name, payload in sorted(artifact_payloads.items())
         ]
+        manifest = {
+            "archive_schema_version": 3,
+            "platform_version": VERSION,
+            "scenario": prepared.metadata.model_dump(mode="json"),
+            "run": run_context,
+            "result": {
+                "final_response": result.final_response,
+                "elapsed_seconds": result.elapsed_seconds,
+                "tool_calls": result.tool_calls,
+                "artifacts": result.artifacts,
+            },
+            "telemetry_summary": telemetry["summary"],
+            "artifact_inventory": artifact_inventory,
+        }
+        scorecard_raw = result.artifacts.get("scorecard.json")
+        if scorecard_raw is not None:
+            try:
+                scorecard = json.loads(scorecard_raw)
+            except ValueError:
+                scorecard = None
+        else:
+            scorecard = None
         detailed_payloads = {
             "ARCHIVE_FORMAT.txt": archive_readme,
             "telemetry/summary.json": json_bytes(telemetry["summary"]),
@@ -277,33 +310,33 @@ class Scenario(ABC):
             "telemetry/finalization-nudges.jsonl": jsonl_bytes(
                 telemetry["finalization_nudges"]
             ),
+            "telemetry/budget-adjustments.jsonl": jsonl_bytes(
+                telemetry["budget_adjustments"]
+            ),
+            "telemetry/turn-boundaries.jsonl": jsonl_bytes(
+                telemetry["turn_boundaries"]
+            ),
             "telemetry/errors.jsonl": jsonl_bytes(telemetry["error_events"]),
+            "resource-ledger.json": json_bytes(
+                result.private_state.get("resource_ledger", {})
+            ),
             "investigation/graph.json": json_bytes(investigation_graph),
             "artifacts/index.json": json_bytes(artifact_inventory),
+            "export.json": json_bytes(
+                _lean_export(
+                    manifest, telemetry, investigation_graph, scorecard, result
+                )
+            ),
         }
-        manifest = {
-            "archive_schema_version": 2,
-            "platform_version": VERSION,
-            "scenario": prepared.metadata.model_dump(mode="json"),
-            "run": run_context,
-            "result": {
-                "final_response": result.final_response,
-                "elapsed_seconds": result.elapsed_seconds,
-                "tool_calls": result.tool_calls,
-                "artifacts": result.artifacts,
+        manifest["integrity"] = {
+            "events_sha256": hashlib.sha256(event_data).hexdigest(),
+            "artifact_sha256": {
+                name: hashlib.sha256(payload).hexdigest()
+                for name, payload in artifact_payloads.items()
             },
-            "telemetry_summary": telemetry["summary"],
-            "artifact_inventory": artifact_inventory,
-            "integrity": {
-                "events_sha256": hashlib.sha256(event_data).hexdigest(),
-                "artifact_sha256": {
-                    name: hashlib.sha256(payload).hexdigest()
-                    for name, payload in artifact_payloads.items()
-                },
-                "detail_entry_sha256": {
-                    name: hashlib.sha256(payload).hexdigest()
-                    for name, payload in detailed_payloads.items()
-                },
+            "detail_entry_sha256": {
+                name: hashlib.sha256(payload).hexdigest()
+                for name, payload in detailed_payloads.items()
             },
         }
         with tarfile.open(destination, "w:gz") as archive:
@@ -339,6 +372,72 @@ def add_archive_bytes(
     info.size = len(payload)
     info.mode = 0o640
     archive.addfile(info, io.BytesIO(payload))
+
+
+def _diff_stats(diff_text: str) -> dict[str, int]:
+    added = removed = files = 0
+    for line in diff_text.splitlines():
+        if line.startswith("diff --git "):
+            files += 1
+        elif line.startswith("+") and not line.startswith("+++"):
+            added += 1
+        elif line.startswith("-") and not line.startswith("---"):
+            removed += 1
+    return {"added_lines": added, "removed_lines": removed, "file_count": files}
+
+
+def _lean_export(
+    manifest: dict[str, Any],
+    telemetry: dict[str, Any],
+    investigation_graph: dict[str, Any],
+    scorecard: dict[str, Any] | None,
+    result: ScenarioRunResult,
+) -> dict[str, Any]:
+    """Return the compact export payload: manifest subset without events or artifact bodies."""
+    diffs: list[dict[str, Any]] = []
+    for name in sorted(result.artifacts):
+        if not name.endswith(".diff"):
+            continue
+        inventory_sha = next(
+            (
+                item["sha256"]
+                for item in manifest["artifact_inventory"]
+                if item["name"] == name
+            ),
+            None,
+        )
+        diffs.append(
+            {
+                "repo": name[: -len(".diff")],
+                **_diff_stats(result.artifacts[name]),
+                "sha256": inventory_sha,
+            }
+        )
+    return {
+        "export_schema_version": 3,
+        "platform_version": manifest["platform_version"],
+        "run": manifest["run"],
+        "scenario": manifest["scenario"],
+        "result": {
+            "elapsed_seconds": result.elapsed_seconds,
+            "tool_calls": result.tool_calls,
+            "final_response_length": len(result.final_response),
+        },
+        "scorecard": scorecard,
+        "telemetry_summary": manifest["telemetry_summary"],
+        "artifact_inventory": manifest["artifact_inventory"],
+        "budget_adjustment_count": len(telemetry["budget_adjustments"]),
+        "budget_adjustment_fields": sorted(
+            {
+                item.get("field")
+                for item in telemetry["budget_adjustments"]
+                if item.get("field")
+            }
+        ),
+        "turn_summary": turn_summary(telemetry["turn_boundaries"]),
+        "investigation_graph": investigation_graph,
+        "diffs": diffs,
+    }
 
 
 def load_scenario(root: Path) -> Scenario:

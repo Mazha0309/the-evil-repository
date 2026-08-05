@@ -287,9 +287,7 @@ class Worker:
                     raise RuntimeError("Candidate model profile is unavailable")
                 judge_model_id = run.judge_model_id
                 judge_profile = session.get(ModelProfile, judge_model_id) if judge_model_id else None
-                if judge_profile is not None and (
-                    not judge_profile.enabled or judge_profile.archived_at is not None
-                ):
+                if judge_profile is not None and (not judge_profile.enabled or judge_profile.archived_at is not None):
                     judge_profile = None
                 scenario_root = settings.scenarios_root / task.slug
                 run_config = dict(run.config)
@@ -333,12 +331,8 @@ class Worker:
                                         prepared.metadata.budget.hard_provider_requests,
                                     )
                                 ),
-                                "soft_total_tokens": run_config.get(
-                                    "soft_total_tokens"
-                                ),
-                                "hard_total_tokens": run_config.get(
-                                    "hard_total_tokens"
-                                ),
+                                "soft_total_tokens": run_config.get("soft_total_tokens"),
+                                "hard_total_tokens": run_config.get("hard_total_tokens"),
                             }
                         )
                     }
@@ -375,16 +369,18 @@ class Worker:
                     kind="sandbox.started",
                     payload=sandbox.security_posture(),
                 )
-                candidate_client = ModelClient(
-                    profile,
-                    None,
-                    credential_resolver=CredentialResolver(profile.id),
-                    on_retry=lambda payload: self.record_provider_retry(
+                candidate_kwargs = {
+                    "credential_resolver": CredentialResolver(profile.id),
+                    "retry_jitter": settings.provider_retry_jitter,
+                    "on_retry": lambda payload: self.record_provider_retry(
                         run_id,
                         "candidate",
                         payload,
                     ),
-                )
+                }
+                if settings.provider_turn_timeout_seconds > 0:
+                    candidate_kwargs["timeout_seconds"] = settings.provider_turn_timeout_seconds
+                candidate_client = ModelClient(profile, None, **candidate_kwargs)
                 faults = FaultController.load([Path(path) for path in prepared.private_state["fault_scripts"]])
                 engine = AgentEngine(
                     run_id=run_id,
@@ -392,11 +388,10 @@ class Worker:
                     sandbox=sandbox,
                     prepared=prepared,
                     faults=faults,
+                    default_budget=scenario.metadata.budget,
                     context_soft_characters=settings.runner_context_soft_characters,
                     context_target_characters=settings.runner_context_target_characters,
-                    context_emergency_characters=(
-                        settings.runner_context_emergency_characters
-                    ),
+                    context_emergency_characters=(settings.runner_context_emergency_characters),
                 )
                 result = scenario.run(prepared, engine.run)
                 if self.is_cancelled(run_id):
@@ -425,10 +420,7 @@ class Worker:
                     serialized = check_result.model_dump(mode="json")
                     hidden_checks[check.key] = serialized
                     result.private_state[check.key] = serialized
-                    hidden_verification_passed = (
-                        hidden_verification_passed
-                        and check_result.status == "ok"
-                    )
+                    hidden_verification_passed = hidden_verification_passed and check_result.status == "ok"
                     if self.is_cancelled(run_id):
                         return
                 self.set_stage(
@@ -439,10 +431,7 @@ class Worker:
                 stats = sandbox.stats()
                 result.private_state.update(
                     {
-                        "hidden_verification_passed": (
-                            hidden_verification_passed
-                            and bool(hidden_checks)
-                        ),
+                        "hidden_verification_passed": (hidden_verification_passed and bool(hidden_checks)),
                         "hidden_checks": hidden_checks,
                         "resource_check": stats,
                         "security_check": security_summary(result.events),
@@ -461,12 +450,17 @@ class Worker:
                     kind="judge.scorecard.started",
                 )
                 scorecard = scenario.grade(prepared, result)
-                scorecard["resources"] = dict(
-                    result.private_state.get("resource_ledger", {})
+                from app.overtime import apply_overtime_penalty
+
+                apply_overtime_penalty(
+                    scorecard,
+                    result,
+                    scenario.metadata.budget,
+                    cap=settings.overtime_penalty_cap,
+                    weights=settings.overtime_penalty_weights,
                 )
-                agent_graph = derive_agent_graph(result.events).model_dump(
-                    mode="json"
-                )
+                scorecard["resources"] = dict(result.private_state.get("resource_ledger", {}))
+                agent_graph = derive_agent_graph(result.events).model_dump(mode="json")
                 scorecard["agent_graph"] = {
                     "schema_version": agent_graph["schema_version"],
                     "execution_mode": agent_graph["execution_mode"],
@@ -532,7 +526,11 @@ class Worker:
                 if self.is_cancelled(run_id):
                     return
                 archive_path = Path(settings.artifact_root) / f"{run_id}.tar.gz"
-                scenario.archive(prepared, result, archive_path)
+                scenario.archive(
+                    prepared,
+                    result,
+                    archive_path,
+                )
                 archive_sha = hashlib.sha256(archive_path.read_bytes()).hexdigest()
                 self.complete(run_id, result, scorecard, archive_path, archive_sha)
         except Exception as exc:
@@ -619,6 +617,7 @@ class Worker:
                 None,
                 credential_resolver=CredentialResolver(judge_profile.id),
                 timeout_seconds=settings.semantic_judge_timeout,
+                retry_jitter=settings.provider_retry_jitter,
                 on_retry=lambda payload: self.record_provider_retry(
                     run_id,
                     "semantic_judge",
@@ -716,18 +715,14 @@ class Worker:
             if run is None:
                 return
             task = session.get(TaskDefinition, run.task_id)
-            graph = InvestigationGraphSchema.model_validate(
-                graph_payload(session, run_id)
-            ).model_dump(mode="json")
+            graph = InvestigationGraphSchema.model_validate(graph_payload(session, run_id)).model_dump(mode="json")
             result.private_state["investigation_graph"] = graph
             result.private_state["run_export"] = sanitize_for_export(
                 {
                     "id": str(run.id),
                     "task_id": str(run.task_id),
                     "candidate_model_id": str(run.candidate_model_id),
-                    "judge_model_id": (
-                        str(run.judge_model_id) if run.judge_model_id else None
-                    ),
+                    "judge_model_id": (str(run.judge_model_id) if run.judge_model_id else None),
                     "status_at_export": run.status.value,
                     "stage_at_export": run.stage,
                     "config": dict(run.config),
@@ -741,14 +736,8 @@ class Worker:
                         else None
                     ),
                     "created_at": run.created_at.isoformat(),
-                    "started_at": (
-                        run.started_at.isoformat() if run.started_at else None
-                    ),
-                    "completed_at": (
-                        run.completed_at.isoformat()
-                        if run.completed_at
-                        else None
-                    ),
+                    "started_at": (run.started_at.isoformat() if run.started_at else None),
+                    "completed_at": (run.completed_at.isoformat() if run.completed_at else None),
                 }
             )
 
@@ -925,10 +914,7 @@ class Worker:
                 engine.checkpoint_result(error)
                 if engine is not None
                 else ScenarioRunResult(
-                    final_response=(
-                        f"Run interrupted by {type(error).__name__} before the "
-                        "candidate engine started."
-                    ),
+                    final_response=(f"Run interrupted by {type(error).__name__} before the candidate engine started."),
                     elapsed_seconds=0,
                     tool_calls=0,
                     events=[],
@@ -954,9 +940,9 @@ class Worker:
                     sandbox,
                 )
             except Exception as collection_error:
-                collection_errors["scenario_artifacts"] = (
-                    f"{type(collection_error).__name__}: {collection_error}"
-                )[:1_000]
+                collection_errors["scenario_artifacts"] = (f"{type(collection_error).__name__}: {collection_error}")[
+                    :1_000
+                ]
         checkpoint_result.events = self.run_events(run_id)
         self.prepare_export_context(run_id, checkpoint_result)
         failure_summary = {
@@ -995,10 +981,7 @@ class Worker:
                 ),
             }
         )
-        archive_path = (
-            Path(settings.artifact_root)
-            / f"{run_id}-failure-checkpoint.tar.gz"
-        )
+        archive_path = Path(settings.artifact_root) / f"{run_id}-failure-checkpoint.tar.gz"
         scenario.archive(prepared, checkpoint_result, archive_path)
         archive_sha = hashlib.sha256(archive_path.read_bytes()).hexdigest()
         logger.info(

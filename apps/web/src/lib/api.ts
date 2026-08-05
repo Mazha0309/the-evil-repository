@@ -3,6 +3,7 @@ import type {
   AdminSummary,
   AuthConfig,
   AuthResponse,
+  BudgetAdjustment,
   DashboardSummary,
   InvestigationGraph,
   ModelProfile,
@@ -14,6 +15,7 @@ import type {
   ProviderCredential,
   Run,
   RunArtifact,
+  RunDiff,
   RunEvent,
   ServerMonitor,
   Task,
@@ -22,6 +24,15 @@ import type {
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "/api/v1";
 let csrfToken = "";
+
+export const EXPORT_ARCHIVE_CONTENT = [
+  "telemetry",
+  "events",
+  "diffs",
+  "graph",
+] as const;
+
+export type ExportArchiveContent = (typeof EXPORT_ARCHIVE_CONTENT)[number];
 
 export class ApiError extends Error {
   constructor(
@@ -199,7 +210,53 @@ export const api = {
     request<Run>(`/runs/${id}/pause`, { method: "POST" }),
   resumeRun: (id: string) =>
     request<Run>(`/runs/${id}/resume`, { method: "POST" }),
+  adjustBudget: (runId: string, payload: BudgetAdjustment) =>
+    request<Run>(`/runs/${runId}/budget`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
   reportUrl: (id: string) => `${API_BASE}/reports/${id}`,
+  exportUrl: (
+    runId: string,
+    format: "json" | "tar.gz",
+    include: string[],
+  ) => {
+    const params = new URLSearchParams({ format });
+    if (format === "tar.gz" && include.length > 0) {
+      params.set("include", include.join(","));
+    }
+    if (format === "json") {
+      params.set("include", "compact");
+    }
+    return `${API_BASE}/runs/${runId}/export?${params.toString()}`;
+  },
+  exportDownload: async (
+    runId: string,
+    format: "json" | "tar.gz",
+    include: string[],
+  ) => {
+    const response = await fetch(api.exportUrl(runId, format, include), {
+      credentials: "include",
+    });
+    if (!response.ok) {
+      const body = await response.text();
+      const detail = errorDetail(body);
+      throw new ApiError(
+        response.status,
+        detail.message || `${response.status} ${response.statusText}`,
+        detail.code,
+      );
+    }
+    const contentDisposition = response.headers.get("content-disposition") ?? "";
+    const match = /filename="?([^"]+)"?/.exec(contentDisposition);
+    const blob = await response.blob();
+    return {
+      blob,
+      filename: match?.[1] ?? `run-${runId}.${format === "tar.gz" ? "tar.gz" : format}`,
+    };
+  },
+  runDiffs: (runId: string) => request<RunDiff[]>(`/runs/${runId}/diffs`),
+  runDiffsUrl: (runId: string) => `${API_BASE}/runs/${runId}/diffs`,
   adminSummary: () => request<AdminSummary>("/admin/summary"),
   adminUsers: () => request<UserAccount[]>("/admin/users"),
   createUser: (payload: Record<string, unknown>) =>

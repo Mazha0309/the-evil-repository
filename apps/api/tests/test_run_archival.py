@@ -1,3 +1,6 @@
+import hashlib
+from pathlib import Path
+
 import pytest
 from fastapi import HTTPException
 from sqlalchemy import create_engine, select
@@ -81,7 +84,6 @@ def seed_run(
     session.commit()
     return user, run
 
-
 def test_archive_run_hides_terminal_result_without_deleting_evidence() -> None:
     engine = create_engine("sqlite://")
     Base.metadata.create_all(engine)
@@ -123,7 +125,6 @@ def test_archive_run_hides_terminal_result_without_deleting_evidence() -> None:
             get_run(run_id, session, user)
         assert error.value.status_code == 404
 
-
 def test_archive_run_rejects_active_result() -> None:
     engine = create_engine("sqlite://")
     Base.metadata.create_all(engine)
@@ -138,7 +139,6 @@ def test_archive_run_rejects_active_result() -> None:
         assert "finish or be cancelled" in error.value.detail
         session.refresh(run)
         assert run.archived_at is None
-
 
 def test_dashboard_average_excludes_censored_completed_run() -> None:
     engine = create_engine("sqlite://")
@@ -155,3 +155,193 @@ def test_dashboard_average_excludes_censored_completed_run() -> None:
 
         assert summary.completed_runs == 1
         assert summary.average_score is None
+
+def test_archive_schema_v3_includes_new_telemetry_files(tmp_path: Path) -> None:
+    import json
+    import tarfile
+
+    from app.scenario import PreparedScenario, ScenarioRunResult, load_scenario
+
+    scenario_root = (
+        Path(__file__).resolve().parents[3] / "scenarios" / "terminal-repository"
+    )
+    scenario = load_scenario(scenario_root)
+    prepared = PreparedScenario(
+        scenario_root=scenario_root,
+        workspace=tmp_path,
+        metadata=scenario.metadata,
+    )
+    result = ScenarioRunResult(
+        final_response="done",
+        elapsed_seconds=12,
+        tool_calls=1,
+        events=[
+            {"sequence": 1, "kind": "run.turn.begin", "turn": 1, "tool_calls": 0},
+            {
+                "sequence": 2,
+                "kind": "run.budget_adjusted",
+                "field": "hard_tool_calls",
+                "new_value": 5000,
+            },
+            {
+                "sequence": 3,
+                "kind": "run.turn.end",
+                "turn": 1,
+                "tool_calls": 2,
+                "duration_ms": 100,
+            },
+        ],
+        artifacts={
+            "scorecard.json": '{"score": 777, "dimensions": {}}',
+            "dead-letter.diff": (
+                "diff --git a/README.md b/README.md\n"
+                "--- a/README.md\n"
+                "+++ b/README.md\n"
+                "@@ -1,1 +1,2 @@\n"
+                "- old\n"
+                "+ new\n"
+            ),
+        },
+        private_state={
+            "resource_ledger": {"hard_tool_calls": 5000, "active_time_ms": 12_000},
+            "investigation_graph": {
+                "hypotheses": [],
+                "revisions": [],
+                "evidence": [],
+                "edges": [],
+            },
+        },
+    )
+
+    destination = scenario.archive(prepared, result, tmp_path / "run.tar.gz")
+
+    with tarfile.open(destination, "r:gz") as archive:
+        names = set(archive.getnames())
+        assert {
+            "telemetry/budget-adjustments.jsonl",
+            "telemetry/turn-boundaries.jsonl",
+            "resource-ledger.json",
+            "export.json",
+        } <= names
+        manifest = json.loads(archive.extractfile("run.json").read())
+        export = json.loads(archive.extractfile("export.json").read())
+        budget_lines = archive.extractfile(
+            "telemetry/budget-adjustments.jsonl"
+        ).read().decode().splitlines()
+        turn_lines = archive.extractfile(
+            "telemetry/turn-boundaries.jsonl"
+        ).read().decode().splitlines()
+        resource_ledger = json.loads(
+            archive.extractfile("resource-ledger.json").read()
+        )
+
+    assert manifest["archive_schema_version"] == 3
+    assert budget_lines == [
+        json.dumps(
+            {
+                "sequence": 2,
+                "kind": "run.budget_adjusted",
+                "field": "hard_tool_calls",
+                "new_value": 5000,
+            },
+            sort_keys=True,
+        )
+    ]
+    assert len(turn_lines) == 2
+    assert resource_ledger["hard_tool_calls"] == 5000
+    assert export["export_schema_version"] == 3
+    assert export["budget_adjustment_count"] == 1
+    assert export["budget_adjustment_fields"] == ["hard_tool_calls"]
+    assert export["diffs"] == [
+        {
+            "repo": "dead-letter",
+            "added_lines": 1,
+            "removed_lines": 1,
+            "file_count": 1,
+            "sha256": hashlib.sha256(
+                b"diff --git a/README.md b/README.md\n"
+                b"--- a/README.md\n"
+                b"+++ b/README.md\n"
+                b"@@ -1,1 +1,2 @@\n"
+                b"- old\n"
+                b"+ new\n"
+            ).hexdigest(),
+        }
+    ]
+    assert export["turn_summary"] == {
+        "total_turns": 1,
+        "completed_turns": 1,
+        "average_duration_ms": 100.0,
+        "max_duration_ms": 100.0,
+    }
+    assert export["result"] == {
+        "elapsed_seconds": 12,
+        "tool_calls": 1,
+        "final_response_length": 4,
+    }
+    assert export["scorecard"]["score"] == 777
+
+def test_archive_v3_turn_summary_handles_unpaired_begins_and_missing_duration(
+    tmp_path: Path,
+) -> None:
+    import json
+    import tarfile
+
+    from app.scenario import PreparedScenario, ScenarioRunResult, load_scenario
+
+    scenario_root = (
+        Path(__file__).resolve().parents[3] / "scenarios" / "terminal-repository"
+    )
+    scenario = load_scenario(scenario_root)
+    prepared = PreparedScenario(
+        scenario_root=scenario_root,
+        workspace=tmp_path,
+        metadata=scenario.metadata,
+    )
+    result = ScenarioRunResult(
+        final_response="done",
+        elapsed_seconds=12,
+        tool_calls=1,
+        events=[
+            {"sequence": 1, "kind": "run.turn.begin", "turn": 1, "tool_calls": 0},
+            {"sequence": 2, "kind": "run.turn.begin", "turn": 2, "tool_calls": 0},
+            {"sequence": 3, "kind": "run.turn.begin", "turn": 3, "tool_calls": 0},
+            {
+                "sequence": 4,
+                "kind": "run.turn.end",
+                "turn": 1,
+                "tool_calls": 2,
+                "duration_ms": 100,
+            },
+            {
+                "sequence": 5,
+                "kind": "run.turn.end",
+                "turn": 1,
+                "tool_calls": 2,
+                "duration_ms": 999,
+            },
+            {"sequence": 6, "kind": "run.turn.end", "turn": 2, "tool_calls": 1},
+            {
+                "sequence": 7,
+                "kind": "run.turn.end",
+                "turn": 4,
+                "tool_calls": 1,
+                "duration_ms": 50,
+            },
+        ],
+        artifacts={},
+    )
+
+    destination = scenario.archive(prepared, result, tmp_path / "run.tar.gz")
+
+    with tarfile.open(destination, "r:gz") as archive:
+        export = json.loads(archive.extractfile("export.json").read())
+
+    assert export["turn_summary"] == {
+        "total_turns": 3,
+        "completed_turns": 2,
+        "average_duration_ms": 100.0,
+        "max_duration_ms": 100.0,
+    }
+    assert export["budget_adjustment_count"] == 0
+

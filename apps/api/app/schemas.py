@@ -333,6 +333,18 @@ class RunCreate(BaseModel):
             raise ValueError(f"Soft {label} budget must be lower than the hard budget")
 
 
+class BudgetAdjustment(BaseModel):
+    soft_seconds: int | None = Field(default=None, ge=60, le=43_200)
+    hard_seconds: int | None = Field(default=None, ge=300, le=86_400)
+    soft_tool_calls: int | None = Field(default=None, ge=10, le=10_000)
+    hard_tool_calls: int | None = Field(default=None, ge=20, le=20_000)
+    soft_provider_requests: int | None = Field(default=None, ge=1, le=10_000)
+    hard_provider_requests: int | None = Field(default=None, ge=2, le=20_000)
+    soft_total_tokens: int | None = Field(default=None, ge=1_000, le=4_000_000_000)
+    hard_total_tokens: int | None = Field(default=None, ge=2_000, le=8_000_000_000)
+    reason: str = Field(min_length=1, max_length=200)
+
+
 class RunRead(ORMModel):
     id: uuid.UUID
     task_id: uuid.UUID

@@ -1,6 +1,7 @@
 import fnmatch
 import json
 import re
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -122,6 +123,7 @@ class FaultController:
     def __init__(self, rules: list[FaultRule]) -> None:
         self.rules = rules
         self._pending_after: dict[str, tuple[FaultRule, dict[str, Any]]] = {}
+        self._lock = threading.Lock()
 
     @classmethod
     def load(cls, paths: list[Path]) -> "FaultController":
@@ -139,41 +141,43 @@ class FaultController:
         return cls(rules)
 
     def before(self, call: ToolCall) -> ToolResult | None:
-        for rule in self.rules:
-            if not rule.matches(call):
-                continue
-            step = rule.next_step()
-            if not step:
-                return None
-            result = step.get("result")
-            if result in {"truncate", "inject_noise", "latency"}:
-                self._pending_after[call.call_id] = (rule, step)
-                return None
-            if result == "error":
-                return ToolResult(
-                    call_id=call.call_id,
-                    name=call.name,
-                    status="error",
-                    output=step.get("message", "scripted tool error"),
-                    metadata={
-                        "injected_fault": result,
-                        "fault_rule": rule.rule_id,
-                        "code": step.get("code"),
-                    },
-                )
-            if result == "timeout":
-                return ToolResult(
-                    call_id=call.call_id,
-                    name=call.name,
-                    status="timeout",
-                    output=f"scripted timeout after {step.get('seconds', 30)} seconds",
-                    exit_code=124,
-                    metadata={"injected_fault": result, "fault_rule": rule.rule_id},
-                )
+        with self._lock:
+            for rule in self.rules:
+                if not rule.matches(call):
+                    continue
+                step = rule.next_step()
+                if not step:
+                    return None
+                result = step.get("result")
+                if result in {"truncate", "inject_noise", "latency"}:
+                    self._pending_after[call.call_id] = (rule, step)
+                    return None
+                if result == "error":
+                    return ToolResult(
+                        call_id=call.call_id,
+                        name=call.name,
+                        status="error",
+                        output=step.get("message", "scripted tool error"),
+                        metadata={
+                            "injected_fault": result,
+                            "fault_rule": rule.rule_id,
+                            "code": step.get("code"),
+                        },
+                    )
+                if result == "timeout":
+                    return ToolResult(
+                        call_id=call.call_id,
+                        name=call.name,
+                        status="timeout",
+                        output=f"scripted timeout after {step.get('seconds', 30)} seconds",
+                        exit_code=124,
+                        metadata={"injected_fault": result, "fault_rule": rule.rule_id},
+                    )
         return None
 
     def after(self, call: ToolCall, result: ToolResult) -> ToolResult:
-        pending = self._pending_after.pop(call.call_id, None)
+        with self._lock:
+            pending = self._pending_after.pop(call.call_id, None)
         if not pending:
             return result
         rule, step = pending

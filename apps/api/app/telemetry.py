@@ -71,7 +71,7 @@ def build_telemetry_bundle(events: Iterable[Any]) -> dict[str, Any]:
     ]
     error_events = _error_events(normalized)
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "summary": _summary(
             normalized,
             provider_turns,
@@ -86,7 +86,53 @@ def build_telemetry_bundle(events: Iterable[Any]) -> dict[str, Any]:
         "context_compactions": context_compactions,
         "finalization_nudges": finalization_nudges,
         "error_events": error_events,
+        "budget_adjustments": [
+            event
+            for event in normalized
+            if event.get("kind") == "run.budget_adjusted"
+        ],
+        "turn_boundaries": [
+            event
+            for event in normalized
+            if event.get("kind") in {"run.turn.begin", "run.turn.end"}
+        ],
         "events": normalized,
+    }
+
+
+def turn_summary(boundaries: list[dict[str, Any]]) -> dict[str, Any]:
+    """Summarize run.turn.begin/end boundaries into paired turn metrics."""
+
+    begin_turns: set[int] = set()
+    completed_turns: set[int] = set()
+    end_durations: list[float] = []
+    for event in boundaries:
+        turn = int(_number(event.get("turn")))
+        kind = event.get("kind")
+        if kind == "run.turn.begin":
+            begin_turns.add(turn)
+        elif (
+            kind == "run.turn.end"
+            and turn in begin_turns
+            and turn not in completed_turns
+        ):
+            completed_turns.add(turn)
+            duration = _number(event.get("duration_ms"))
+            if duration > 0:
+                end_durations.append(duration)
+    if end_durations:
+        average_duration_ms = round(
+            sum(end_durations) / len(end_durations), 3
+        )
+        max_duration_ms = round(max(end_durations), 3)
+    else:
+        average_duration_ms = None
+        max_duration_ms = None
+    return {
+        "total_turns": len(begin_turns),
+        "completed_turns": len(completed_turns),
+        "average_duration_ms": average_duration_ms,
+        "max_duration_ms": max_duration_ms,
     }
 
 

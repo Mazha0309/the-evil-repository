@@ -1,4 +1,5 @@
 import json
+import time
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
@@ -13,7 +14,12 @@ from app.runner.engine import (
     substantive_tool_call_count,
 )
 from app.runner.faults import FaultController
-from app.runner.protocol import AssistantTurn, InvalidToolCall, ToolCall
+from app.runner.protocol import (
+    AssistantTurn,
+    InvalidToolCall,
+    ToolCall,
+    ToolResult,
+)
 from app.runner.providers import (
     ProviderContextLengthError,
     ProviderPolicyRejectionError,
@@ -187,9 +193,14 @@ def test_scenario_run_passes_prepared_scenario_to_agent_engine(
     }
     assert result.events[0]["context_characters"] > 0
     assert result.events[0]["tool_calls"] == 0
-    assert result.events[1]["kind"] == "assistant.message"
+    assert result.events[1]["kind"] == "run.turn.begin"
     assert result.events[1]["turn"] == 1
-    assert result.events[1]["duration_ms"] >= 0
+    assistant_messages = [
+        event for event in result.events if event["kind"] == "assistant.message"
+    ]
+    assert len(assistant_messages) == 1
+    assert assistant_messages[0]["turn"] == 1
+    assert assistant_messages[0]["duration_ms"] >= 0
     assert any(
         event["kind"] == "agent.telemetry.snapshot"
         for event in result.events
@@ -210,18 +221,11 @@ def test_invalid_tool_call_is_repaired_without_execution(
     executed: list[ToolCall] = []
     sandbox = SimpleNamespace(
         execute=lambda call: executed.append(call)
-        or SimpleNamespace(
+        or ToolResult(
             call_id=call.call_id,
             name=call.name,
             status="ok",
             output="contents",
-            exit_code=0,
-            truncated=False,
-            metadata={},
-            model_dump_json=lambda: (
-                '{"call_id":"fixed-1","name":"read_file",'
-                '"status":"ok","output":"contents"}'
-            ),
         )
     )
     engine = AgentEngine(
@@ -883,3 +887,1022 @@ def test_provider_policy_rejection_retries_without_raw_tool_history(
         if event["kind"] == "model.request.retry"
     )
     assert retry["reason"] == "provider_policy_rejection"
+
+
+class BudgetOverrideClient:
+    profile = SimpleNamespace(native_tools=True)
+
+    def __init__(self, tool_turns: int = 1) -> None:
+        self.turns = 0
+        self.tool_turns = tool_turns
+
+    def complete(self, messages: list[dict], tools: list[dict]) -> AssistantTurn:
+        self.turns += 1
+        if self.turns <= self.tool_turns:
+            return AssistantTurn(
+                tool_calls=[
+                    ToolCall(
+                        call_id=f"t{self.turns}",
+                        name="read_file",
+                        arguments={"path": "README.md"},
+                    ),
+                ],
+                input_tokens=10,
+                output_tokens=2,
+            )
+        return AssistantTurn(content="done", input_tokens=10, output_tokens=2)
+
+
+class BudgetOverrideDB:
+    """FakeSession 提供带 budget_overrides 的 run.config"""
+
+    def __init__(self, config: dict) -> None:
+        self._config = dict(config)
+
+    def __enter__(self) -> "BudgetOverrideDB":
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        return None
+
+    def get(self, model: type, run_id: object) -> object:
+        return SimpleNamespace(
+            config=self._config,
+            tool_calls=0,
+            input_tokens=0,
+            output_tokens=0,
+            status=SimpleNamespace(value="running"),
+            stage="",
+        )
+
+
+def _budget_override_engine(
+    tmp_path: Path,
+    monkeypatch,
+    config: dict,
+    tool_turns: int = 1,
+) -> tuple[AgentEngine, PreparedScenario]:
+    scenario = load_scenario(SCENARIO_ROOT)
+    budget = scenario.metadata.budget.model_copy(
+        update={"hard_tool_calls": 2, "soft_tool_calls": 1}
+    )
+    prepared = PreparedScenario(
+        scenario_root=SCENARIO_ROOT,
+        workspace=tmp_path,
+        metadata=scenario.metadata.model_copy(update={"budget": budget}),
+    )
+    monkeypatch.setattr(engine_module, "SessionLocal", lambda: BudgetOverrideDB(config))
+    engine = AgentEngine(
+        run_id=uuid.uuid4(),
+        client=BudgetOverrideClient(tool_turns=tool_turns),
+        sandbox=SimpleNamespace(),
+        prepared=prepared,
+        faults=FaultController([]),
+    )
+    monkeypatch.setattr(
+        engine,
+        "_event",
+        lambda kind, payload: engine.events.append({"kind": kind, **payload}),
+    )
+    monkeypatch.setattr(
+        engine,
+        "_execute",
+        lambda call: ToolResult(
+            call_id=call.call_id,
+            name=call.name,
+            status="ok",
+            output="x",
+        ),
+    )
+    monkeypatch.setattr(engine, "_completion_gaps", lambda: [])
+    monkeypatch.setattr(engine, "_compact_context", lambda *a, **k: None)
+    return engine, prepared
+
+
+def test_budget_overrides_applied_at_runtime(tmp_path: Path, monkeypatch) -> None:
+    config = {
+        "budget_overrides": [
+            {
+                "field": "hard_tool_calls",
+                "value": 5000,
+                "reason": "keep going",
+                "requested_by": "test",
+                "requested_at": "2026-08-05T00:00:00Z",
+            }
+        ]
+    }
+    engine, prepared = _budget_override_engine(
+        tmp_path,
+        monkeypatch,
+        config,
+        tool_turns=3,
+    )
+
+    result = engine.run(prepared)
+
+    assert engine.budget.hard_tool_calls == 5000
+    assert result.tool_calls == 3
+    assert result.private_state["hard_budget_reasons"] == []
+    assert any(e["kind"] == "run.budget_adjusted" for e in engine.events)
+    adjusted = [e for e in engine.events if e["kind"] == "run.budget_adjusted"]
+    assert len(adjusted) == 1
+    assert adjusted[0]["field"] == "hard_tool_calls"
+    assert adjusted[0]["old_value"] == 2
+    assert adjusted[0]["new_value"] == 5000
+    assert adjusted[0]["requested_at"] == "2026-08-05T00:00:00Z"
+    assert "applied_at" in adjusted[0]
+
+
+def test_budget_no_override_terminates_at_hard(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config = {}
+    engine, prepared = _budget_override_engine(
+        tmp_path,
+        monkeypatch,
+        config,
+        tool_turns=5,
+    )
+
+    result = engine.run(prepared)
+
+    assert result.tool_calls == 2
+    assert result.private_state["hard_budget_reasons"] == ["tool_calls"]
+    assert not any(e["kind"] == "run.budget_adjusted" for e in engine.events)
+
+def test_budget_override_pair_applied_atomically(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config = {
+        "budget_overrides": [
+            {
+                "field": "soft_total_tokens",
+                "value": 100_000,
+                "reason": "token headroom",
+                "requested_by": "test",
+                "requested_at": "2026-08-05T00:00:00Z",
+            },
+            {
+                "field": "hard_total_tokens",
+                "value": 200_000,
+                "reason": "token headroom",
+                "requested_by": "test",
+                "requested_at": "2026-08-05T00:00:00Z",
+            },
+        ]
+    }
+    engine, prepared = _budget_override_engine(
+        tmp_path,
+        monkeypatch,
+        config,
+        tool_turns=1,
+    )
+
+    result = engine.run(prepared)
+
+    assert engine.budget.soft_total_tokens == 100_000
+    assert engine.budget.hard_total_tokens == 200_000
+    adjusted = [e for e in engine.events if e["kind"] == "run.budget_adjusted"]
+    assert len(adjusted) == 2
+    assert {e["field"] for e in adjusted} == {
+        "soft_total_tokens",
+        "hard_total_tokens",
+    }
+    assert result.tool_calls == 1
+
+
+def test_budget_override_pair_seconds_applied_together(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config = {
+        "budget_overrides": [
+            {
+                "field": "soft_seconds",
+                "value": 30_000,
+                "reason": "extend time",
+                "requested_by": "test",
+                "requested_at": "2026-08-05T00:00:00Z",
+            },
+            {
+                "field": "hard_seconds",
+                "value": 40_000,
+                "reason": "extend time",
+                "requested_by": "test",
+                "requested_at": "2026-08-05T00:00:00Z",
+            },
+        ]
+    }
+    engine, prepared = _budget_override_engine(
+        tmp_path,
+        monkeypatch,
+        config,
+        tool_turns=1,
+    )
+
+    result = engine.run(prepared)
+
+    assert engine.budget.soft_seconds == 30_000
+    assert engine.budget.hard_seconds == 40_000
+    adjusted = [e for e in engine.events if e["kind"] == "run.budget_adjusted"]
+    assert len(adjusted) == 2
+    assert {e["field"] for e in adjusted} == {"soft_seconds", "hard_seconds"}
+    assert result.tool_calls == 1
+
+
+
+
+def test_budget_override_invalid_entry_skipped_without_duplicate_events(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config = {
+        "budget_overrides": [
+            {
+                "field": "no_such_field",
+                "value": 9999,
+                "reason": "invalid",
+                "requested_by": "test",
+                "requested_at": "2026-08-05T00:00:00Z",
+            },
+            {
+                "field": "hard_tool_calls",
+                "value": 5000,
+                "reason": "keep going",
+                "requested_by": "test",
+                "requested_at": "2026-08-05T00:00:00Z",
+            },
+        ]
+    }
+    engine, prepared = _budget_override_engine(
+        tmp_path,
+        monkeypatch,
+        config,
+        tool_turns=3,
+    )
+
+    result = engine.run(prepared)
+
+    assert result.tool_calls == 3
+    assert engine.budget.hard_tool_calls == 5000
+    adjusted = [e for e in engine.events if e["kind"] == "run.budget_adjusted"]
+    assert len(adjusted) == 1
+    assert adjusted[0]["field"] == "hard_tool_calls"
+
+
+def test_budget_override_null_value_skipped_without_crash(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config = {
+        "budget_overrides": [
+            {
+                "field": "hard_tool_calls",
+                "value": None,
+                "reason": "null value",
+                "requested_by": "test",
+                "requested_at": "2026-08-05T00:00:00Z",
+            }
+        ]
+    }
+    engine, prepared = _budget_override_engine(
+        tmp_path,
+        monkeypatch,
+        config,
+        tool_turns=1,
+    )
+
+    result = engine.run(prepared)
+
+    assert engine.budget.hard_tool_calls == 2
+    assert result.tool_calls == 1
+    assert result.final_response == "done"
+    assert not any(e["kind"] == "run.budget_adjusted" for e in engine.events)
+
+def test_budget_override_invalid_batch_rejected_atomically(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config = {
+        "budget_overrides": [
+            {
+                "field": "soft_seconds",
+                "value": 30_000,
+                "reason": "extend soft time",
+                "requested_by": "test",
+                "requested_at": "2026-08-05T00:00:00Z",
+            },
+            {
+                "field": "hard_seconds",
+                "value": 20_000,
+                "reason": "reduce hard time",
+                "requested_by": "test",
+                "requested_at": "2026-08-05T00:00:00Z",
+            },
+        ]
+    }
+    engine, prepared = _budget_override_engine(
+        tmp_path,
+        monkeypatch,
+        config,
+        tool_turns=1,
+    )
+    initial_soft_seconds = engine.budget.soft_seconds
+    initial_hard_seconds = engine.budget.hard_seconds
+
+    result = engine.run(prepared)
+
+    assert engine.budget.soft_seconds == initial_soft_seconds
+    assert engine.budget.hard_seconds == initial_hard_seconds
+    assert not any(e["kind"] == "run.budget_adjusted" for e in engine.events)
+    assert result.tool_calls == 1
+
+
+class ParallelToolClient:
+    profile = SimpleNamespace(native_tools=True)
+
+    def __init__(self) -> None:
+        self.turn = 0
+
+    def complete(self, messages: list[dict], tools: list[dict]) -> AssistantTurn:
+        self.turn += 1
+        if self.turn == 1:
+            return AssistantTurn(
+                tool_calls=[
+                    ToolCall(call_id="p1", name="read_file", arguments={"path": "a.txt"}),
+                    ToolCall(call_id="p2", name="list_files", arguments={"path": "."}),
+                    ToolCall(
+                        call_id="p3",
+                        name="write_file",
+                        arguments={"path": "b.txt", "content": "x"},
+                    ),
+                    ToolCall(call_id="p4", name="read_file", arguments={"path": "a.txt"}),
+                ],
+                input_tokens=10,
+                output_tokens=2,
+            )
+        return AssistantTurn(content="done", input_tokens=10, output_tokens=2)
+
+
+def test_parallel_safe_tools_execute_concurrently_keep_order(tmp_path: Path, monkeypatch) -> None:
+    scenario = load_scenario(SCENARIO_ROOT)
+    prepared = PreparedScenario(
+        scenario_root=SCENARIO_ROOT,
+        workspace=tmp_path,
+        metadata=scenario.metadata,
+    )
+    executed: list[str] = []
+    running = {"now": 0, "max_concurrent": 0}
+
+    def fake_execute(call: ToolCall) -> ToolResult:
+        running["now"] += 1
+        running["max_concurrent"] = max(running["max_concurrent"], running["now"])
+        executed.append(call.call_id)
+        time.sleep(0.01)
+        running["now"] -= 1
+        return ToolResult(
+            call_id=call.call_id,
+            name=call.name,
+            status="ok",
+            output=f"out:{call.name}",
+        )
+
+    monkeypatch.setattr(engine_module, "SessionLocal", lambda: BudgetOverrideDB({}))
+    engine = AgentEngine(
+        run_id=uuid.uuid4(),
+        client=ParallelToolClient(),
+        sandbox=SimpleNamespace(),
+        prepared=prepared,
+        faults=FaultController([]),
+    )
+    monkeypatch.setattr(engine, "_event", lambda kind, payload: engine.events.append({"kind": kind, **payload}))
+    monkeypatch.setattr(engine, "_execute", fake_execute)
+    monkeypatch.setattr(engine, "_completion_gaps", lambda: [])
+    monkeypatch.setattr(engine, "_compact_context", lambda *a, **k: None)
+    engine.run(prepared)
+    assert running["max_concurrent"] >= 2
+    calls = [e for e in engine.events if e["kind"] == "tool.call"]
+    assert [e["call_id"] for e in calls] == ["p1", "p2", "p3", "p4"]
+    results = [e for e in engine.events if e["kind"] == "tool.result"]
+    assert [e["call_id"] for e in results] == ["p1", "p2", "p3", "p4"]
+
+
+class SingleSafeToolClient:
+    profile = SimpleNamespace(native_tools=True)
+
+    def __init__(self) -> None:
+        self.turn = 0
+
+    def complete(self, messages: list[dict], tools: list[dict]) -> AssistantTurn:
+        self.turn += 1
+        if self.turn == 1:
+            return AssistantTurn(
+                tool_calls=[
+                    ToolCall(call_id="s1", name="read_file", arguments={"path": "a.txt"}),
+                ],
+                input_tokens=10,
+                output_tokens=2,
+            )
+        return AssistantTurn(content="done", input_tokens=10, output_tokens=2)
+
+
+def test_parallel_single_safe_tool_batch_fast_path(tmp_path: Path, monkeypatch) -> None:
+    scenario = load_scenario(SCENARIO_ROOT)
+    prepared = PreparedScenario(
+        scenario_root=SCENARIO_ROOT,
+        workspace=tmp_path,
+        metadata=scenario.metadata,
+    )
+    executed: list[str] = []
+
+    def fake_execute(call: ToolCall) -> ToolResult:
+        executed.append(call.call_id)
+        return ToolResult(
+            call_id=call.call_id,
+            name=call.name,
+            status="ok",
+            output=f"out:{call.name}",
+        )
+
+    monkeypatch.setattr(engine_module, "SessionLocal", lambda: BudgetOverrideDB({}))
+    engine = AgentEngine(
+        run_id=uuid.uuid4(),
+        client=SingleSafeToolClient(),
+        sandbox=SimpleNamespace(),
+        prepared=prepared,
+        faults=FaultController([]),
+    )
+    monkeypatch.setattr(engine, "_event", lambda kind, payload: engine.events.append({"kind": kind, **payload}))
+    monkeypatch.setattr(engine, "_execute", fake_execute)
+    monkeypatch.setattr(engine, "_completion_gaps", lambda: [])
+    monkeypatch.setattr(engine, "_compact_context", lambda *a, **k: None)
+    engine.run(prepared)
+    assert executed == ["s1"]
+    calls = [e for e in engine.events if e["kind"] == "tool.call"]
+    assert [e["call_id"] for e in calls] == ["s1"]
+    results = [e for e in engine.events if e["kind"] == "tool.result"]
+    assert [e["call_id"] for e in results] == ["s1"]
+
+
+class TwoSafeToolsClient:
+    profile = SimpleNamespace(native_tools=True)
+
+    def __init__(self) -> None:
+        self.turn = 0
+
+    def complete(self, messages: list[dict], tools: list[dict]) -> AssistantTurn:
+        self.turn += 1
+        if self.turn == 1:
+            return AssistantTurn(
+                tool_calls=[
+                    ToolCall(call_id="h1", name="read_file", arguments={"path": "a.txt"}),
+                    ToolCall(call_id="h2", name="read_file", arguments={"path": "b.txt"}),
+                ],
+                input_tokens=10,
+                output_tokens=2,
+            )
+        return AssistantTurn(content="done", input_tokens=10, output_tokens=2)
+
+
+def test_parallel_hard_budget_mid_turn_break_flushes_pending(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    scenario = load_scenario(SCENARIO_ROOT)
+    budget = scenario.metadata.budget.model_copy(update={"hard_tool_calls": 1})
+    prepared = PreparedScenario(
+        scenario_root=SCENARIO_ROOT,
+        workspace=tmp_path,
+        metadata=scenario.metadata.model_copy(update={"budget": budget}),
+    )
+    executed: list[str] = []
+
+    def fake_execute(call: ToolCall) -> ToolResult:
+        executed.append(call.call_id)
+        return ToolResult(
+            call_id=call.call_id,
+            name=call.name,
+            status="ok",
+            output=f"out:{call.name}",
+        )
+
+    monkeypatch.setattr(engine_module, "SessionLocal", lambda: BudgetOverrideDB({}))
+    engine = AgentEngine(
+        run_id=uuid.uuid4(),
+        client=TwoSafeToolsClient(),
+        sandbox=SimpleNamespace(),
+        prepared=prepared,
+        faults=FaultController([]),
+    )
+    monkeypatch.setattr(engine, "_event", lambda kind, payload: engine.events.append({"kind": kind, **payload}))
+    monkeypatch.setattr(engine, "_execute", fake_execute)
+    monkeypatch.setattr(engine, "_completion_gaps", lambda: [])
+    monkeypatch.setattr(engine, "_compact_context", lambda *a, **k: None)
+    result = engine.run(prepared)
+    assert executed == ["h1"]
+    assert result.tool_calls == 1
+    assert result.private_state["hard_budget_reasons"] == ["tool_calls"]
+    calls = [e for e in engine.events if e["kind"] == "tool.call"]
+    assert [e["call_id"] for e in calls] == ["h1"]
+    results = [e for e in engine.events if e["kind"] == "tool.result"]
+    assert [e["call_id"] for e in results] == ["h1"]
+
+
+def test_turn_boundary_events_emitted(tmp_path: Path, monkeypatch) -> None:
+    scenario = load_scenario(SCENARIO_ROOT)
+    prepared = PreparedScenario(
+        scenario_root=SCENARIO_ROOT,
+        workspace=tmp_path,
+        metadata=scenario.metadata,
+    )
+    monkeypatch.setattr(engine_module, "SessionLocal", lambda: BudgetOverrideDB({}))
+    engine = AgentEngine(
+        run_id=uuid.uuid4(),
+        client=FinalAnswerClient(),
+        sandbox=SimpleNamespace(),
+        prepared=prepared,
+        faults=FaultController([]),
+    )
+    monkeypatch.setattr(engine, "_event", lambda kind, payload: engine.events.append({"kind": kind, **payload}))
+    monkeypatch.setattr(engine, "_completion_gaps", lambda: [])
+    monkeypatch.setattr(engine, "_compact_context", lambda *a, **k: None)
+    engine.run(prepared)
+    begins = [e for e in engine.events if e["kind"] == "run.turn.begin"]
+    ends = [e for e in engine.events if e["kind"] == "run.turn.end"]
+    assert len(begins) >= 1
+    assert len(begins) == len(ends)
+    assert all("turn" in e for e in begins + ends)
+    assert ends[0]["tool_calls"] == 0
+    assert ends[0]["tool_call_count"] == 0
+    assert ends[0]["input_tokens"] == 17
+    assert ends[0]["output_tokens"] == 4
+    assert ends[0]["duration_ms"] >= 0
+
+
+def test_should_compact_uses_token_estimate_when_chars_under_limit(tmp_path: Path, monkeypatch) -> None:
+    scenario = load_scenario(SCENARIO_ROOT)
+    prepared = PreparedScenario(
+        scenario_root=SCENARIO_ROOT,
+        workspace=tmp_path,
+        metadata=scenario.metadata,
+    )
+    monkeypatch.setattr(engine_module, "SessionLocal", lambda: BudgetOverrideDB({}))
+    engine = AgentEngine(
+        run_id=uuid.uuid4(),
+        client=FinalAnswerClient(),
+        sandbox=SimpleNamespace(),
+        prepared=prepared,
+        faults=FaultController([]),
+        context_soft_characters=100_000,
+        context_target_characters=80_000,
+        context_emergency_characters=40_000,
+    )
+    engine.token_usage_available = True
+    engine.context_characters_seen = 100_000
+    engine.input_tokens = 80_000
+    engine.output_tokens = 20_000
+    assert engine._compact_reason(
+        characters=40_000,
+        estimated_tokens=engine._estimated_tokens(40_000),
+        soft_characters=100_000,
+    ) == "token_estimate"
+    assert engine._compact_reason(
+        characters=120_000,
+        estimated_tokens=1_000,
+        soft_characters=100_000,
+    ) == "soft_character_limit"
+    assert engine._compact_reason(
+        characters=30_000,
+        estimated_tokens=engine._estimated_tokens(30_000),
+        soft_characters=100_000,
+    ) is None
+    engine.input_tokens = 40_000
+    engine.output_tokens = 10_000
+    assert engine._compact_reason(
+        characters=40_000,
+        estimated_tokens=engine._estimated_tokens(40_000),
+        soft_characters=100_000,
+    ) is None
+    engine.context_characters_seen = 0
+    assert engine._estimated_tokens(40_000) is None
+    engine.token_usage_available = False
+    assert engine._estimated_tokens(40_000) is None
+    assert engine._compact_reason(
+        characters=40_000,
+        estimated_tokens=None,
+        soft_characters=100_000,
+    ) is None
+    assert engine._compact_reason(
+        characters=120_000,
+        estimated_tokens=None,
+        soft_characters=100_000,
+    ) == "soft_character_limit"
+
+
+def test_force_compaction_on_small_context_is_safe_noop(tmp_path: Path, monkeypatch) -> None:
+    scenario = load_scenario(SCENARIO_ROOT)
+    prepared = PreparedScenario(
+        scenario_root=SCENARIO_ROOT,
+        workspace=tmp_path,
+        metadata=scenario.metadata,
+    )
+    monkeypatch.setattr(engine_module, "SessionLocal", lambda: BudgetOverrideDB({}))
+    engine = AgentEngine(
+        run_id=uuid.uuid4(),
+        client=FinalAnswerClient(),
+        sandbox=SimpleNamespace(),
+        prepared=prepared,
+        faults=FaultController([]),
+    )
+    monkeypatch.setattr(
+        engine,
+        "_context_checkpoint_message",
+        lambda **_kwargs: {
+            "role": "user",
+            "content": "RUNNER_CONTEXT_CHECKPOINT_V1\n{}",
+        },
+    )
+    monkeypatch.setattr(
+        engine,
+        "_event",
+        lambda kind, payload: engine.events.append({"kind": kind, **payload}),
+    )
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "opening"},
+    ]
+    original = [dict(message) for message in messages]
+    report = engine._compact_context(
+        messages,
+        reason="token_estimate",
+        target_characters=engine.context_target_characters,
+        force=True,
+    )
+    assert report is None
+    assert messages == original
+    assert all(event["kind"] != "context.compacted" for event in engine.events)
+
+
+def test_token_estimate_trigger_compacts_and_emits_event(tmp_path: Path, monkeypatch) -> None:
+    scenario = load_scenario(SCENARIO_ROOT)
+    prepared = PreparedScenario(
+        scenario_root=SCENARIO_ROOT,
+        workspace=tmp_path,
+        metadata=scenario.metadata,
+    )
+    monkeypatch.setattr(engine_module, "SessionLocal", lambda: BudgetOverrideDB({}))
+    engine = AgentEngine(
+        run_id=uuid.uuid4(),
+        client=FinalAnswerClient(),
+        sandbox=SimpleNamespace(),
+        prepared=prepared,
+        faults=FaultController([]),
+        context_soft_characters=100_000,
+        context_target_characters=80_000,
+        context_emergency_characters=40_000,
+    )
+    monkeypatch.setattr(
+        engine,
+        "_context_checkpoint_message",
+        lambda **_kwargs: {
+            "role": "user",
+            "content": "RUNNER_CONTEXT_CHECKPOINT_V1\n{}",
+        },
+    )
+    monkeypatch.setattr(
+        engine,
+        "_event",
+        lambda kind, payload: engine.events.append({"kind": kind, **payload}),
+    )
+    engine.token_usage_available = True
+    engine.context_characters_seen = 100_000
+    engine.input_tokens = 80_000
+    engine.output_tokens = 20_000
+
+    def assistant(call_id: str) -> dict:
+        return {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": call_id,
+                    "type": "function",
+                    "function": {
+                        "name": "exec_command",
+                        "arguments": '{"command":"inspect"}',
+                    },
+                }
+            ],
+        }
+
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "opening"},
+        assistant("c1"),
+        {
+            "role": "tool",
+            "tool_call_id": "c1",
+            "content": json.dumps(
+                {
+                    "call_id": "c1",
+                    "name": "exec_command",
+                    "status": "ok",
+                    "output": "x" * 50_000,
+                }
+            ),
+        },
+    ]
+    context_size = json_size(messages)
+    reason = engine._compact_reason(
+        characters=context_size,
+        estimated_tokens=engine._estimated_tokens(context_size),
+        soft_characters=100_000,
+    )
+    assert reason == "token_estimate"
+    report = engine._compact_context(
+        messages,
+        reason=reason,
+        target_characters=80_000,
+        force=True,
+        aggressive_truncation=False,
+    )
+    assert report is not None
+    assert report["reason"] == "token_estimate"
+    compacted_events = [
+        event for event in engine.events if event["kind"] == "context.compacted"
+    ]
+    assert compacted_events
+    assert compacted_events[-1]["reason"] == "token_estimate"
+    assert json_size(messages) < context_size
+
+
+def test_run_compaction_passes_non_aggressive_truncation(tmp_path: Path, monkeypatch) -> None:
+    scenario = load_scenario(SCENARIO_ROOT)
+    prepared = PreparedScenario(
+        scenario_root=SCENARIO_ROOT,
+        workspace=tmp_path,
+        metadata=scenario.metadata,
+    )
+    monkeypatch.setattr(engine_module, "SessionLocal", lambda: BudgetOverrideDB({}))
+    engine = AgentEngine(
+        run_id=uuid.uuid4(),
+        client=FinalAnswerClient(),
+        sandbox=SimpleNamespace(),
+        prepared=prepared,
+        faults=FaultController([]),
+    )
+    calls: list[dict] = []
+    monkeypatch.setattr(
+        engine,
+        "_compact_reason",
+        lambda **_kwargs: "soft_character_limit",
+    )
+    monkeypatch.setattr(
+        engine,
+        "_compact_context",
+        lambda *args, **kwargs: calls.append({"args": args, "kwargs": kwargs}),
+    )
+    monkeypatch.setattr(
+        engine,
+        "_event",
+        lambda kind, payload: engine.events.append({"kind": kind, **payload}),
+    )
+    monkeypatch.setattr(engine, "_completion_gaps", lambda: [])
+    engine.run(prepared)
+    assert calls
+    assert calls[0]["kwargs"] == {
+        "reason": "soft_character_limit",
+        "target_characters": engine.context_target_characters,
+        "force": True,
+        "aggressive_truncation": False,
+    }
+    assert all(call["kwargs"]["aggressive_truncation"] is False for call in calls)
+
+
+def test_compact_context_truncation_limit_follows_aggressive_flag(tmp_path: Path, monkeypatch) -> None:
+    scenario = load_scenario(SCENARIO_ROOT)
+    prepared = PreparedScenario(
+        scenario_root=SCENARIO_ROOT,
+        workspace=tmp_path,
+        metadata=scenario.metadata,
+    )
+    monkeypatch.setattr(engine_module, "SessionLocal", lambda: BudgetOverrideDB({}))
+    engine = AgentEngine(
+        run_id=uuid.uuid4(),
+        client=FinalAnswerClient(),
+        sandbox=SimpleNamespace(),
+        prepared=prepared,
+        faults=FaultController([]),
+    )
+    received_limits: list[int] = []
+
+    def fake_compact(
+        messages: list[dict],
+        *,
+        checkpoint: dict,
+        target_characters: int,
+        tool_content_limit: int,
+        retain_recent_history: bool = True,
+    ) -> tuple[list[dict], dict[str, int]]:
+        received_limits.append(tool_content_limit)
+        return list(messages), {
+            "messages_removed": 0,
+            "compacted_characters": json_size(messages),
+            "tool_results_truncated": 0,
+            "assistant_content_truncated": 0,
+            "tool_arguments_truncated": 0,
+        }
+
+    monkeypatch.setattr(engine_module, "compact_message_history", fake_compact)
+    monkeypatch.setattr(
+        engine,
+        "_context_checkpoint_message",
+        lambda **_kwargs: {
+            "role": "user",
+            "content": "RUNNER_CONTEXT_CHECKPOINT_V1\n{}",
+        },
+    )
+    monkeypatch.setattr(
+        engine,
+        "_event",
+        lambda kind, payload: engine.events.append({"kind": kind, **payload}),
+    )
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "opening"},
+    ]
+    engine._compact_context(
+        messages,
+        reason="provider_context_rejection",
+        target_characters=16_000,
+        force=True,
+    )
+    engine._compact_context(
+        messages,
+        reason="soft_character_limit",
+        target_characters=16_000,
+        force=True,
+        aggressive_truncation=False,
+    )
+    assert received_limits == [2_000, 12_000]
+    assert messages == [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "opening"},
+    ]
+
+
+def test_identical_read_result_deduplicated(tmp_path: Path, monkeypatch) -> None:
+    scenario = load_scenario(SCENARIO_ROOT)
+    prepared = PreparedScenario(
+        scenario_root=SCENARIO_ROOT,
+        workspace=tmp_path,
+        metadata=scenario.metadata,
+    )
+    monkeypatch.setattr(engine_module, "SessionLocal", lambda: BudgetOverrideDB({}))
+    engine = AgentEngine(
+        run_id=uuid.uuid4(),
+        client=FinalAnswerClient(),
+        sandbox=SimpleNamespace(),
+        prepared=prepared,
+        faults=FaultController([]),
+    )
+    signature = "a" * 64
+    first = engine._model_visible_result(
+        ToolResult(call_id="r1", name="read_file", status="ok", output="A" * 5000),
+        signature,
+        ordinal=5,
+    )
+    assert first["output"] == "A" * 5000
+    assert first["deduplicated"] is False
+    second = engine._model_visible_result(
+        ToolResult(call_id="r2", name="read_file", status="ok", output="A" * 5000),
+        signature,
+        ordinal=5,
+    )
+    assert second["deduplicated"] is True
+    assert "Identical to tool call" in second["output"]
+    assert second["truncated"] is True
+    assert second["display_truncated_bytes"] == 0
+    assert second["display_truncated_lines"] == 0
+
+
+def test_read_result_structured_truncation(tmp_path: Path, monkeypatch) -> None:
+    scenario = load_scenario(SCENARIO_ROOT)
+    prepared = PreparedScenario(
+        scenario_root=SCENARIO_ROOT,
+        workspace=tmp_path,
+        metadata=scenario.metadata,
+    )
+    monkeypatch.setattr(engine_module, "SessionLocal", lambda: BudgetOverrideDB({}))
+    engine = AgentEngine(
+        run_id=uuid.uuid4(),
+        client=FinalAnswerClient(),
+        sandbox=SimpleNamespace(),
+        prepared=prepared,
+        faults=FaultController([]),
+    )
+    result = engine._model_visible_result(
+        ToolResult(call_id="r1", name="read_file", status="ok", output="x" * 20_000),
+        "b" * 64,
+        ordinal=5,
+    )
+    assert result["truncated"] is True
+    assert "[truncated" in result["output"]
+    assert len(result["output"]) < 20_000
+    assert len(result["output"]) <= 8_192
+    assert result["display_truncated_bytes"] > 0
+    assert result["output"].startswith("x" * int(8_192 * 0.6))
+
+
+def test_non_read_tool_not_deduplicated(tmp_path: Path, monkeypatch) -> None:
+    scenario = load_scenario(SCENARIO_ROOT)
+    prepared = PreparedScenario(
+        scenario_root=SCENARIO_ROOT,
+        workspace=tmp_path,
+        metadata=scenario.metadata,
+    )
+    monkeypatch.setattr(engine_module, "SessionLocal", lambda: BudgetOverrideDB({}))
+    engine = AgentEngine(
+        run_id=uuid.uuid4(),
+        client=FinalAnswerClient(),
+        sandbox=SimpleNamespace(),
+        prepared=prepared,
+        faults=FaultController([]),
+    )
+    result = engine._model_visible_result(
+        ToolResult(call_id="r1", name="exec_command", status="ok", output="y" * 20_000),
+        "c" * 64,
+        ordinal=5,
+    )
+    assert result["deduplicated"] is False
+    assert result["truncated"] is False
+    assert result["display_truncated_bytes"] == 0
+    assert result["display_truncated_lines"] == 0
+
+
+class ParallelDedupClient:
+    profile = SimpleNamespace(native_tools=True)
+
+    def __init__(self) -> None:
+        self.turn = 0
+        self.requests: list[list[dict]] = []
+
+    def complete(self, messages: list[dict], tools: list[dict]) -> AssistantTurn:
+        self.turn += 1
+        self.requests.append([dict(message) for message in messages])
+        if self.turn == 1:
+            return AssistantTurn(
+                tool_calls=[
+                    ToolCall(call_id="d1", name="read_file", arguments={"path": "a.txt"}),
+                    ToolCall(call_id="d2", name="read_file", arguments={"path": "a.txt"}),
+                ],
+                input_tokens=10,
+                output_tokens=2,
+            )
+        return AssistantTurn(content="done", input_tokens=10, output_tokens=2)
+
+
+def test_parallel_dedup_summary_uses_call_ordinal(tmp_path: Path, monkeypatch) -> None:
+    scenario = load_scenario(SCENARIO_ROOT)
+    prepared = PreparedScenario(
+        scenario_root=SCENARIO_ROOT,
+        workspace=tmp_path,
+        metadata=scenario.metadata,
+    )
+    client = ParallelDedupClient()
+
+    def fake_execute(call: ToolCall) -> ToolResult:
+        return ToolResult(
+            call_id=call.call_id,
+            name=call.name,
+            status="ok",
+            output="contents",
+        )
+
+    monkeypatch.setattr(engine_module, "SessionLocal", lambda: BudgetOverrideDB({}))
+    engine = AgentEngine(
+        run_id=uuid.uuid4(),
+        client=client,
+        sandbox=SimpleNamespace(),
+        prepared=prepared,
+        faults=FaultController([]),
+    )
+    monkeypatch.setattr(engine, "_event", lambda kind, payload: engine.events.append({"kind": kind, **payload}))
+    monkeypatch.setattr(engine, "_execute", fake_execute)
+    monkeypatch.setattr(engine, "_completion_gaps", lambda: [])
+    monkeypatch.setattr(engine, "_compact_context", lambda *a, **k: None)
+    engine.run(prepared)
+
+    signature = engine_module.tool_call_signature(
+        ToolCall(call_id="d1", name="read_file", arguments={"path": "a.txt"})
+    )
+    calls = [e for e in engine.events if e["kind"] == "tool.call"]
+    results = [e for e in engine.events if e["kind"] == "tool.result"]
+    assert [e["ordinal"] for e in calls] == [1, 2]
+    assert engine.tool_result_cache[signature] == (calls[0]["ordinal"], "contents")
+    assert results[1]["deduplicated"] is True
+    last_message = client.requests[1][-1]
+    assert last_message["role"] == "tool"
+    assert "Identical to tool call #1" in last_message["content"]
