@@ -230,6 +230,31 @@ export const api = {
     }
     return `${API_BASE}/runs/${runId}/export?${params.toString()}`;
   },
+  exportDownload: async (
+    runId: string,
+    format: "json" | "tar.gz" | "html",
+    include: string[],
+  ) => {
+    const response = await fetch(api.exportUrl(runId, format, include), {
+      credentials: "include",
+    });
+    if (!response.ok) {
+      const body = await response.text();
+      const detail = errorDetail(body);
+      throw new ApiError(
+        response.status,
+        detail.message || `${response.status} ${response.statusText}`,
+        detail.code,
+      );
+    }
+    const contentDisposition = response.headers.get("content-disposition") ?? "";
+    const match = /filename="?([^"]+)"?/.exec(contentDisposition);
+    const blob = await response.blob();
+    return {
+      blob,
+      filename: match?.[1] ?? `run-${runId}.${format === "tar.gz" ? "tar.gz" : format}`,
+    };
+  },
   runDiffs: (runId: string) => request<RunDiff[]>(`/runs/${runId}/diffs`),
   runDiffsUrl: (runId: string) => `${API_BASE}/runs/${runId}/diffs`,
   adminSummary: () => request<AdminSummary>("/admin/summary"),

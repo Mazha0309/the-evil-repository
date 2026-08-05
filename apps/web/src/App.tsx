@@ -2036,11 +2036,164 @@ function RunDetailPage() {
     ...EXPORT_ARCHIVE_CONTENT,
   ]);
   const [downloadStarted, setDownloadStarted] = useState(false);
+  const [downloadError, setDownloadError] = useState("");
+  const [downloading, setDownloading] = useState(false);
+  const [snapshotBusy, setSnapshotBusy] = useState(false);
+  const [snapshotError, setSnapshotError] = useState("");
   useEffect(() => {
     if (!downloadStarted) return;
     const timer = window.setTimeout(() => setDownloadStarted(false), 4_000);
     return () => window.clearTimeout(timer);
   }, [downloadStarted]);
+  const handleDownload = async () => {
+    setDownloadError("");
+    setDownloading(true);
+    try {
+      const { blob, filename } = await api.exportDownload(
+        runId,
+        exportFormat,
+        exportInclude,
+      );
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = filename;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(url);
+      setDownloadStarted(true);
+    } catch (error) {
+      setDownloadError(
+        error instanceof Error
+          ? error.message
+          : text("下载失败", "Download failed"),
+      );
+    } finally {
+      setDownloading(false);
+    }
+  };
+  const snapshotTabs = [
+    "live",
+    "overview",
+    "graph",
+    "audit",
+    "score",
+    "diff",
+  ] as const;
+  const handleSnapshot = async () => {
+    setSnapshotError("");
+    setSnapshotBusy(true);
+    try {
+      const originalTab = tab;
+      const hero =
+        document.querySelector(".run-hero")?.outerHTML ?? "";
+      const contentByTab: Record<string, string> = {};
+      for (const snapTab of snapshotTabs) {
+        setTab(snapTab);
+        await new Promise((resolve) =>
+          window.setTimeout(resolve, 800),
+        );
+        const tabsNode = document.querySelector(".tabs");
+        const exportNode = document.querySelector(".export-center");
+        let content = "";
+        if (tabsNode && exportNode) {
+          let node: ChildNode | null = tabsNode.nextSibling;
+          while (node && node !== exportNode) {
+            if (node.nodeType === Node.ELEMENT_NODE) {
+              content += (node as HTMLElement).outerHTML;
+            }
+            node = node.nextSibling;
+          }
+        }
+        contentByTab[snapTab] = content;
+      }
+      setTab(originalTab);
+      let css = "";
+      for (const sheet of Array.from(document.styleSheets)) {
+        try {
+          if (sheet.href) {
+            const response = await fetch(sheet.href);
+            if (response.ok) css += await response.text();
+          } else {
+            css += Array.from(sheet.cssRules)
+              .map((rule) => rule.cssText)
+              .join("\n");
+          }
+        } catch {
+          // 跨域或异常样式表跳过
+        }
+      }
+      const tabButtons = snapshotTabs
+        .map(
+          (snapTab) =>
+            `<button type="button" class="snap-tab" data-snap="${snapTab}">${snapTab}</button>`,
+        )
+        .join("");
+      const sections = snapshotTabs
+        .map(
+          (snapTab) =>
+            `<section class="snap-section" data-snap-section="${snapTab}">${
+              contentByTab[snapTab] ?? ""
+            }</section>`,
+        )
+        .join("");
+      const html = `<!doctype html>
+<html lang="${isChinese ? "zh-CN" : "en"}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${shortId(data?.id ?? runId)} · ${text("运行快照", "Run snapshot")}</title>
+<style>${css}
+.snap-tabs{display:flex;gap:8px;flex-wrap:wrap;padding:16px 0;}
+.snap-tab{appearance:none;background:#1e221e;color:#c9ccb8;border:1px solid #2a2f2a;border-radius:8px;padding:6px 14px;font-size:13px;cursor:pointer;}
+.snap-tab.active{background:#2c332c;color:#e6e6d4;border-color:#4a5a4a;}
+.snap-section{display:none;}
+.snap-section.snap-active{display:block;}
+</style>
+</head>
+<body>
+<main class="main"><div class="page-wrap">
+${hero}
+<div class="snap-tabs">${tabButtons}</div>
+${sections}
+</div></main>
+<script>
+document.querySelectorAll(".snap-tab").forEach(function (btn) {
+  btn.addEventListener("click", function () {
+    document.querySelectorAll(".snap-tab").forEach(function (b) { b.classList.remove("active"); });
+    document.querySelectorAll(".snap-section").forEach(function (s) { s.classList.remove("snap-active"); });
+    btn.classList.add("active");
+    var section = document.querySelector('[data-snap-section="' + btn.dataset.snap + '"]');
+    if (section) section.classList.add("snap-active");
+  });
+});
+document.querySelector('.snap-tab[data-snap="overview"]').classList.add("active");
+document.querySelector('[data-snap-section="overview"]').classList.add("snap-active");
+</script>
+</body>
+</html>`;
+      const blob = new Blob([html], {
+        type: "text/html;charset=utf-8",
+      });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `run-${runId}-page.html`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      setSnapshotError(
+        error instanceof Error
+          ? error.message
+          : text("快照生成失败", "Snapshot failed"),
+      );
+    } finally {
+      setSnapshotBusy(false);
+    }
+  };
   const run = useQuery({
     queryKey: ["run", runId],
     queryFn: () => api.run(runId),
@@ -2640,14 +2793,17 @@ function RunDetailPage() {
               <Download size={14} /> {text("下载导出", "Download export")}
             </button>
           ) : (
-            <a
+            <button
               className="button"
-              href={api.exportUrl(runId, exportFormat, exportInclude)}
-              download={`run-${runId}.${exportFormat}`}
-              onClick={() => setDownloadStarted(true)}
+              type="button"
+              disabled={downloading}
+              onClick={handleDownload}
             >
-              <Download size={14} /> {text("下载导出", "Download export")}
-            </a>
+              <Download size={14} />
+              {downloading
+                ? text("下载中…", "Downloading…")
+                : text("下载导出", "Download export")}
+            </button>
           )}
           {downloadStarted && (
             <span className="export-center__notice" role="status">
@@ -2655,6 +2811,11 @@ function RunDetailPage() {
                 "已开始下载，若未收到文件请检查运行状态。",
                 "Download started; if no file arrives, check the run status.",
               )}
+            </span>
+          )}
+          {downloadError && (
+            <span className="inline-error" role="alert">
+              {downloadError}
             </span>
           )}
         </div>
@@ -2682,6 +2843,33 @@ function RunDetailPage() {
             </ul>
           </div>
         ) : null}
+        <div className="export-center__snapshot">
+          <h4>
+            {text("页面快照", "Page snapshot")}
+          </h4>
+          <p className="meta">
+            {text(
+              "把整个运行详情页保存为一个离线 HTML 文件，与页面上看到的一致，可离线切换全部标签页。",
+              "Save the entire run detail page as a self-contained offline HTML file, identical to what you see, with all tabs switchable offline.",
+            )}
+          </p>
+          <button
+            className="button"
+            type="button"
+            disabled={snapshotBusy}
+            onClick={handleSnapshot}
+          >
+            <FileCode2 size={14} />
+            {snapshotBusy
+              ? text("生成中…", "Generating…")
+              : text("生成页面快照", "Generate page snapshot")}
+          </button>
+          {snapshotError && (
+            <span className="inline-error" role="alert">
+              {snapshotError}
+            </span>
+          )}
+        </div>
       </section>
       <div className="run-footer-actions">
         {data.status === "running" &&
