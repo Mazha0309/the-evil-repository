@@ -1462,26 +1462,183 @@ def test_should_compact_uses_token_estimate_when_chars_under_limit(tmp_path: Pat
         sandbox=SimpleNamespace(),
         prepared=prepared,
         faults=FaultController([]),
+        context_soft_characters=100_000,
+        context_target_characters=80_000,
+        context_emergency_characters=40_000,
     )
     engine.token_usage_available = True
-    assert engine._should_compact(
+    engine.context_characters_seen = 100_000
+    engine.input_tokens = 80_000
+    engine.output_tokens = 20_000
+    assert engine._compact_reason(
         characters=40_000,
-        estimated_tokens=90_000,
+        estimated_tokens=engine._estimated_tokens(40_000),
         soft_characters=100_000,
-    ) is True
-    assert engine._should_compact(
+    ) == "token_estimate"
+    assert engine._compact_reason(
         characters=120_000,
         estimated_tokens=1_000,
         soft_characters=100_000,
-    ) is True
-    assert engine._should_compact(
-        characters=40_000,
-        estimated_tokens=10_000,
+    ) == "soft_character_limit"
+    assert engine._compact_reason(
+        characters=30_000,
+        estimated_tokens=engine._estimated_tokens(30_000),
         soft_characters=100_000,
-    ) is False
+    ) is None
+    engine.input_tokens = 40_000
+    engine.output_tokens = 10_000
+    assert engine._compact_reason(
+        characters=40_000,
+        estimated_tokens=engine._estimated_tokens(40_000),
+        soft_characters=100_000,
+    ) is None
+    engine.context_characters_seen = 0
+    assert engine._estimated_tokens(40_000) is None
     engine.token_usage_available = False
-    assert engine._should_compact(
+    assert engine._estimated_tokens(40_000) is None
+    assert engine._compact_reason(
         characters=40_000,
-        estimated_tokens=90_000,
+        estimated_tokens=None,
         soft_characters=100_000,
-    ) is False
+    ) is None
+    assert engine._compact_reason(
+        characters=120_000,
+        estimated_tokens=None,
+        soft_characters=100_000,
+    ) == "soft_character_limit"
+
+
+def test_force_compaction_on_small_context_is_safe_noop(tmp_path: Path, monkeypatch) -> None:
+    scenario = load_scenario(SCENARIO_ROOT)
+    prepared = PreparedScenario(
+        scenario_root=SCENARIO_ROOT,
+        workspace=tmp_path,
+        metadata=scenario.metadata,
+    )
+    monkeypatch.setattr(engine_module, "SessionLocal", lambda: BudgetOverrideDB({}))
+    engine = AgentEngine(
+        run_id=uuid.uuid4(),
+        client=FinalAnswerClient(),
+        sandbox=SimpleNamespace(),
+        prepared=prepared,
+        faults=FaultController([]),
+    )
+    monkeypatch.setattr(
+        engine,
+        "_context_checkpoint_message",
+        lambda **_kwargs: {
+            "role": "user",
+            "content": "RUNNER_CONTEXT_CHECKPOINT_V1\n{}",
+        },
+    )
+    monkeypatch.setattr(
+        engine,
+        "_event",
+        lambda kind, payload: engine.events.append({"kind": kind, **payload}),
+    )
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "opening"},
+    ]
+    original = [dict(message) for message in messages]
+    report = engine._compact_context(
+        messages,
+        reason="token_estimate",
+        target_characters=engine.context_target_characters,
+        force=True,
+    )
+    assert report is None
+    assert messages == original
+    assert all(event["kind"] != "context.compacted" for event in engine.events)
+
+
+def test_token_estimate_trigger_compacts_and_emits_event(tmp_path: Path, monkeypatch) -> None:
+    scenario = load_scenario(SCENARIO_ROOT)
+    prepared = PreparedScenario(
+        scenario_root=SCENARIO_ROOT,
+        workspace=tmp_path,
+        metadata=scenario.metadata,
+    )
+    monkeypatch.setattr(engine_module, "SessionLocal", lambda: BudgetOverrideDB({}))
+    engine = AgentEngine(
+        run_id=uuid.uuid4(),
+        client=FinalAnswerClient(),
+        sandbox=SimpleNamespace(),
+        prepared=prepared,
+        faults=FaultController([]),
+        context_soft_characters=100_000,
+        context_target_characters=80_000,
+        context_emergency_characters=40_000,
+    )
+    monkeypatch.setattr(
+        engine,
+        "_context_checkpoint_message",
+        lambda **_kwargs: {
+            "role": "user",
+            "content": "RUNNER_CONTEXT_CHECKPOINT_V1\n{}",
+        },
+    )
+    monkeypatch.setattr(
+        engine,
+        "_event",
+        lambda kind, payload: engine.events.append({"kind": kind, **payload}),
+    )
+    engine.token_usage_available = True
+    engine.context_characters_seen = 100_000
+    engine.input_tokens = 80_000
+    engine.output_tokens = 20_000
+
+    def assistant(call_id: str) -> dict:
+        return {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": call_id,
+                    "type": "function",
+                    "function": {
+                        "name": "exec_command",
+                        "arguments": '{"command":"inspect"}',
+                    },
+                }
+            ],
+        }
+
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "opening"},
+        assistant("c1"),
+        {
+            "role": "tool",
+            "tool_call_id": "c1",
+            "content": json.dumps(
+                {
+                    "call_id": "c1",
+                    "name": "exec_command",
+                    "status": "ok",
+                    "output": "x" * 50_000,
+                }
+            ),
+        },
+    ]
+    context_size = json_size(messages)
+    reason = engine._compact_reason(
+        characters=context_size,
+        estimated_tokens=engine._estimated_tokens(context_size),
+        soft_characters=100_000,
+    )
+    assert reason == "token_estimate"
+    report = engine._compact_context(
+        messages,
+        reason=reason,
+        target_characters=80_000,
+        force=True,
+    )
+    assert report is not None
+    assert report["reason"] == "token_estimate"
+    compacted_events = [
+        event for event in engine.events if event["kind"] == "context.compacted"
+    ]
+    assert compacted_events
+    assert compacted_events[-1]["reason"] == "token_estimate"
+    assert json_size(messages) < context_size

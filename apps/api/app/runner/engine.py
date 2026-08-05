@@ -142,6 +142,7 @@ class AgentEngine:
         self.context_soft_characters = context_soft_characters
         self.context_target_characters = context_target_characters
         self.context_emergency_characters = context_emergency_characters
+        self.context_characters_seen = 0
         self.context_compactions = 0
         self.context_messages_removed = 0
         self.context_characters_removed = 0
@@ -202,25 +203,20 @@ class AgentEngine:
             turn_number += 1
             self.current_turn = turn_number
             self.client.logical_turn = turn_number
-            estimated_tokens = None
-            if self.token_usage_available:
-                estimated_tokens = json_size(messages) // 4
-            if self._should_compact(
-                characters=json_size(messages),
+            context_size = json_size(messages)
+            self.context_characters_seen += context_size
+            estimated_tokens = self._estimated_tokens(context_size)
+            reason = self._compact_reason(
+                characters=context_size,
                 estimated_tokens=estimated_tokens,
                 soft_characters=self.context_soft_characters,
-            ):
+            )
+            if reason is not None:
                 self._compact_context(
                     messages,
-                    reason=(
-                        "token_estimate"
-                        if (
-                            estimated_tokens is not None
-                            and json_size(messages) < self.context_soft_characters
-                        )
-                        else "soft_character_limit"
-                    ),
+                    reason=reason,
                     target_characters=self.context_target_characters,
+                    force=True,
                 )
             context_role_counts = Counter(
                 str(message.get("role", "unknown")) for message in messages
@@ -827,18 +823,31 @@ class AgentEngine:
             self.provider_durations_ms.append(duration_ms)
             return turn, total_duration_ms
 
-    def _should_compact(
+    def _estimated_tokens(self, context_size: int) -> int | None:
+        if not self.token_usage_available or self.context_characters_seen <= 0:
+            return None
+        total_tokens = self.input_tokens + self.output_tokens
+        if total_tokens <= 0:
+            return None
+        ratio = total_tokens / self.context_characters_seen
+        return int(context_size * ratio)
+
+    def _compact_reason(
         self,
         *,
         characters: int,
         estimated_tokens: int | None,
         soft_characters: int,
-    ) -> bool:
+    ) -> str | None:
         if characters >= soft_characters:
-            return True
-        if self.token_usage_available and estimated_tokens is not None:
-            return estimated_tokens >= soft_characters // 4
-        return False
+            return "soft_character_limit"
+        if (
+            characters >= self.context_emergency_characters
+            and estimated_tokens is not None
+            and estimated_tokens >= soft_characters // 4
+        ):
+            return "token_estimate"
+        return None
 
     def _compact_context(
         self,
