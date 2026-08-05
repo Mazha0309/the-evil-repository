@@ -108,6 +108,7 @@ import type {
   ModelProfile,
   ModelProvider,
   Run,
+  RunDiff,
   RunEvent,
   RunStatus,
   SemanticJudgeReview,
@@ -2023,7 +2024,7 @@ function RunDetailPage() {
   const queryClient = useQueryClient();
   const eventQueryKey = ["events", runId] as const;
   const [tab, setTab] = useState<
-    "live" | "overview" | "graph" | "audit" | "score" | "diff"
+    "live" | "overview" | "graph" | "audit" | "score" | "diff" | "export"
   >("live");
   const [confirmCancel, setConfirmCancel] = useState(false);
   const [confirmArchive, setConfirmArchive] = useState(false);
@@ -2309,6 +2310,12 @@ function RunDetailPage() {
         >
           <GitBranch size={14} /> {text("改动", "Diff")}
         </button>
+        <button
+          className={tab === "export" ? "active" : ""}
+          onClick={() => setTab("export")}
+        >
+          <Download size={14} /> {text("导出", "Export")}
+        </button>
       </div>
       {tab === "live" && (
         <LiveRunMonitor
@@ -2522,8 +2529,10 @@ function RunDetailPage() {
           </section>
         </div>
       )}
-      {tab === "diff" && <DiffTab runId={runId} />}
-      <section className="panel export-center">
+      {tab === "diff" && (
+        <DiffTab runId={runId} events={events.data ?? []} />
+      )}
+      {tab === "export" && (      <section className="panel export-center">
         <PanelHeading
           icon={<Download size={16} />}
           title={text("导出中心", "Export center")}
@@ -2685,7 +2694,9 @@ function RunDetailPage() {
             </ul>
           </div>
         ) : null}
-      </section>
+      </section>)}
+
+
       <div className="run-footer-actions">
         {data.status === "running" &&
           (pauseRequested ? (
@@ -3382,12 +3393,33 @@ function AuditTimeline({ events }: { events: RunEvent[] }) {
   );
 }
 
-function DiffTab({ runId }: { runId: string }) {
+function DiffTab({ runId, events }: { runId: string; events: RunEvent[] }) {
   const { text } = useLocale();
+  const liveDiffs = useMemo(() => {
+    const latestByRepo = new Map<string, RunDiff>();
+    for (const event of events) {
+      if (event.kind !== "run.repo_diff") continue;
+      const payload = event.payload as Record<string, unknown>;
+      const repo = String(payload.repo ?? "");
+      latestByRepo.set(repo, {
+        repo,
+        diff_text: String(payload.diff_text ?? ""),
+        status_text: String(payload.status_text ?? ""),
+        added_lines: Number(payload.added_lines ?? 0),
+        removed_lines: Number(payload.removed_lines ?? 0),
+        file_count: Number(payload.file_count ?? 0),
+      });
+    }
+    return Array.from(latestByRepo.values()).sort((a, b) =>
+      a.repo.localeCompare(b.repo),
+    );
+  }, [events]);
   const diffs = useQuery({
     queryKey: ["run-diffs", runId],
     queryFn: () => api.runDiffs(runId),
+    enabled: liveDiffs.length === 0,
   });
+  if (liveDiffs.length > 0) return <DiffViewer diffs={liveDiffs} />;
   if (diffs.isLoading) return <LoadingState />;
   if (diffs.isError) {
     const error = diffs.error as ApiError;
