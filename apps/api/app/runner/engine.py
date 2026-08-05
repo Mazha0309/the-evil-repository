@@ -562,7 +562,7 @@ class AgentEngine:
         tool_duration_ms = round((time.monotonic() - started) * 1_000)
         self.tool_durations_ms.append(tool_duration_ms)
         self.tool_status_counts[result.status] += 1
-        visible = self._model_visible_result(result, tool_call_signature(call))
+        visible = self._model_visible_result(result, tool_call_signature(call), ordinal)
         self._event(
             "tool.result",
             {
@@ -600,6 +600,7 @@ class AgentEngine:
         self,
         result: ToolResult,
         signature: str,
+        ordinal: int,
     ) -> dict[str, Any]:
         """Shape the tool output text fed back to the model.
 
@@ -632,7 +633,7 @@ class AgentEngine:
                 )
                 return visible
         else:
-            self.tool_result_cache[signature] = (self.tool_calls, result.output)
+            self.tool_result_cache[signature] = (ordinal, result.output)
         truncated_output, truncated = self._truncate_output(
             result.output, self.result_display_limit
         )

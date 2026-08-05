@@ -1772,12 +1772,14 @@ def test_identical_read_result_deduplicated(tmp_path: Path, monkeypatch) -> None
     first = engine._model_visible_result(
         ToolResult(call_id="r1", name="read_file", status="ok", output="A" * 5000),
         signature,
+        ordinal=5,
     )
     assert first["output"] == "A" * 5000
     assert first["deduplicated"] is False
     second = engine._model_visible_result(
         ToolResult(call_id="r2", name="read_file", status="ok", output="A" * 5000),
         signature,
+        ordinal=5,
     )
     assert second["deduplicated"] is True
     assert "Identical to tool call" in second["output"]
@@ -1802,6 +1804,7 @@ def test_read_result_structured_truncation(tmp_path: Path, monkeypatch) -> None:
     result = engine._model_visible_result(
         ToolResult(call_id="r1", name="read_file", status="ok", output="x" * 20_000),
         "b" * 64,
+        ordinal=5,
     )
     assert result["truncated"] is True
     assert "[truncated" in result["output"]
@@ -1827,6 +1830,73 @@ def test_non_read_tool_not_deduplicated(tmp_path: Path, monkeypatch) -> None:
     result = engine._model_visible_result(
         ToolResult(call_id="r1", name="exec_command", status="ok", output="y" * 20_000),
         "c" * 64,
+        ordinal=5,
     )
     assert result["deduplicated"] is False
     assert result["truncated"] is False
+
+
+class ParallelDedupClient:
+    profile = SimpleNamespace(native_tools=True)
+
+    def __init__(self) -> None:
+        self.turn = 0
+        self.requests: list[list[dict]] = []
+
+    def complete(self, messages: list[dict], tools: list[dict]) -> AssistantTurn:
+        self.turn += 1
+        self.requests.append([dict(message) for message in messages])
+        if self.turn == 1:
+            return AssistantTurn(
+                tool_calls=[
+                    ToolCall(call_id="d1", name="read_file", arguments={"path": "a.txt"}),
+                    ToolCall(call_id="d2", name="read_file", arguments={"path": "a.txt"}),
+                ],
+                input_tokens=10,
+                output_tokens=2,
+            )
+        return AssistantTurn(content="done", input_tokens=10, output_tokens=2)
+
+
+def test_parallel_dedup_summary_uses_call_ordinal(tmp_path: Path, monkeypatch) -> None:
+    scenario = load_scenario(SCENARIO_ROOT)
+    prepared = PreparedScenario(
+        scenario_root=SCENARIO_ROOT,
+        workspace=tmp_path,
+        metadata=scenario.metadata,
+    )
+    client = ParallelDedupClient()
+
+    def fake_execute(call: ToolCall) -> ToolResult:
+        return ToolResult(
+            call_id=call.call_id,
+            name=call.name,
+            status="ok",
+            output="contents",
+        )
+
+    monkeypatch.setattr(engine_module, "SessionLocal", lambda: BudgetOverrideDB({}))
+    engine = AgentEngine(
+        run_id=uuid.uuid4(),
+        client=client,
+        sandbox=SimpleNamespace(),
+        prepared=prepared,
+        faults=FaultController([]),
+    )
+    monkeypatch.setattr(engine, "_event", lambda kind, payload: engine.events.append({"kind": kind, **payload}))
+    monkeypatch.setattr(engine, "_execute", fake_execute)
+    monkeypatch.setattr(engine, "_completion_gaps", lambda: [])
+    monkeypatch.setattr(engine, "_compact_context", lambda *a, **k: None)
+    engine.run(prepared)
+
+    signature = engine_module.tool_call_signature(
+        ToolCall(call_id="d1", name="read_file", arguments={"path": "a.txt"})
+    )
+    calls = [e for e in engine.events if e["kind"] == "tool.call"]
+    results = [e for e in engine.events if e["kind"] == "tool.result"]
+    assert [e["ordinal"] for e in calls] == [1, 2]
+    assert engine.tool_result_cache[signature] == (calls[0]["ordinal"], "contents")
+    assert results[1]["deduplicated"] is True
+    last_message = client.requests[1][-1]
+    assert last_message["role"] == "tool"
+    assert "Identical to tool call #1" in last_message["content"]
