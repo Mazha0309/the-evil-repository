@@ -373,6 +373,18 @@ def add_archive_bytes(
     archive.addfile(info, io.BytesIO(payload))
 
 
+def _diff_stats(diff_text: str) -> dict[str, int]:
+    added = removed = files = 0
+    for line in diff_text.splitlines():
+        if line.startswith("diff --git "):
+            files += 1
+        elif line.startswith("+") and not line.startswith("+++"):
+            added += 1
+        elif line.startswith("-") and not line.startswith("---"):
+            removed += 1
+    return {"added_lines": added, "removed_lines": removed, "file_count": files}
+
+
 def _lean_export(
     manifest: dict[str, Any],
     telemetry: dict[str, Any],
@@ -381,6 +393,25 @@ def _lean_export(
     result: ScenarioRunResult,
 ) -> dict[str, Any]:
     """Return the compact export payload: manifest subset without events or artifact bodies."""
+    diffs: list[dict[str, Any]] = []
+    for name in sorted(result.artifacts):
+        if not name.endswith(".diff"):
+            continue
+        inventory_sha = next(
+            (
+                item["sha256"]
+                for item in manifest["artifact_inventory"]
+                if item["name"] == name
+            ),
+            None,
+        )
+        diffs.append(
+            {
+                "repo": name[: -len(".diff")],
+                **_diff_stats(result.artifacts[name]),
+                "sha256": inventory_sha,
+            }
+        )
     return {
         "export_schema_version": 3,
         "platform_version": manifest["platform_version"],
@@ -395,8 +426,16 @@ def _lean_export(
         "telemetry_summary": manifest["telemetry_summary"],
         "artifact_inventory": manifest["artifact_inventory"],
         "budget_adjustment_count": len(telemetry["budget_adjustments"]),
+        "budget_adjustment_fields": sorted(
+            {
+                item.get("field")
+                for item in telemetry["budget_adjustments"]
+                if item.get("field")
+            }
+        ),
         "turn_summary": turn_summary(telemetry["turn_boundaries"]),
         "investigation_graph": investigation_graph,
+        "diffs": diffs,
     }
 
 

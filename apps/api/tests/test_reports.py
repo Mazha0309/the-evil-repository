@@ -1,4 +1,7 @@
+import hashlib
+import io
 import json
+import tarfile
 import uuid
 from collections.abc import Generator
 from pathlib import Path
@@ -9,7 +12,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from app.api import auth, reports
+from app.api import auth, diffs, reports
 from app.api.reports import export_report
 from app.database import Base, get_session
 from app.models import (
@@ -264,10 +267,12 @@ def test_detailed_report_exports_replayable_telemetry_without_secrets(
     }
     assert payload["budget_adjustments"] == {
         "count": 0,
+        "fields": [],
         "first_at": None,
         "last_at": None,
     }
     assert payload["overtime_penalty"] == {"total_penalty": 0.25}
+    assert payload["diffs"] == []
 
 
 def test_report_v3_compact_events_and_lean_fields() -> None:
@@ -307,6 +312,7 @@ def test_report_v3_compact_events_and_lean_fields() -> None:
     }
     assert payload["budget_adjustments"] == {
         "count": 1,
+        "fields": ["hard_tool_calls"],
         "first_at": "2026-08-05T10:00:00+00:00",
         "last_at": "2026-08-05T10:00:00+00:00",
     }
@@ -335,6 +341,61 @@ def test_report_v3_full_events_query_param() -> None:
     assert "arguments" in tool_calls[0]
     assert tool_calls[0]["arguments"] == TOOL_ARGUMENTS
     assert "arguments_sha256" not in tool_calls[0]
+
+
+def test_report_v3_diffs_manifest_from_archive(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(diffs.settings, "artifact_root", str(tmp_path))
+    client, sessions = build_client()
+    setup = client.post(
+        "/api/v1/auth/setup",
+        json={
+            "username": "report-admin",
+            "password": "correct horse battery staple",
+        },
+    )
+    assert setup.status_code == 201
+    run_id = seed_run(sessions)
+    diff_text = (
+        "diff --git a/README.md b/README.md\n"
+        "--- a/README.md\n"
+        "+++ b/README.md\n"
+        "@@ -1,1 +1,2 @@\n"
+        "- old\n"
+        "+ new\n"
+    )
+    diff_sha256 = hashlib.sha256(diff_text.encode()).hexdigest()
+    with tarfile.open(tmp_path / f"{run_id}.tar.gz", "w:gz") as archive:
+        data = diff_text.encode()
+        info = tarfile.TarInfo("artifacts/dead-letter.diff")
+        info.size = len(data)
+        archive.addfile(info, io.BytesIO(data))
+    with sessions() as session:
+        session.add(
+            RunArtifact(
+                run_id=run_id,
+                name="dead-letter.diff",
+                media_type="text/plain",
+                path="unused",
+                sha256=diff_sha256,
+                size=len(data),
+                metadata_json={},
+            )
+        )
+        session.commit()
+
+    response = client.get(f"/api/v1/reports/{run_id}")
+    payload = response.json()
+
+    assert payload["export_schema_version"] == 3
+    assert payload["diffs"] == [
+        {
+            "repo": "dead-letter",
+            "added_lines": 1,
+            "removed_lines": 1,
+            "file_count": 1,
+            "sha256": diff_sha256,
+        }
+    ]
 
 
 def test_report_v3_compact_events_hashes_dict_arguments() -> None:

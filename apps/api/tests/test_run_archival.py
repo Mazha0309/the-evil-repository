@@ -1,3 +1,4 @@
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -193,7 +194,17 @@ def test_archive_schema_v3_includes_new_telemetry_files(tmp_path: Path) -> None:
                 "duration_ms": 100,
             },
         ],
-        artifacts={"scorecard.json": '{"score": 777, "dimensions": {}}'},
+        artifacts={
+            "scorecard.json": '{"score": 777, "dimensions": {}}',
+            "dead-letter.diff": (
+                "diff --git a/README.md b/README.md\n"
+                "--- a/README.md\n"
+                "+++ b/README.md\n"
+                "@@ -1,1 +1,2 @@\n"
+                "- old\n"
+                "+ new\n"
+            ),
+        },
         private_state={
             "resource_ledger": {"hard_tool_calls": 5000, "active_time_ms": 12_000},
             "investigation_graph": {
@@ -243,6 +254,23 @@ def test_archive_schema_v3_includes_new_telemetry_files(tmp_path: Path) -> None:
     assert resource_ledger["hard_tool_calls"] == 5000
     assert export["export_schema_version"] == 3
     assert export["budget_adjustment_count"] == 1
+    assert export["budget_adjustment_fields"] == ["hard_tool_calls"]
+    assert export["diffs"] == [
+        {
+            "repo": "dead-letter",
+            "added_lines": 1,
+            "removed_lines": 1,
+            "file_count": 1,
+            "sha256": hashlib.sha256(
+                b"diff --git a/README.md b/README.md\n"
+                b"--- a/README.md\n"
+                b"+++ b/README.md\n"
+                b"@@ -1,1 +1,2 @@\n"
+                b"- old\n"
+                b"+ new\n"
+            ).hexdigest(),
+        }
+    ]
     assert export["turn_summary"] == {
         "total_turns": 1,
         "completed_turns": 1,

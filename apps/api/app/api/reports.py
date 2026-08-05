@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.api.diffs import _archive_candidates, _read_members, _stats
 from app.database import get_session
 from app.investigation import graph_payload
 from app.models import (
@@ -57,15 +58,45 @@ def _compact_events(events: list[dict]) -> list[dict]:
 
 def _budget_adjustment_summary(
     adjustments: list[dict],
-) -> dict[str, int | str | None]:
+) -> dict[str, int | str | None | list[str]]:
     def stamp(item: dict) -> str | None:
         return item.get("requested_at") or item.get("applied_at")
 
     return {
         "count": len(adjustments),
+        "fields": sorted(
+            {
+                item.get("field")
+                for item in adjustments
+                if item.get("field")
+            }
+        ),
         "first_at": stamp(adjustments[0]) if adjustments else None,
         "last_at": stamp(adjustments[-1]) if adjustments else None,
     }
+
+
+def _diff_manifest(
+    artifacts: list[RunArtifact],
+    run_id: uuid.UUID,
+) -> list[dict[str, int | str | None]]:
+    sha_by_name = {artifact.name: artifact.sha256 for artifact in artifacts}
+    for candidate in _archive_candidates(run_id):
+        if not candidate.exists():
+            continue
+        entries = []
+        for entry in _read_members(candidate):
+            if not entry["diff_text"]:
+                continue
+            entries.append(
+                {
+                    "repo": entry["repo"],
+                    **_stats(entry["diff_text"]),
+                    "sha256": sha_by_name.get(f"{entry['repo']}.diff"),
+                }
+            )
+        return entries
+    return []
 
 
 @router.get("/{run_id}")
@@ -179,6 +210,7 @@ def export_report(
             }
             for artifact in artifacts
         ],
+        "diffs": _diff_manifest(artifacts, run_id),
         "privacy": {
             "credentials_included": False,
             "hidden_chain_of_thought_included": False,

@@ -204,7 +204,7 @@ def export_run_archive(
     format: str = "json",
     include: str = "all",
     session: Session = Depends(get_session),
-    user: UserAccount = Depends(csrf_protection),
+    user: UserAccount = Depends(current_user),
 ) -> Response:
     run = session.get(BenchmarkRun, run_id)
     if not can_access_run(session, user, run):
@@ -212,7 +212,7 @@ def export_run_archive(
     if format == "json":
         return export_report(
             run_id,
-            include=("full-events" if include == "all" else "compact"),
+            include=("full-events" if include == "full-events" else "compact"),
             session=session,
             user=user,
         )

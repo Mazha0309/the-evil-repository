@@ -18,6 +18,7 @@ from app.database import Base, get_session
 from app.models import (
     BenchmarkRun,
     RunArtifact,
+    RunEvent,
     RunStatus,
     UserAccount,
     UserRole,
@@ -200,33 +201,53 @@ def test_run_export_endpoint_returns_lean_json_and_filtered_tar_gz(
         },
     )
     assert setup.status_code == 201
-    csrf_token = setup.json()["csrf_token"]
     run_id = uuid.uuid4()
     with sessions() as session:
-        session.add(
-            BenchmarkRun(
-                id=run_id,
-                task_id=uuid.uuid4(),
-                candidate_model_id=uuid.uuid4(),
-                status=RunStatus.failed,
-                stage="Failed",
-                config={},
-            )
+        session.add_all(
+            [
+                BenchmarkRun(
+                    id=run_id,
+                    task_id=uuid.uuid4(),
+                    candidate_model_id=uuid.uuid4(),
+                    status=RunStatus.failed,
+                    stage="Failed",
+                    config={},
+                ),
+                RunEvent(
+                    run_id=run_id,
+                    sequence=1,
+                    kind="tool.call",
+                    payload={
+                        "turn": 1,
+                        "call_id": "call-1",
+                        "name": "read_file",
+                        "arguments": {"path": "README.md"},
+                    },
+                ),
+            ]
         )
         session.commit()
     write_run_archive(tmp_path, run_id)
 
-    response = client.get(
-        f"/api/v1/runs/{run_id}/export?format=json",
-        headers={"X-CSRF-Token": csrf_token},
-    )
+    response = client.get(f"/api/v1/runs/{run_id}/export?format=json")
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("application/json")
-    assert response.json()["export_schema_version"] == 3
+    payload = response.json()
+    assert payload["export_schema_version"] == 3
+    tool_calls = [e for e in payload["events"] if e.get("kind") == "tool.call"]
+    assert tool_calls
+    assert "arguments" not in tool_calls[0]
 
     response = client.get(
-        f"/api/v1/runs/{run_id}/export?format=tar.gz&include=all",
-        headers={"X-CSRF-Token": csrf_token},
+        f"/api/v1/runs/{run_id}/export?format=json&include=full-events"
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    tool_calls = [e for e in payload["events"] if e.get("kind") == "tool.call"]
+    assert tool_calls[0]["arguments"] == {"path": "README.md"}
+
+    response = client.get(
+        f"/api/v1/runs/{run_id}/export?format=tar.gz&include=all"
     )
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("application/gzip")
@@ -240,8 +261,7 @@ def test_run_export_endpoint_returns_lean_json_and_filtered_tar_gz(
     } <= names
 
     response = client.get(
-        f"/api/v1/runs/{run_id}/export?format=tar.gz&include=telemetry",
-        headers={"X-CSRF-Token": csrf_token},
+        f"/api/v1/runs/{run_id}/export?format=tar.gz&include=telemetry"
     )
     assert response.status_code == 200
     with tarfile.open(fileobj=io.BytesIO(response.content), mode="r:gz") as archive:
