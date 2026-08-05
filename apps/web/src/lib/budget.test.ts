@@ -1,5 +1,18 @@
 import { describe, expect, it } from "vitest";
-import { mergeBudgetOverrides } from "./budget";
+import { mergeBudgetOverrides, OPTIONAL_BUDGET_FIELDS } from "./budget";
+
+describe("OPTIONAL_BUDGET_FIELDS", () => {
+  it("lists the four removable optional budget fields", () => {
+    expect(OPTIONAL_BUDGET_FIELDS).toEqual(
+      new Set([
+        "soft_provider_requests",
+        "hard_provider_requests",
+        "soft_total_tokens",
+        "hard_total_tokens",
+      ]),
+    );
+  });
+});
 
 describe("mergeBudgetOverrides", () => {
   it("applies overrides onto base budget", () => {

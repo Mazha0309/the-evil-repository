@@ -74,7 +74,7 @@ import AuthScreen from "./components/AuthScreen";
 import CredentialsPage from "./components/CredentialsPage";
 import LiveRunMonitor from "./components/LiveRunMonitor";
 import { api, ApiError } from "./lib/api";
-import { mergeBudgetOverrides } from "./lib/budget";
+import { mergeBudgetOverrides, OPTIONAL_BUDGET_FIELDS } from "./lib/budget";
 import { useLocale } from "./lib/i18n";
 import {
   buildModelParameters,
@@ -2735,18 +2735,25 @@ function BudgetAdjustDialog({
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const data = new FormData(event.currentTarget);
-    const changed: Partial<BudgetAdjustment> = {};
+    const changed: Record<string, number | null> = {};
     for (const key of BUDGET_FIELDS) {
       const raw = String(data.get(key) ?? "").trim();
-      const value = raw ? Number(raw) : null;
-      if (value !== null && value !== merged[key]) {
+      const current = merged[key];
+      if (!raw) {
+        if (OPTIONAL_BUDGET_FIELDS.has(key) && current !== null) {
+          changed[key] = null;
+        }
+        continue;
+      }
+      const value = Number(raw);
+      if (value !== current) {
         changed[key] = value;
       }
     }
     adjust.mutate({
       ...changed,
       reason: String(data.get("reason") ?? "").trim(),
-    });
+    } as BudgetAdjustment);
   };
   const close = () => {
     if (!adjust.isPending) onClose();
@@ -2769,8 +2776,7 @@ function BudgetAdjustDialog({
                 min={BUDGET_FIELD_MINS[key]}
                 defaultValue={merged[key] ?? ""}
                 placeholder={
-                  key.includes("provider_requests") ||
-                  key.endsWith("_tokens")
+                  OPTIONAL_BUDGET_FIELDS.has(key)
                     ? text("不限制", "unlimited")
                     : undefined
                 }
