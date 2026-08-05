@@ -207,6 +207,13 @@ export const api = {
       body: JSON.stringify(payload),
     }),
   reportUrl: (id: string) => `${API_BASE}/reports/${id}`,
+  exportUrl: (runId: string, format: "json" | "tar.gz", include: string[]) => {
+    const params = new URLSearchParams({ format });
+    if (format === "tar.gz" && include.length > 0 && !include.includes("all")) {
+      params.set("include", include.join(","));
+    }
+    return `${API_BASE}/runs/${runId}/export?${params.toString()}`;
+  },
   runDiffs: (runId: string) => request<RunDiff[]>(`/runs/${runId}/diffs`),
   runDiffsUrl: (runId: string) => `${API_BASE}/runs/${runId}/diffs`,
   adminSummary: () => request<AdminSummary>("/admin/summary"),

@@ -4380,6 +4380,142 @@ pre {
   margin-top: 15px;
 }
 
+.export-center {
+  margin-top: 15px;
+}
+
+.export-center__formats {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.export-center__format {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 12px;
+  cursor: pointer;
+}
+
+.export-center__format--active {
+  border-color: rgba(173, 255, 47, 0.45);
+  background: rgba(173, 255, 47, 0.045);
+}
+
+.export-center__format input {
+  margin-top: 3px;
+  accent-color: var(--lime);
+}
+
+.export-center__format strong,
+.export-center__format small {
+  display: block;
+}
+
+.export-center__format strong {
+  color: #c8d0c3;
+  font-size: 10px;
+}
+
+.export-center__format small {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 8px;
+  line-height: 1.55;
+}
+
+.export-center__includes {
+  display: flex;
+  align-items: flex-start;
+  gap: 18px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  margin-top: 12px;
+  padding: 12px;
+}
+
+.export-center__label {
+  flex: 0 0 auto;
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 8px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.export-center__footer {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.export-center__notice {
+  color: var(--lime);
+  font-size: 9px;
+}
+
+.export-center__manifest {
+  border-top: 1px solid var(--line);
+  margin-top: 16px;
+  padding-top: 14px;
+}
+
+.export-center__manifest h4 {
+  margin: 0 0 10px;
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.export-center__manifest ul {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.export-center__manifest li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 9px;
+}
+
+.export-center__manifest code {
+  min-width: 0;
+  overflow: hidden;
+  color: #c8d0c3;
+  font-family: var(--mono);
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.export-center__manifest li span {
+  flex: 0 0 auto;
+  color: var(--muted);
+}
+
+.export-center__manifest li small {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  margin-left: auto;
+  color: #566052;
+  font-family: var(--mono);
+  font-size: 8px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .settings-grid {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }

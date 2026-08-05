@@ -76,6 +76,7 @@ import DiffViewer from "./components/DiffViewer";
 import LiveRunMonitor from "./components/LiveRunMonitor";
 import { api, ApiError } from "./lib/api";
 import { mergeBudgetOverrides, OPTIONAL_BUDGET_FIELDS } from "./lib/budget";
+import { bytes } from "./lib/format";
 import { useLocale } from "./lib/i18n";
 import {
   buildModelParameters,
@@ -2000,6 +2001,18 @@ function NewRunPage() {
   );
 }
 
+const EXPORT_INCLUDE_OPTIONS: Array<{
+  value: string;
+  labelZh: string;
+  labelEn: string;
+}> = [
+  { value: "all", labelZh: "全量", labelEn: "All" },
+  { value: "telemetry", labelZh: "遥测", labelEn: "Telemetry" },
+  { value: "events", labelZh: "事件", labelEn: "Events" },
+  { value: "diffs", labelZh: "Diff", labelEn: "Diff" },
+  { value: "graph", labelZh: "图谱", labelEn: "Graph" },
+];
+
 function RunDetailPage() {
   const { isChinese, locale, text } = useLocale();
   const { runId = "" } = useParams();
@@ -2013,6 +2026,17 @@ function RunDetailPage() {
   const [confirmArchive, setConfirmArchive] = useState(false);
   const [budgetAdjustOpen, setBudgetAdjustOpen] = useState(false);
   const [cancelError, setCancelError] = useState("");
+  const [exportFormat, setExportFormat] = useState<"json" | "tar.gz">(
+    "tar.gz",
+  );
+  const [exportInclude, setExportInclude] = useState<string[]>([
+    "all",
+    "telemetry",
+    "events",
+    "diffs",
+    "graph",
+  ]);
+  const [downloadStarted, setDownloadStarted] = useState(false);
   const run = useQuery({
     queryKey: ["run", runId],
     queryFn: () => api.run(runId),
@@ -2462,27 +2486,129 @@ function RunDetailPage() {
         </div>
       )}
       {tab === "diff" && <DiffTab runId={runId} />}
-      <div className="run-footer-actions">
-        <a
-          className="button button--ghost"
-          href={api.reportUrl(data.id)}
-          download={`run-${data.id}-telemetry.json`}
-        >
-          <Download size={14} /> {text("导出完整遥测", "Export full telemetry")}
-        </a>
-        {artifacts.data?.map((artifact) => (
-          <a
-            className="button button--ghost"
-            href={api.runArtifactUrl(data.id, artifact.id)}
-            download={artifact.name}
-            key={artifact.id}
+      <section className="panel export-center">
+        <PanelHeading
+          icon={<Download size={16} />}
+          title={text("导出中心", "Export center")}
+          detail={text("格式与内容选择", "Format and content selection")}
+        />
+        <div className="export-center__formats" role="radiogroup">
+          <label
+            className={
+              exportFormat === "tar.gz"
+                ? "export-center__format export-center__format--active"
+                : "export-center__format"
+            }
           >
-            <Download size={14} />{" "}
-            {artifact.metadata_json.kind === "failure-checkpoint"
-              ? text("下载失败检查点", "Download failure checkpoint")
-              : text("下载运行归档", "Download run archive")}
+            <input
+              type="radio"
+              name="export_format"
+              value="tar.gz"
+              checked={exportFormat === "tar.gz"}
+              onChange={() => setExportFormat("tar.gz")}
+            />
+            <span>
+              <strong>{text("归档（tar.gz）", "Archive (tar.gz)")}</strong>
+              <small>
+                {text(
+                  "完整遥测、事件、diff 与图谱原始数据包。",
+                  "Bundle with full telemetry, events, diffs and investigation graph.",
+                )}
+              </small>
+            </span>
+          </label>
+          <label
+            className={
+              exportFormat === "json"
+                ? "export-center__format export-center__format--active"
+                : "export-center__format"
+            }
+          >
+            <input
+              type="radio"
+              name="export_format"
+              value="json"
+              checked={exportFormat === "json"}
+              onChange={() => setExportFormat("json")}
+            />
+            <span>
+              <strong>{text("精简 JSON", "Compact JSON")}</strong>
+              <small>
+                {text(
+                  "汇总与评分卡，适合报告与审计。",
+                  "Summary and scorecard, for reports and audits.",
+                )}
+              </small>
+            </span>
+          </label>
+        </div>
+        {exportFormat === "tar.gz" ? (
+          <div className="export-center__includes">
+            <span className="export-center__label">
+              {text("内容", "Content")}
+            </span>
+            {EXPORT_INCLUDE_OPTIONS.map((option) => (
+              <label className="check-row" key={option.value}>
+                <input
+                  type="checkbox"
+                  checked={exportInclude.includes(option.value)}
+                  onChange={(event) =>
+                    setExportInclude((prev) =>
+                      event.target.checked
+                        ? [...prev, option.value]
+                        : prev.filter((value) => value !== option.value),
+                    )
+                  }
+                />
+                <span>{text(option.labelZh, option.labelEn)}</span>
+              </label>
+            ))}
+          </div>
+        ) : (
+          <div className="callout">
+            <Lightbulb size={14} />
+            <span>
+              {text(
+                "JSON 导出为精简格式（含摘要与 scorecard，不含全文）。",
+                "JSON export is a compact format (summary and scorecard, without full content).",
+              )}
+            </span>
+          </div>
+        )}
+        <div className="export-center__footer">
+          <a
+            className="button"
+            href={api.exportUrl(runId, exportFormat, exportInclude)}
+            download={`run-${runId}.${exportFormat === "tar.gz" ? "tar.gz" : "json"}`}
+            onClick={() => {
+              setDownloadStarted(true);
+              window.setTimeout(() => setDownloadStarted(false), 4_000);
+            }}
+          >
+            <Download size={14} /> {text("下载导出", "Download export")}
           </a>
-        ))}
+          {downloadStarted && (
+            <span className="export-center__notice" role="status">
+              {text("已开始下载", "Download started")}
+            </span>
+          )}
+        </div>
+        {artifacts.data?.length ? (
+          <div className="export-center__manifest">
+            <h4>{text("归档清单", "Archive manifest")}</h4>
+            <ul>
+              {artifacts.data.map((artifact) => (
+                <li key={artifact.id}>
+                  <code>{artifact.name}</code>
+                  <span>{bytes(artifact.size)}</span>
+                  <small title={artifact.sha256}>{artifact.sha256}</small>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
+      </section>
+      <div className="run-footer-actions">
         {data.status === "running" &&
           (pauseRequested ? (
             <button
