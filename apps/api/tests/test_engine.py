@@ -1181,3 +1181,43 @@ def test_budget_override_null_value_skipped_without_crash(
     assert result.tool_calls == 1
     assert result.final_response == "done"
     assert not any(e["kind"] == "run.budget_adjusted" for e in engine.events)
+
+def test_budget_override_invalid_batch_rejected_atomically(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config = {
+        "budget_overrides": [
+            {
+                "field": "soft_seconds",
+                "value": 30_000,
+                "reason": "extend soft time",
+                "requested_by": "test",
+                "requested_at": "2026-08-05T00:00:00Z",
+            },
+            {
+                "field": "hard_seconds",
+                "value": 20_000,
+                "reason": "reduce hard time",
+                "requested_by": "test",
+                "requested_at": "2026-08-05T00:00:00Z",
+            },
+        ]
+    }
+    engine, prepared = _budget_override_engine(
+        tmp_path,
+        monkeypatch,
+        config,
+        tool_turns=1,
+    )
+    initial_soft_seconds = engine.budget.soft_seconds
+    initial_hard_seconds = engine.budget.hard_seconds
+
+    result = engine.run(prepared)
+
+    assert engine.budget.soft_seconds == initial_soft_seconds
+    assert engine.budget.hard_seconds == initial_hard_seconds
+    assert not any(e["kind"] == "run.budget_adjusted" for e in engine.events)
+    assert result.tool_calls == 1
+
+
