@@ -1784,6 +1784,8 @@ def test_identical_read_result_deduplicated(tmp_path: Path, monkeypatch) -> None
     assert second["deduplicated"] is True
     assert "Identical to tool call" in second["output"]
     assert second["truncated"] is True
+    assert second["display_truncated_bytes"] == 0
+    assert second["display_truncated_lines"] == 0
 
 
 def test_read_result_structured_truncation(tmp_path: Path, monkeypatch) -> None:
@@ -1809,6 +1811,8 @@ def test_read_result_structured_truncation(tmp_path: Path, monkeypatch) -> None:
     assert result["truncated"] is True
     assert "[truncated" in result["output"]
     assert len(result["output"]) < 20_000
+    assert len(result["output"]) <= 8_192
+    assert result["display_truncated_bytes"] > 0
     assert result["output"].startswith("x" * int(8_192 * 0.6))
 
 
@@ -1834,6 +1838,8 @@ def test_non_read_tool_not_deduplicated(tmp_path: Path, monkeypatch) -> None:
     )
     assert result["deduplicated"] is False
     assert result["truncated"] is False
+    assert result["display_truncated_bytes"] == 0
+    assert result["display_truncated_lines"] == 0
 
 
 class ParallelDedupClient:

@@ -574,6 +574,8 @@ class AgentEngine:
                 "truncated": result.truncated,
                 "deduplicated": visible["deduplicated"],
                 "display_truncated": visible["display_truncated"],
+                "display_truncated_bytes": visible["display_truncated_bytes"],
+                "display_truncated_lines": visible["display_truncated_lines"],
                 "duration_ms": tool_duration_ms,
                 "output_size_bytes": len(result.output.encode()),
                 "output_lines": result.output.count("\n") + bool(result.output),
@@ -612,6 +614,8 @@ class AgentEngine:
                 **result.model_dump(mode="json"),
                 "deduplicated": False,
                 "display_truncated": False,
+                "display_truncated_bytes": 0,
+                "display_truncated_lines": 0,
             }
         cached = self.tool_result_cache.get(signature)
         if cached is not None:
@@ -629,12 +633,14 @@ class AgentEngine:
                         "truncated": True,
                         "deduplicated": True,
                         "display_truncated": False,
+                        "display_truncated_bytes": 0,
+                        "display_truncated_lines": 0,
                     }
                 )
                 return visible
         else:
             self.tool_result_cache[signature] = (ordinal, result.output)
-        truncated_output, truncated = self._truncate_output(
+        truncated_output, truncated, truncated_bytes, truncated_lines = self._truncate_output(
             result.output, self.result_display_limit
         )
         visible = result.model_dump(mode="json")
@@ -645,6 +651,8 @@ class AgentEngine:
                     "truncated": True,
                     "deduplicated": False,
                     "display_truncated": True,
+                    "display_truncated_bytes": truncated_bytes,
+                    "display_truncated_lines": truncated_lines,
                 }
             )
         else:
@@ -652,19 +660,27 @@ class AgentEngine:
                 {
                     "deduplicated": False,
                     "display_truncated": False,
+                    "display_truncated_bytes": 0,
+                    "display_truncated_lines": 0,
                 }
             )
         return visible
 
-    def _truncate_output(self, text: str, limit: int) -> tuple[str, bool]:
+    def _truncate_output(self, text: str, limit: int) -> tuple[str, bool, int, int]:
         if len(text) <= limit:
-            return text, False
+            return text, False, 0, 0
         head_size = int(limit * 0.6)
         tail_size = limit - head_size
         head = text[:head_size]
-        tail = text[-tail_size:]
-        marker = f"\n[truncated {len(text) - head_size - tail_size} bytes]\n"
-        return f"{head}{marker}{tail}", True
+        tail = text[-tail_size:] if tail_size else ""
+        omitted = text[head_size : len(text) - tail_size]
+        marker = f"\n[truncated {len(omitted.encode())} bytes]\n"
+        while len(head) + len(marker) + len(tail) > limit and tail_size > 0:
+            tail_size -= 1
+            tail = text[-tail_size:] if tail_size else ""
+            omitted = text[head_size : len(text) - tail_size]
+            marker = f"\n[truncated {len(omitted.encode())} bytes]\n"
+        return f"{head}{marker}{tail}", True, len(omitted.encode()), omitted.count("\n")
 
     def checkpoint_result(self, error: Exception) -> ScenarioRunResult:
         """Capture the bounded in-memory ledger after an unexpected interruption."""
