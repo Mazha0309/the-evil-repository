@@ -70,7 +70,7 @@ def _render_diffs(diffs: list[dict[str, Any]]) -> str:
         status = _esc(diff.get("status_text", "")).strip()
         blocks.append(
             "<details open>"
-            f"<summary>{_esc(diff['repo'])} "
+            f"<summary>{_esc(diff.get('repo', ''))} "
             f'<span class="badge">+{_esc(diff.get("added_lines", 0))} '
             f"-{_esc(diff.get('removed_lines', 0))} "
             f"{_esc(diff.get('file_count', 0))} files</span></summary>"

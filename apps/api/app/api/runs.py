@@ -233,19 +233,22 @@ def export_run_archive(
                             media_type="text/html; charset=utf-8",
                             headers={"Content-Disposition": f'inline; filename="run-{run_id}.html"'},
                         )
-            except (tarfile_module.TarError, OSError):
+            except (tarfile_module.TarError, OSError, EOFError):
                 pass
         from app.api.diffs import _archive_candidates, _read_members
         from app.api.reports import build_report_payload
         from app.report_html import render_report_html, report_payload_for_html
 
         payload = build_report_payload(run_id, session, include="compact")
+        text_by_repo = {}
         for candidate in _archive_candidates(run_id):
-            if candidate.exists():
+            if not candidate.exists():
+                continue
+            try:
                 text_by_repo = {entry["repo"]: entry for entry in _read_members(candidate)}
-                break
-        else:
-            text_by_repo = {}
+            except (tarfile_module.TarError, OSError, EOFError):
+                text_by_repo = {}
+            break
         for diff in payload.get("diffs") or []:
             entry = text_by_repo.get(diff["repo"])
             if entry:
