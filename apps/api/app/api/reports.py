@@ -39,10 +39,18 @@ def _compact_events(events: list[dict]) -> list[dict]:
                 if key in item:
                     raw = item.pop(key)
                     if isinstance(raw, str):
-                        encoded = raw.encode()
-                        item[f"{key}_sha256"] = hashlib.sha256(encoded).hexdigest()
-                        item[f"{key}_size_bytes"] = len(encoded)
-                        item[f"{key}_preview"] = raw[:200]
+                        text = raw
+                    else:
+                        text = json.dumps(
+                            raw,
+                            ensure_ascii=False,
+                            sort_keys=True,
+                            default=str,
+                        )
+                    encoded = text.encode()
+                    item[f"{key}_sha256"] = hashlib.sha256(encoded).hexdigest()
+                    item[f"{key}_size_bytes"] = len(encoded)
+                    item[f"{key}_preview"] = text[:200]
         compacted.append(item)
     return compacted
 
@@ -58,8 +66,6 @@ def _budget_adjustment_summary(
         "first_at": stamp(adjustments[0]) if adjustments else None,
         "last_at": stamp(adjustments[-1]) if adjustments else None,
     }
-
-
 
 
 @router.get("/{run_id}")

@@ -56,6 +56,7 @@ def seed_run(
     sessions: sessionmaker[Session],
     *,
     with_tools: bool = True,
+    tool_arguments: object = TOOL_ARGUMENTS,
 ) -> uuid.UUID:
     with sessions() as session:
         model = ModelProfile(
@@ -110,7 +111,7 @@ def seed_run(
                             "turn": 1,
                             "call_id": "call-1",
                             "name": "read_file",
-                            "arguments": TOOL_ARGUMENTS,
+                            "arguments": tool_arguments,
                         },
                     ),
                     RunEvent(
@@ -334,3 +335,35 @@ def test_report_v3_full_events_query_param() -> None:
     assert "arguments" in tool_calls[0]
     assert tool_calls[0]["arguments"] == TOOL_ARGUMENTS
     assert "arguments_sha256" not in tool_calls[0]
+
+
+def test_report_v3_compact_events_hashes_dict_arguments() -> None:
+    client, sessions = build_client()
+    setup = client.post(
+        "/api/v1/auth/setup",
+        json={
+            "username": "report-admin",
+            "password": "correct horse battery staple",
+        },
+    )
+    assert setup.status_code == 201
+    dict_arguments = {
+        "path": "README.md",
+        "lines": [1, 40],
+        "nested": {"flag": True},
+    }
+    run_id = seed_run(sessions, tool_arguments=dict_arguments)
+
+    response = client.get(f"/api/v1/reports/{run_id}")
+    payload = response.json()
+
+    assert payload["export_schema_version"] == 3
+    tool_calls = [e for e in payload["events"] if e.get("kind") == "tool.call"]
+    assert tool_calls
+    assert "arguments" not in tool_calls[0]
+    assert "arguments_sha256" in tool_calls[0]
+    assert "arguments_size_bytes" in tool_calls[0]
+    assert "arguments_preview" in tool_calls[0]
+    expected = json.dumps(dict_arguments, ensure_ascii=False, sort_keys=True)
+    assert tool_calls[0]["arguments_preview"] == expected[:200]
+    assert tool_calls[0]["arguments_size_bytes"] == len(expected.encode())
