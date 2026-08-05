@@ -367,3 +367,67 @@ def test_adjust_budget_rejects_single_sided_token_pair(monkeypatch) -> None:
         )
 
     assert error.value.status_code == 400
+
+
+def test_adjust_budget_records_null_for_optional_field(monkeypatch) -> None:
+    run_id = uuid.uuid4()
+    run = SimpleNamespace(
+        id=run_id,
+        task_id=uuid.uuid4(),
+        status=RunStatus.running,
+        stage="Candidate investigation",
+        config=_running_run_config(),
+    )
+    events: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        runs_module,
+        "append_event",
+        lambda _session, _run_id, kind, payload: events.append((kind, payload)),
+    )
+
+    result = adjust_run_budget(
+        run_id,
+        BudgetAdjustment(hard_provider_requests=None, reason="unlimit"),
+        FakeSession(run),
+        SimpleNamespace(role=UserRole.admin, username="mazha"),
+    )
+
+    assert result is run
+    overrides = run.config["budget_overrides"]
+    assert overrides[-1]["field"] == "hard_provider_requests"
+    assert overrides[-1]["value"] is None
+    assert events[0][0] == "run.budget_adjustment_requested"
+    assert events[0][1]["fields"] == ["hard_provider_requests"]
+
+
+def test_adjust_budget_removes_optional_limit(monkeypatch) -> None:
+    run_id = uuid.uuid4()
+    run = SimpleNamespace(
+        id=run_id,
+        task_id=uuid.uuid4(),
+        status=RunStatus.running,
+        stage="Candidate investigation",
+        config=_running_run_config()
+        | {
+            "budget_overrides": [
+                {
+                    "field": "hard_provider_requests",
+                    "value": 500,
+                    "reason": "previous adjustment",
+                }
+            ]
+        },
+    )
+    monkeypatch.setattr(runs_module, "append_event", lambda *_args: None)
+
+    result = adjust_run_budget(
+        run_id,
+        BudgetAdjustment(hard_provider_requests=None, reason="unlimit"),
+        FakeSession(run),
+        SimpleNamespace(role=UserRole.admin, username="mazha"),
+    )
+
+    assert result is run
+    overrides = run.config["budget_overrides"]
+    assert overrides[-1]["field"] == "hard_provider_requests"
+    assert overrides[-1]["value"] is None

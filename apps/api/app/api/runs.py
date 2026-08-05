@@ -54,6 +54,15 @@ _BUDGET_FIELDS = (
     "hard_total_tokens",
 )
 
+_OPTIONAL_BUDGET_FIELDS = frozenset(
+    {
+        "soft_provider_requests",
+        "hard_provider_requests",
+        "soft_total_tokens",
+        "hard_total_tokens",
+    }
+)
+
 
 @router.get("", response_model=list[RunRead])
 def list_runs(
@@ -338,10 +347,15 @@ def adjust_run_budget(
     current.update(dict(run.config))
     for override in list(dict(run.config).get("budget_overrides", [])):
         current[override["field"]] = override["value"]
-    merged = {
-        field: getattr(payload, field) if getattr(payload, field) is not None else current.get(field)
-        for field in _BUDGET_FIELDS
-    }
+    merged: dict[str, int | None] = {}
+    for field in _BUDGET_FIELDS:
+        payload_value = getattr(payload, field)
+        if payload_value is not None:
+            merged[field] = payload_value
+        elif field in payload.model_fields_set and field in _OPTIONAL_BUDGET_FIELDS:
+            merged[field] = None
+        else:
+            merged[field] = current.get(field)
     try:
         BudgetSpec(**merged)
     except ValidationError as exc:
@@ -359,17 +373,18 @@ def adjust_run_budget(
     requested_fields: list[str] = []
     for field in _BUDGET_FIELDS:
         value = getattr(payload, field)
-        if value is not None:
-            requested_fields.append(field)
-            overrides.append(
-                {
-                    "field": field,
-                    "value": value,
-                    "reason": payload.reason,
-                    "requested_by": user.username,
-                    "requested_at": datetime.now(UTC).isoformat(),
-                }
-            )
+        if value is None and (field not in _OPTIONAL_BUDGET_FIELDS or field not in payload.model_fields_set):
+            continue
+        requested_fields.append(field)
+        overrides.append(
+            {
+                "field": field,
+                "value": value,
+                "reason": payload.reason,
+                "requested_by": user.username,
+                "requested_at": datetime.now(UTC).isoformat(),
+            }
+        )
     config["budget_overrides"] = overrides
     run.config = config
     append_event(
