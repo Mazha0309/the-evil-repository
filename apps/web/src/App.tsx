@@ -2048,7 +2048,7 @@ function RunDetailPage() {
       isTerminal(query.state.data?.status) ? false : 2_000,
   });
   const downloadDisabled =
-    exportInclude.length === 0 ||
+    (exportFormat !== "html" && exportInclude.length === 0) ||
     (exportFormat === "tar.gz" && !isTerminal(run.data?.status));
   const events = useQuery({
     queryKey: eventQueryKey,
