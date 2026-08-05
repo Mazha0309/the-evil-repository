@@ -1,4 +1,5 @@
 import json
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -425,7 +426,8 @@ def test_transient_provider_responses_retry_with_bounded_backoff() -> None:
     assert client.request_attempts == 3
     assert [request["request_number"] for request in requests] == [1, 2, 3]
     assert [request["attempt"] for request in requests] == [1, 2, 3]
-    assert delays == [0.5, 4.0]
+    assert 0.375 <= delays[0] <= 0.625  # Retry-After 0.5s, jittered ±25%
+    assert 1.5 <= delays[1] <= 2.5  # 503, 1s base × 2^(attempt 1), jittered
     assert [retry["status_code"] for retry in retries] == [429, 503]
     assert retries[-1]["next_attempt"] == 3
     assert retries[-1]["maximum_attempts"] == 4
@@ -489,20 +491,17 @@ def test_provider_transport_error_retries_and_recovers() -> None:
     assert turn.content == "recovered"
     assert attempts == 2
     assert [request["request_number"] for request in requests] == [1, 2]
-    assert delays == [2.0]
-    assert retries == [
-        {
-            "provider": "openai_compatible",
-            "model_id": "test-model",
-            "logical_turn": 0,
-            "status_code": None,
-            "error_type": "ReadTimeout",
-            "failed_attempt": 1,
-            "next_attempt": 2,
-            "maximum_attempts": 3,
-            "delay_seconds": 2.0,
-        }
-    ]
+    assert 1.5 <= delays[0] <= 2.5  # transport backoff 2^(attempt 0 + 1), jittered
+    assert len(retries) == 1
+    assert retries[0]["provider"] == "openai_compatible"
+    assert retries[0]["model_id"] == "test-model"
+    assert retries[0]["logical_turn"] == 0
+    assert retries[0]["status_code"] is None
+    assert retries[0]["error_type"] == "ReadTimeout"
+    assert retries[0]["failed_attempt"] == 1
+    assert retries[0]["next_attempt"] == 2
+    assert retries[0]["maximum_attempts"] == 3
+    assert 1.5 <= retries[0]["delay_seconds"] <= 2.5
 
 
 def test_persistent_provider_transport_error_has_explicit_terminal_error() -> None:
@@ -769,21 +768,18 @@ def test_codex_retries_transient_error_inside_successful_sse(
     assert attempts == 2
     assert turn.content == "recovered"
     assert (turn.input_tokens, turn.output_tokens) == (8, 2)
-    assert delays == [2.0]
-    assert retries == [
-        {
-            "provider": "codex",
-            "model_id": "test-model",
-            "logical_turn": 0,
-            "status_code": 200,
-            "failed_attempt": 1,
-            "next_attempt": 2,
-            "maximum_attempts": 3,
-            "delay_seconds": 2.0,
-            "error_type": "provider_stream_error",
-            "error": (f"Codex stream failed: {error_code} · Temporary upstream failure."),
-        }
-    ]
+    assert 0.75 <= delays[0] <= 1.25  # 1s base for non-429 status, jittered
+    assert len(retries) == 1
+    assert retries[0]["provider"] == "codex"
+    assert retries[0]["model_id"] == "test-model"
+    assert retries[0]["logical_turn"] == 0
+    assert retries[0]["status_code"] == 200
+    assert retries[0]["failed_attempt"] == 1
+    assert retries[0]["next_attempt"] == 2
+    assert retries[0]["maximum_attempts"] == 3
+    assert 0.75 <= retries[0]["delay_seconds"] <= 1.25
+    assert retries[0]["error_type"] == "provider_stream_error"
+    assert retries[0]["error"] == (f"Codex stream failed: {error_code} · Temporary upstream failure.")
 
 
 def test_gemini_api_key_uses_native_generate_content_and_function_calls() -> None:
@@ -1061,3 +1057,18 @@ def test_codex_policy_rejection_has_a_distinct_error_type() -> None:
         match="cyber_policy",
     ):
         parse_codex_sse_turn(stream, native_tools=True)
+
+
+def test_retry_delay_is_status_class_based_and_jittered() -> None:
+    from app.runner import providers as p
+
+    response_429 = SimpleNamespace(headers={}, status_code=429)
+    response_503 = SimpleNamespace(headers={}, status_code=503)
+    delays_429 = [p.provider_retry_delay(response_429, 0) for _ in range(20)]
+    delays_503 = [p.provider_retry_delay(response_503, 0) for _ in range(20)]
+    # 429 基础退避更大（4s 基数）且带抖动（±25%）
+    assert all(d >= 3.0 for d in delays_429)
+    # 5xx 用 1s 基数
+    assert all(0.75 <= d <= 1.25 for d in delays_503)
+    assert len(set(round(d, 3) for d in delays_429)) > 1
+    assert len(set(round(d, 3) for d in delays_503)) > 1

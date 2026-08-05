@@ -373,6 +373,7 @@ class Worker:
                     profile,
                     None,
                     credential_resolver=CredentialResolver(profile.id),
+                    timeout_seconds=settings.provider_turn_timeout_seconds,
                     on_retry=lambda payload: self.record_provider_retry(
                         run_id,
                         "candidate",
