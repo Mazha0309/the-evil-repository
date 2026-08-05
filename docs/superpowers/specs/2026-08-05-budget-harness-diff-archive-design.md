@@ -131,21 +131,35 @@
   - `telemetry/budget-adjustments.jsonl`（热更新历史）
   - `telemetry/turn-boundaries.jsonl`（turn 摘要）
   - `resource-ledger.json`（现状在 private_state，未进归档）
-  - `artifacts/*.diff` 全文已在归档（保持），报告 JSON 补 diff 全文。
-- 报告导出（reports.py）升级 schema v3：补 `diffs`（全文）、`budget_adjustments`、`turn_summary`、`overtime_penalty` 明细。
+  - `export.json`：精简 JSON 导出（见 6.4）本身也打进归档，归档消费者可单文件完成基础分析。
 
 ### 6.3 导出中心 UI
 
 - 运行详情页新增"导出中心"（替代现有底部两个零散按钮）：
   - 格式：规范化 tar.gz / 单文件 JSON
-  - 内容：全量 / 遥测 / 事件 / diff / 图谱（多选；tar.gz 按内容过滤打包）
+
+### 6.3 导出中心 UI
+
+- 运行详情页新增"导出中心"（替代现有底部两个零散按钮）：
+  - 格式：规范化 tar.gz / 单文件 JSON
+  - 内容：全量 / 遥测 / 事件 / diff / 图谱（多选；仅 tar.gz 按内容过滤打包，JSON 格式恒为精简导出）
   - 归档清单预览（文件名 + 大小 + sha256）+ 一键下载
 - API：`GET /runs/{id}/export?format=&include=`（复用完整性哈希逻辑）。
+
+### 6.4 精简 JSON 导出（schema v3）——新字段克制原则
+
+- **JSON 导出保持轻量**，不塞全文重内容。v3 只新增/保留摘要级字段：
+  - `scorecard.overtime_penalty` 明细（每维度 overrun/weight/penalty，量小，属评分一部分）
+  - `budget_adjustments` 摘要：调整次数、字段、时间范围（**不含**每次调整的完整载荷）
+  - `turn_summary`：turn 总数、平均/最长耗时（**不含**逐 turn 明细）
+  - `diffs`：仅清单（repo、文件名、+X −Y、hash），**不含 diff 全文**（全文只在 tar.gz `artifacts/*.diff`）
+- **events 瘦身**：默认导出紧凑格式——事件参数/结果只留哈希+大小+摘要，全文只存在于归档 `events.jsonl`（可选参数 `include=full-events` 才内联全文，默认关闭）。
+- 现状问题修复：v2 全量扁平 events 内联工具参数/结果导致单文件 JSON 数 MB~数十 MB；v3 默认紧凑后目标控制在 KB~几百 KB 级。
 
 ## 7. 数据与兼容
 
 - `run.config.budget_overrides`：新字段，向后兼容（旧 run 无此键）。
-- `reports.py` schema v2 → v3：旧 v2 消费者（如有）需注意；`export_schema_version` 字段递增。
+- `reports.py` schema v2 → v3：旧 v2 消费者（如有）需注意；`export_schema_version` 字段递增；JSON 导出与归档内 `export.json` 同构同源。
 - 评分：`overtime_penalty` 新维度进 scorecard，旧 scorecard 无此字段 → `normalize_scorecard_outcome`/前端渲染需容错。
 - censored 判定从"硬预算触发"扩展为"最终用量超默认预算"：`run_outcomes.py` 兼容层同步扩展；dashboard 平均分逻辑不变（仍排除 censored）。
 - 归档契约变更 → `scenario/sdk.py` 归档版本号递增（run.json 内）。
@@ -171,4 +185,4 @@
 
 ## 10. 明确不做（YAGNI）
 
-- 运行间 diff 对比、LLM 摘要压缩、自动延长弹窗、预算调小的历史回滚、导出中心增量下载/断点续传。
+- 运行间 diff 对比、LLM 摘要压缩、自动延长弹窗、预算调小的历史回滚、导出中心增量下载/断点续传、导出 JSON 默认内联 diff/事件全文（默认紧凑，需全文走 tar.gz 或 `include=full-events` 显式开启）。
