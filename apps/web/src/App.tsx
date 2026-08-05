@@ -2029,9 +2029,9 @@ function RunDetailPage() {
   const [confirmArchive, setConfirmArchive] = useState(false);
   const [budgetAdjustOpen, setBudgetAdjustOpen] = useState(false);
   const [cancelError, setCancelError] = useState("");
-  const [exportFormat, setExportFormat] = useState<"json" | "tar.gz">(
-    "tar.gz",
-  );
+  const [exportFormat, setExportFormat] = useState<
+    "json" | "tar.gz" | "html"
+  >("tar.gz");
   const [exportInclude, setExportInclude] = useState<ExportArchiveContent[]>([
     ...EXPORT_ARCHIVE_CONTENT,
   ]);
@@ -2548,6 +2548,31 @@ function RunDetailPage() {
               </small>
             </span>
           </label>
+          <label
+            className={
+              exportFormat === "html"
+                ? "export-center__format export-center__format--active"
+                : "export-center__format"
+            }
+          >
+            <input
+              type="radio"
+              name="export_format"
+              value="html"
+              checked={exportFormat === "html"}
+              onChange={() => setExportFormat("html")}
+            />
+            <FileCode2 size={14} />
+            <span>
+              <strong>{text("HTML 报告", "HTML report")}</strong>
+              <small>
+                {text(
+                  "自包含离线报告，打开即可查看。",
+                  "Self-contained offline report, viewable directly.",
+                )}
+              </small>
+            </span>
+          </label>
         </div>
         {exportFormat === "tar.gz" ? (
           <div className="export-center__includes">
@@ -2588,13 +2613,23 @@ function RunDetailPage() {
               </label>
             ))}
           </div>
-        ) : (
+        ) : exportFormat === "json" ? (
           <div className="callout">
             <Lightbulb size={14} />
             <span>
               {text(
                 "JSON 导出为精简格式（含摘要与 scorecard，不含全文）。",
                 "JSON export is a compact format (summary and scorecard, without full content).",
+              )}
+            </span>
+          </div>
+        ) : (
+          <div className="callout">
+            <Lightbulb size={14} />
+            <span>
+              {text(
+                "包含完整页面内容（分数、图谱、审计、Diff、遥测），零外部依赖，离线可看。",
+                "Includes full page content (score, graph, audit, diffs, telemetry), zero external dependencies, viewable offline.",
               )}
             </span>
           </div>
@@ -2608,7 +2643,7 @@ function RunDetailPage() {
             <a
               className="button"
               href={api.exportUrl(runId, exportFormat, exportInclude)}
-              download={`run-${runId}.${exportFormat === "tar.gz" ? "tar.gz" : "json"}`}
+              download={`run-${runId}.${exportFormat}`}
               onClick={() => setDownloadStarted(true)}
             >
               <Download size={14} /> {text("下载导出", "Download export")}

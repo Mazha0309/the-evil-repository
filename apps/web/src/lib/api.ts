@@ -216,15 +216,17 @@ export const api = {
       body: JSON.stringify(payload),
     }),
   reportUrl: (id: string) => `${API_BASE}/reports/${id}`,
-  exportUrl: (runId: string, format: "json" | "tar.gz", include: string[]) => {
+  exportUrl: (
+    runId: string,
+    format: "json" | "tar.gz" | "html",
+    include: string[],
+  ) => {
     const params = new URLSearchParams({ format });
+    if (format === "tar.gz" && include.length > 0) {
+      params.set("include", include.join(","));
+    }
     if (format === "json") {
       params.set("include", "compact");
-    } else if (
-      include.length > 0 &&
-      include.length < EXPORT_ARCHIVE_CONTENT.length
-    ) {
-      params.set("include", include.join(","));
     }
     return `${API_BASE}/runs/${runId}/export?${params.toString()}`;
   },
