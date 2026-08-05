@@ -392,6 +392,7 @@ class Worker:
                     sandbox=sandbox,
                     prepared=prepared,
                     faults=faults,
+                    default_budget=scenario.metadata.budget,
                     context_soft_characters=settings.runner_context_soft_characters,
                     context_target_characters=settings.runner_context_target_characters,
                     context_emergency_characters=(

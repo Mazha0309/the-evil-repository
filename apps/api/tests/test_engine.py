@@ -13,7 +13,12 @@ from app.runner.engine import (
     substantive_tool_call_count,
 )
 from app.runner.faults import FaultController
-from app.runner.protocol import AssistantTurn, InvalidToolCall, ToolCall
+from app.runner.protocol import (
+    AssistantTurn,
+    InvalidToolCall,
+    ToolCall,
+    ToolResult,
+)
 from app.runner.providers import (
     ProviderContextLengthError,
     ProviderPolicyRejectionError,
@@ -883,3 +888,101 @@ def test_provider_policy_rejection_retries_without_raw_tool_history(
         if event["kind"] == "model.request.retry"
     )
     assert retry["reason"] == "provider_policy_rejection"
+
+
+class BudgetOverrideClient:
+    profile = SimpleNamespace(native_tools=True)
+
+    def __init__(self) -> None:
+        self.turns = 0
+
+    def complete(self, messages: list[dict], tools: list[dict]) -> AssistantTurn:
+        self.turns += 1
+        if self.turns == 1:
+            return AssistantTurn(
+                tool_calls=[
+                    ToolCall(
+                        call_id="t1",
+                        name="read_file",
+                        arguments={"path": "README.md"},
+                    ),
+                ],
+                input_tokens=10,
+                output_tokens=2,
+            )
+        return AssistantTurn(content="done", input_tokens=10, output_tokens=2)
+
+
+class BudgetOverrideDB:
+    """FakeSession 提供带 budget_overrides 的 run.config"""
+
+    def __init__(self, config: dict) -> None:
+        self._config = dict(config)
+
+    def __enter__(self) -> "BudgetOverrideDB":
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        return None
+
+    def get(self, model: type, run_id: object) -> object:
+        return SimpleNamespace(
+            config=self._config,
+            tool_calls=0,
+            input_tokens=0,
+            output_tokens=0,
+            status=SimpleNamespace(value="running"),
+            stage="",
+        )
+
+
+def test_budget_overrides_applied_at_runtime(tmp_path: Path, monkeypatch) -> None:
+    scenario = load_scenario(SCENARIO_ROOT)
+    prepared = PreparedScenario(
+        scenario_root=SCENARIO_ROOT,
+        workspace=tmp_path,
+        metadata=scenario.metadata,
+    )
+    config = {
+        "budget_overrides": [
+            {
+                "field": "hard_tool_calls",
+                "value": 5000,
+                "reason": "keep going",
+                "requested_by": "test",
+                "requested_at": "2026-08-05T00:00:00Z",
+            }
+        ]
+    }
+    monkeypatch.setattr(engine_module, "SessionLocal", lambda: BudgetOverrideDB(config))
+    engine = AgentEngine(
+        run_id=uuid.uuid4(),
+        client=BudgetOverrideClient(),
+        sandbox=SimpleNamespace(),
+        prepared=prepared,
+        faults=FaultController([]),
+    )
+    monkeypatch.setattr(
+        engine,
+        "_event",
+        lambda kind, payload: engine.events.append({"kind": kind, **payload}),
+    )
+    monkeypatch.setattr(
+        engine,
+        "_execute",
+        lambda call: ToolResult(
+            call_id=call.call_id,
+            name=call.name,
+            status="ok",
+            output="x",
+        ),
+    )
+    monkeypatch.setattr(engine, "_completion_gaps", lambda: [])
+    monkeypatch.setattr(engine, "_compact_context", lambda *a, **k: None)
+    result = engine.run(prepared)
+    assert engine.budget.hard_tool_calls == 5000
+    assert result.private_state["hard_budget_reasons"] == []
+    assert any(e["kind"] == "run.budget_adjusted" for e in engine.events)
+    adjusted = [e for e in engine.events if e["kind"] == "run.budget_adjusted"][0]
+    assert adjusted["field"] == "hard_tool_calls"
+    assert adjusted["new_value"] == 5000

@@ -9,7 +9,9 @@ from collections import Counter
 from typing import Any
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import SQLAlchemyError
 
+from app.challenge.spec import BudgetSpec
 from app.database import SessionLocal
 from app.events import append_event
 from app.investigation import link_evidence, record_evidence, record_hypothesis
@@ -67,6 +69,7 @@ class AgentEngine:
         context_soft_characters: int = DEFAULT_CONTEXT_SOFT_CHARACTERS,
         context_target_characters: int = DEFAULT_CONTEXT_TARGET_CHARACTERS,
         context_emergency_characters: int = DEFAULT_CONTEXT_EMERGENCY_CHARACTERS,
+        default_budget: BudgetSpec | None = None,
     ) -> None:
         if not (
             16_000 <= context_emergency_characters
@@ -113,6 +116,9 @@ class AgentEngine:
         self.invalid_tool_calls = 0
         self.completion_gaps: list[str] = []
         self.paused_seconds = 0.0
+        self.budget = self.prepared.metadata.budget
+        self.default_budget = default_budget or self.prepared.metadata.budget
+        self.applied_budget_overrides = 0
         self.soft_budget_warnings: set[str] = set()
         self.finalization_nudge_sent = False
         self.hard_budget_reasons: list[str] = []
@@ -160,14 +166,16 @@ class AgentEngine:
         ]
         final_response = ""
         tool_definitions = tool_definitions_for(self.prepared.metadata.tools)
-        hard_calls = self.prepared.metadata.budget.hard_tool_calls
-        hard_seconds = self.prepared.metadata.budget.hard_seconds
         turn_number = 0
 
-        while self.tool_calls < hard_calls and self._active_elapsed() < hard_seconds:
+        while (
+            self.tool_calls < self.budget.hard_tool_calls
+            and self._active_elapsed() < self.budget.hard_seconds
+        ):
             if not self._wait_for_resume():
                 final_response = "Run cancelled."
                 break
+            self._apply_budget_overrides()
             soft_warning = self._soft_budget_warning()
             if soft_warning:
                 messages.append({"role": "user", "content": soft_warning})
@@ -339,7 +347,7 @@ class AgentEngine:
                 break
             stop_requested = False
             for call in turn.tool_calls:
-                if self.tool_calls >= hard_calls:
+                if self.tool_calls >= self.budget.hard_tool_calls:
                     break
                 if not self._wait_for_resume():
                     final_response = "Run cancelled."
@@ -425,9 +433,9 @@ class AgentEngine:
         else:
             active_seconds = self._active_elapsed()
             reached = []
-            if self.tool_calls >= hard_calls:
+            if self.tool_calls >= self.budget.hard_tool_calls:
                 reached.append("tool_calls")
-            if active_seconds >= hard_seconds:
+            if active_seconds >= self.budget.hard_seconds:
                 reached.append("active_time")
             self.hard_budget_reasons = reached
             self._emit_hard_budget_event(reached)
@@ -1469,7 +1477,7 @@ class AgentEngine:
         return max(0.0, time.monotonic() - self.started - self.paused_seconds)
 
     def _soft_budget_warning(self) -> str | None:
-        budget = self.prepared.metadata.budget
+        budget = self.budget
         active_seconds = self._active_elapsed()
         crossed: list[str] = []
         if (
@@ -1551,7 +1559,7 @@ class AgentEngine:
         if self.finalization_nudge_sent:
             return None
 
-        budget = self.prepared.metadata.budget
+        budget = self.budget
         active_seconds = self._active_elapsed()
         total_tokens = self.input_tokens + self.output_tokens
         usage = {
@@ -1658,7 +1666,7 @@ class AgentEngine:
 
     def _on_provider_request(self, request: dict[str, Any]) -> None:
         next_request = int(request["request_number"])
-        hard_limit = self.prepared.metadata.budget.hard_provider_requests
+        hard_limit = self.budget.hard_provider_requests
         if hard_limit is not None and next_request > hard_limit:
             raise HardResourceBudgetExceeded
         self.provider_requests = next_request
@@ -1671,6 +1679,42 @@ class AgentEngine:
                 "active_seconds": round(self._active_elapsed(), 3),
             },
         )
+
+    def _apply_budget_overrides(self) -> None:
+        try:
+            with SessionLocal() as session:
+                run = session.get(BenchmarkRun, self.run_id)
+                overrides = (
+                    list(dict(run.config).get("budget_overrides", []))
+                    if run
+                    else []
+                )
+        except SQLAlchemyError:
+            return
+        for entry in overrides[self.applied_budget_overrides :]:
+            field = str(entry.get("field", ""))
+            if not hasattr(self.budget, field):
+                continue
+            old_value = getattr(self.budget, field)
+            new_value = entry.get("value")
+            try:
+                self.budget = self.budget.model_copy(
+                    update={field: int(new_value) if new_value is not None else None}
+                )
+            except (TypeError, ValueError):
+                continue
+            self.applied_budget_overrides += 1
+            self._event(
+                "run.budget_adjusted",
+                {
+                    "field": field,
+                    "old_value": old_value,
+                    "new_value": getattr(self.budget, field),
+                    "reason": str(entry.get("reason", "")),
+                    "requested_by": str(entry.get("requested_by", "")),
+                    "requested_at": str(entry.get("requested_at", "")),
+                },
+            )
 
     def _emit_telemetry_snapshot(self, *, trigger: str, turn: int) -> None:
         active_seconds = self._active_elapsed()
@@ -1737,7 +1781,7 @@ class AgentEngine:
         )
 
     def _hard_resource_reasons(self) -> list[str]:
-        budget = self.prepared.metadata.budget
+        budget = self.budget
         reasons: list[str] = []
         total_tokens = self.input_tokens + self.output_tokens
         if (
@@ -1749,7 +1793,7 @@ class AgentEngine:
         return reasons
 
     def _emit_hard_budget_event(self, reached: list[str]) -> None:
-        budget = self.prepared.metadata.budget
+        budget = self.budget
         self._event(
             "run.hard_budget_exceeded",
             {
@@ -1767,7 +1811,7 @@ class AgentEngine:
         )
 
     def _resource_ledger(self) -> dict[str, Any]:
-        budget = self.prepared.metadata.budget
+        budget = self.budget
         return {
             "logical_model_turns": sum(
                 1 for event in self.events if event.get("kind") == "model.request"
@@ -1782,6 +1826,7 @@ class AgentEngine:
             "invalid_tool_calls": self.invalid_tool_calls,
             "context_management": self._context_ledger(),
             "budgets": budget.model_dump(mode="json"),
+            "default_budget": self.default_budget.model_dump(mode="json"),
             "soft_limits_crossed": sorted(self.soft_budget_warnings),
             "finalization_nudge_sent": self.finalization_nudge_sent,
             "hard_limits_crossed": self.hard_budget_reasons,
