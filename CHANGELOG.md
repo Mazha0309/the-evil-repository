@@ -3,6 +3,23 @@
 All notable platform changes are recorded here. The project follows Semantic
 Versioning while individual benchmark scenarios retain independent versions.
 
+## [0.14.1] - 2026-08-06
+
+### Added
+
+- Live repository diffs: the Runner captures `git diff` and `git status` for
+  every candidate repository after each turn containing a successful
+  `write_file` or `exec_command`, emitting `run.repo_diff` events into the
+  event stream. The Diff tab now renders diffs in real time while a run is in
+  progress, falling back to the run archive for runs recorded before this
+  feature.
+
+### Changed
+
+- The run detail page gained a standalone Export tab; the export center moved
+  out of the page footer into it.
+- The audit timeline now renders newest events first.
+
 ## [0.14.0] - 2026-08-05
 
 ### Added
