@@ -221,18 +221,11 @@ def test_invalid_tool_call_is_repaired_without_execution(
     executed: list[ToolCall] = []
     sandbox = SimpleNamespace(
         execute=lambda call: executed.append(call)
-        or SimpleNamespace(
+        or ToolResult(
             call_id=call.call_id,
             name=call.name,
             status="ok",
             output="contents",
-            exit_code=0,
-            truncated=False,
-            metadata={},
-            model_dump_json=lambda: (
-                '{"call_id":"fixed-1","name":"read_file",'
-                '"status":"ok","output":"contents"}'
-            ),
         )
     )
     engine = AgentEngine(
@@ -1758,3 +1751,82 @@ def test_compact_context_truncation_limit_follows_aggressive_flag(tmp_path: Path
         {"role": "system", "content": "system"},
         {"role": "user", "content": "opening"},
     ]
+
+
+def test_identical_read_result_deduplicated(tmp_path: Path, monkeypatch) -> None:
+    scenario = load_scenario(SCENARIO_ROOT)
+    prepared = PreparedScenario(
+        scenario_root=SCENARIO_ROOT,
+        workspace=tmp_path,
+        metadata=scenario.metadata,
+    )
+    monkeypatch.setattr(engine_module, "SessionLocal", lambda: BudgetOverrideDB({}))
+    engine = AgentEngine(
+        run_id=uuid.uuid4(),
+        client=FinalAnswerClient(),
+        sandbox=SimpleNamespace(),
+        prepared=prepared,
+        faults=FaultController([]),
+    )
+    signature = "a" * 64
+    first = engine._model_visible_result(
+        ToolResult(call_id="r1", name="read_file", status="ok", output="A" * 5000),
+        signature,
+    )
+    assert first["output"] == "A" * 5000
+    assert first["deduplicated"] is False
+    second = engine._model_visible_result(
+        ToolResult(call_id="r2", name="read_file", status="ok", output="A" * 5000),
+        signature,
+    )
+    assert second["deduplicated"] is True
+    assert "Identical to tool call" in second["output"]
+    assert second["truncated"] is True
+
+
+def test_read_result_structured_truncation(tmp_path: Path, monkeypatch) -> None:
+    scenario = load_scenario(SCENARIO_ROOT)
+    prepared = PreparedScenario(
+        scenario_root=SCENARIO_ROOT,
+        workspace=tmp_path,
+        metadata=scenario.metadata,
+    )
+    monkeypatch.setattr(engine_module, "SessionLocal", lambda: BudgetOverrideDB({}))
+    engine = AgentEngine(
+        run_id=uuid.uuid4(),
+        client=FinalAnswerClient(),
+        sandbox=SimpleNamespace(),
+        prepared=prepared,
+        faults=FaultController([]),
+    )
+    result = engine._model_visible_result(
+        ToolResult(call_id="r1", name="read_file", status="ok", output="x" * 20_000),
+        "b" * 64,
+    )
+    assert result["truncated"] is True
+    assert "[truncated" in result["output"]
+    assert len(result["output"]) < 20_000
+    assert result["output"].startswith("x" * int(8_192 * 0.6))
+
+
+def test_non_read_tool_not_deduplicated(tmp_path: Path, monkeypatch) -> None:
+    scenario = load_scenario(SCENARIO_ROOT)
+    prepared = PreparedScenario(
+        scenario_root=SCENARIO_ROOT,
+        workspace=tmp_path,
+        metadata=scenario.metadata,
+    )
+    monkeypatch.setattr(engine_module, "SessionLocal", lambda: BudgetOverrideDB({}))
+    engine = AgentEngine(
+        run_id=uuid.uuid4(),
+        client=FinalAnswerClient(),
+        sandbox=SimpleNamespace(),
+        prepared=prepared,
+        faults=FaultController([]),
+    )
+    result = engine._model_visible_result(
+        ToolResult(call_id="r1", name="exec_command", status="ok", output="y" * 20_000),
+        "c" * 64,
+    )
+    assert result["deduplicated"] is False
+    assert result["truncated"] is False

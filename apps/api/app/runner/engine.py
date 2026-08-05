@@ -127,6 +127,8 @@ class AgentEngine:
         self.tool_durations_ms: list[int] = []
         self.tool_status_counts: Counter[str] = Counter()
         self.tool_signature_counts: Counter[str] = Counter()
+        self.tool_result_cache: dict[str, tuple[int, str]] = {}
+        self.result_display_limit = 8_192
         self.events: list[dict[str, Any]] = []
         self.final_rejections = 0
         self.invalid_tool_call_batches = 0
@@ -560,6 +562,7 @@ class AgentEngine:
         tool_duration_ms = round((time.monotonic() - started) * 1_000)
         self.tool_durations_ms.append(tool_duration_ms)
         self.tool_status_counts[result.status] += 1
+        visible = self._model_visible_result(result, tool_call_signature(call))
         self._event(
             "tool.result",
             {
@@ -569,6 +572,8 @@ class AgentEngine:
                 "output": result.output,
                 "exit_code": result.exit_code,
                 "truncated": result.truncated,
+                "deduplicated": visible["deduplicated"],
+                "display_truncated": visible["display_truncated"],
                 "duration_ms": tool_duration_ms,
                 "output_size_bytes": len(result.output.encode()),
                 "output_lines": result.output.count("\n") + bool(result.output),
@@ -583,7 +588,82 @@ class AgentEngine:
                 trigger="tool_checkpoint",
                 turn=turn_number,
             )
-        messages.append(tool_message(call, result.model_dump_json(), native))
+        messages.append(
+            tool_message(
+                call,
+                json.dumps(visible, ensure_ascii=False),
+                native,
+            )
+        )
+
+    def _model_visible_result(
+        self,
+        result: ToolResult,
+        signature: str,
+    ) -> dict[str, Any]:
+        """Shape the tool output text fed back to the model.
+
+        Deduplication and structured truncation only affect the model-visible
+        text; telemetry events keep the full, untouched tool output.
+        """
+        if result.name not in PARALLEL_SAFE_TOOLS:
+            return {
+                **result.model_dump(mode="json"),
+                "deduplicated": False,
+                "display_truncated": False,
+            }
+        cached = self.tool_result_cache.get(signature)
+        if cached is not None:
+            ordinal, cached_output = cached
+            if cached_output == result.output:
+                summary = (
+                    f"[Runner] Identical to tool call #{ordinal} "
+                    f"({len(result.output)} bytes). Repeating the full output would "
+                    f"waste budget.\nPreview: {result.output[:200]}"
+                )
+                visible = result.model_dump(mode="json")
+                visible.update(
+                    {
+                        "output": summary,
+                        "truncated": True,
+                        "deduplicated": True,
+                        "display_truncated": False,
+                    }
+                )
+                return visible
+        else:
+            self.tool_result_cache[signature] = (self.tool_calls, result.output)
+        truncated_output, truncated = self._truncate_output(
+            result.output, self.result_display_limit
+        )
+        visible = result.model_dump(mode="json")
+        if truncated:
+            visible.update(
+                {
+                    "output": truncated_output,
+                    "truncated": True,
+                    "deduplicated": False,
+                    "display_truncated": True,
+                }
+            )
+        else:
+            visible.update(
+                {
+                    "deduplicated": False,
+                    "display_truncated": False,
+                }
+            )
+        return visible
+
+    def _truncate_output(self, text: str, limit: int) -> tuple[str, bool]:
+        if len(text) <= limit:
+            return text, False
+        head_size = int(limit * 0.6)
+        tail_size = limit - head_size
+        head = text[:head_size]
+        tail = text[-tail_size:]
+        marker = f"\n[truncated {len(text) - head_size - tail_size} bytes]\n"
+        return f"{head}{marker}{tail}", True
 
     def checkpoint_result(self, error: Exception) -> ScenarioRunResult:
         """Capture the bounded in-memory ledger after an unexpected interruption."""
