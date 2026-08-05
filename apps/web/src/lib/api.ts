@@ -25,6 +25,15 @@ import type {
 const API_BASE = import.meta.env.VITE_API_BASE ?? "/api/v1";
 let csrfToken = "";
 
+export const EXPORT_ARCHIVE_CONTENT = [
+  "telemetry",
+  "events",
+  "diffs",
+  "graph",
+] as const;
+
+export type ExportArchiveContent = (typeof EXPORT_ARCHIVE_CONTENT)[number];
+
 export class ApiError extends Error {
   constructor(
     public status: number,
@@ -209,7 +218,12 @@ export const api = {
   reportUrl: (id: string) => `${API_BASE}/reports/${id}`,
   exportUrl: (runId: string, format: "json" | "tar.gz", include: string[]) => {
     const params = new URLSearchParams({ format });
-    if (format === "tar.gz" && include.length > 0 && !include.includes("all")) {
+    if (format === "json") {
+      params.set("include", "compact");
+    } else if (
+      include.length > 0 &&
+      include.length < EXPORT_ARCHIVE_CONTENT.length
+    ) {
       params.set("include", include.join(","));
     }
     return `${API_BASE}/runs/${runId}/export?${params.toString()}`;

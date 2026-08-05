@@ -74,7 +74,12 @@ import AuthScreen from "./components/AuthScreen";
 import CredentialsPage from "./components/CredentialsPage";
 import DiffViewer from "./components/DiffViewer";
 import LiveRunMonitor from "./components/LiveRunMonitor";
-import { api, ApiError } from "./lib/api";
+import {
+  api,
+  ApiError,
+  EXPORT_ARCHIVE_CONTENT,
+  type ExportArchiveContent,
+} from "./lib/api";
 import { mergeBudgetOverrides, OPTIONAL_BUDGET_FIELDS } from "./lib/budget";
 import { bytes } from "./lib/format";
 import { useLocale } from "./lib/i18n";
@@ -2001,17 +2006,15 @@ function NewRunPage() {
   );
 }
 
-const EXPORT_INCLUDE_OPTIONS: Array<{
-  value: string;
-  labelZh: string;
-  labelEn: string;
-}> = [
-  { value: "all", labelZh: "全量", labelEn: "All" },
-  { value: "telemetry", labelZh: "遥测", labelEn: "Telemetry" },
-  { value: "events", labelZh: "事件", labelEn: "Events" },
-  { value: "diffs", labelZh: "Diff", labelEn: "Diff" },
-  { value: "graph", labelZh: "图谱", labelEn: "Graph" },
-];
+const EXPORT_INCLUDE_LABELS: Record<
+  ExportArchiveContent,
+  { labelZh: string; labelEn: string }
+> = {
+  telemetry: { labelZh: "遥测", labelEn: "Telemetry" },
+  events: { labelZh: "事件", labelEn: "Events" },
+  diffs: { labelZh: "Diff", labelEn: "Diff" },
+  graph: { labelZh: "图谱", labelEn: "Graph" },
+};
 
 function RunDetailPage() {
   const { isChinese, locale, text } = useLocale();
@@ -2029,20 +2032,24 @@ function RunDetailPage() {
   const [exportFormat, setExportFormat] = useState<"json" | "tar.gz">(
     "tar.gz",
   );
-  const [exportInclude, setExportInclude] = useState<string[]>([
-    "all",
-    "telemetry",
-    "events",
-    "diffs",
-    "graph",
+  const [exportInclude, setExportInclude] = useState<ExportArchiveContent[]>([
+    ...EXPORT_ARCHIVE_CONTENT,
   ]);
   const [downloadStarted, setDownloadStarted] = useState(false);
+  useEffect(() => {
+    if (!downloadStarted) return;
+    const timer = window.setTimeout(() => setDownloadStarted(false), 4_000);
+    return () => window.clearTimeout(timer);
+  }, [downloadStarted]);
   const run = useQuery({
     queryKey: ["run", runId],
     queryFn: () => api.run(runId),
     refetchInterval: (query) =>
       isTerminal(query.state.data?.status) ? false : 2_000,
   });
+  const downloadDisabled =
+    exportInclude.length === 0 ||
+    (exportFormat === "tar.gz" && !isTerminal(run.data?.status));
   const events = useQuery({
     queryKey: eventQueryKey,
     queryFn: async () => {
@@ -2547,20 +2554,37 @@ function RunDetailPage() {
             <span className="export-center__label">
               {text("内容", "Content")}
             </span>
-            {EXPORT_INCLUDE_OPTIONS.map((option) => (
-              <label className="check-row" key={option.value}>
+            <label className="check-row">
+              <input
+                type="checkbox"
+                checked={exportInclude.length === EXPORT_ARCHIVE_CONTENT.length}
+                onChange={(event) =>
+                  setExportInclude(
+                    event.target.checked ? [...EXPORT_ARCHIVE_CONTENT] : [],
+                  )
+                }
+              />
+              <span>{text("全选", "Select all")}</span>
+            </label>
+            {EXPORT_ARCHIVE_CONTENT.map((value) => (
+              <label className="check-row" key={value}>
                 <input
                   type="checkbox"
-                  checked={exportInclude.includes(option.value)}
+                  checked={exportInclude.includes(value)}
                   onChange={(event) =>
                     setExportInclude((prev) =>
                       event.target.checked
-                        ? [...prev, option.value]
-                        : prev.filter((value) => value !== option.value),
+                        ? [...prev, value]
+                        : prev.filter((item) => item !== value),
                     )
                   }
                 />
-                <span>{text(option.labelZh, option.labelEn)}</span>
+                <span>
+                  {text(
+                    EXPORT_INCLUDE_LABELS[value].labelZh,
+                    EXPORT_INCLUDE_LABELS[value].labelEn,
+                  )}
+                </span>
               </label>
             ))}
           </div>
@@ -2576,23 +2600,39 @@ function RunDetailPage() {
           </div>
         )}
         <div className="export-center__footer">
-          <a
-            className="button"
-            href={api.exportUrl(runId, exportFormat, exportInclude)}
-            download={`run-${runId}.${exportFormat === "tar.gz" ? "tar.gz" : "json"}`}
-            onClick={() => {
-              setDownloadStarted(true);
-              window.setTimeout(() => setDownloadStarted(false), 4_000);
-            }}
-          >
-            <Download size={14} /> {text("下载导出", "Download export")}
-          </a>
+          {downloadDisabled ? (
+            <button className="button" disabled type="button">
+              <Download size={14} /> {text("下载导出", "Download export")}
+            </button>
+          ) : (
+            <a
+              className="button"
+              href={api.exportUrl(runId, exportFormat, exportInclude)}
+              download={`run-${runId}.${exportFormat === "tar.gz" ? "tar.gz" : "json"}`}
+              onClick={() => setDownloadStarted(true)}
+            >
+              <Download size={14} /> {text("下载导出", "Download export")}
+            </a>
+          )}
           {downloadStarted && (
             <span className="export-center__notice" role="status">
-              {text("已开始下载", "Download started")}
+              {text(
+                "已开始下载，若未收到文件请检查运行状态。",
+                "Download started; if no file arrives, check the run status.",
+              )}
             </span>
           )}
         </div>
+        {downloadDisabled && (
+          <div className="callout callout--warning">
+            {exportInclude.length === 0
+              ? text("请至少选择一项内容", "Select at least one content item")
+              : text(
+                  "运行完成后可用。",
+                  "Available after the run completes.",
+                )}
+          </div>
+        )}
         {artifacts.data?.length ? (
           <div className="export-center__manifest">
             <h4>{text("归档清单", "Archive manifest")}</h4>
