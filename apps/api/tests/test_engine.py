@@ -1,4 +1,5 @@
 import json
+import time
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
@@ -1219,5 +1220,74 @@ def test_budget_override_invalid_batch_rejected_atomically(
     assert engine.budget.hard_seconds == initial_hard_seconds
     assert not any(e["kind"] == "run.budget_adjusted" for e in engine.events)
     assert result.tool_calls == 1
+
+
+class ParallelToolClient:
+    profile = SimpleNamespace(native_tools=True)
+
+    def __init__(self) -> None:
+        self.turn = 0
+
+    def complete(self, messages: list[dict], tools: list[dict]) -> AssistantTurn:
+        self.turn += 1
+        if self.turn == 1:
+            return AssistantTurn(
+                tool_calls=[
+                    ToolCall(call_id="p1", name="read_file", arguments={"path": "a.txt"}),
+                    ToolCall(call_id="p2", name="list_files", arguments={"path": "."}),
+                    ToolCall(
+                        call_id="p3",
+                        name="write_file",
+                        arguments={"path": "b.txt", "content": "x"},
+                    ),
+                    ToolCall(call_id="p4", name="read_file", arguments={"path": "a.txt"}),
+                ],
+                input_tokens=10,
+                output_tokens=2,
+            )
+        return AssistantTurn(content="done", input_tokens=10, output_tokens=2)
+
+
+def test_parallel_safe_tools_execute_concurrently_keep_order(tmp_path: Path, monkeypatch) -> None:
+    scenario = load_scenario(SCENARIO_ROOT)
+    prepared = PreparedScenario(
+        scenario_root=SCENARIO_ROOT,
+        workspace=tmp_path,
+        metadata=scenario.metadata,
+    )
+    executed: list[str] = []
+    running = {"now": 0, "max_concurrent": 0}
+
+    def fake_execute(call: ToolCall) -> ToolResult:
+        running["now"] += 1
+        running["max_concurrent"] = max(running["max_concurrent"], running["now"])
+        executed.append(call.call_id)
+        time.sleep(0.01)
+        running["now"] -= 1
+        return ToolResult(
+            call_id=call.call_id,
+            name=call.name,
+            status="ok",
+            output=f"out:{call.name}",
+        )
+
+    monkeypatch.setattr(engine_module, "SessionLocal", lambda: BudgetOverrideDB({}))
+    engine = AgentEngine(
+        run_id=uuid.uuid4(),
+        client=ParallelToolClient(),
+        sandbox=SimpleNamespace(),
+        prepared=prepared,
+        faults=FaultController([]),
+    )
+    monkeypatch.setattr(engine, "_event", lambda kind, payload: engine.events.append({"kind": kind, **payload}))
+    monkeypatch.setattr(engine, "_execute", fake_execute)
+    monkeypatch.setattr(engine, "_completion_gaps", lambda: [])
+    monkeypatch.setattr(engine, "_compact_context", lambda *a, **k: None)
+    engine.run(prepared)
+    assert running["max_concurrent"] >= 2
+    calls = [e for e in engine.events if e["kind"] == "tool.call"]
+    assert [e["call_id"] for e in calls] == ["p1", "p2", "p3", "p4"]
+    results = [e for e in engine.events if e["kind"] == "tool.result"]
+    assert [e["call_id"] for e in results] == ["p1", "p2", "p3", "p4"]
 
 

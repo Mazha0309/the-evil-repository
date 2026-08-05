@@ -4,9 +4,11 @@ import json
 import logging
 import re
 import shlex
+import threading
 import time
 import uuid
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from typing import Any
 
@@ -60,6 +62,11 @@ POLICY_RECOVERY_MARKER = "RUNNER_PROVIDER_POLICY_RECOVERY_V1"
 FINALIZATION_BUDGET_NUMERATOR = 4
 FINALIZATION_BUDGET_DENOMINATOR = 5
 
+PARALLEL_SAFE_TOOLS = frozenset(
+    {"list_files", "read_file", "browser_search", "browser_open", "browser_find"}
+)
+PARALLEL_MAX_WORKERS = 4
+
 
 class AgentEngine:
     def __init__(
@@ -96,6 +103,7 @@ class AgentEngine:
         )
         self.read_counts: Counter[str] = Counter()
         self.write_counts: Counter[str] = Counter()
+        self._ledger_lock = threading.Lock()
         self.started = time.monotonic()
         self.input_tokens = 0
         self.output_tokens = 0
@@ -350,6 +358,45 @@ class AgentEngine:
                     )
                 break
             stop_requested = False
+            pending: list[tuple[ToolCall, int]] = []
+
+            def run_one(call: ToolCall) -> tuple[ToolResult, float]:
+                started = time.monotonic()
+                return self._execute(call), started
+
+            def flush_parallel(turn_number: int) -> None:
+                nonlocal pending
+                if not pending:
+                    return
+
+                if len(pending) == 1:
+                    call, ordinal = pending[0]
+                    result, started = run_one(call)
+                    self._process_tool_result(
+                        call,
+                        result,
+                        turn_number,
+                        ordinal=ordinal,
+                        started=started,
+                        messages=messages,
+                        native=native,
+                    )
+                else:
+                    with ThreadPoolExecutor(max_workers=PARALLEL_MAX_WORKERS) as pool:
+                        futures = [pool.submit(run_one, call) for call, _ in pending]
+                        for (call, ordinal), future in zip(pending, futures, strict=True):
+                            result, started = future.result()
+                            self._process_tool_result(
+                                call,
+                                result,
+                                turn_number,
+                                ordinal=ordinal,
+                                started=started,
+                                messages=messages,
+                                native=native,
+                            )
+                pending = []
+
             for call in turn.tool_calls:
                 if self.tool_calls >= self.budget.hard_tool_calls:
                     break
@@ -357,6 +404,8 @@ class AgentEngine:
                     final_response = "Run cancelled."
                     stop_requested = True
                     break
+                if call.name not in PARALLEL_SAFE_TOOLS:
+                    flush_parallel(turn_number)
                 self.tool_calls += 1
                 signature = tool_call_signature(call)
                 self.tool_signature_counts[signature] += 1
@@ -376,62 +425,20 @@ class AgentEngine:
                         "active_seconds": round(self._active_elapsed(), 3),
                     },
                 )
-                tool_started = time.monotonic()
-                result = self._execute(call)
-                if self.incident:
-                    checkpoint = self.incident.advance(call.name, result.status)
-                    result.metadata["incident_state"] = checkpoint
-                    if checkpoint["new_alerts"]:
-                        self._event(
-                            "incident.alert",
-                            {
-                                "tickets": checkpoint["new_alerts"],
-                                "logical_time": checkpoint["logical_time"],
-                            },
-                        )
-                if self.release:
-                    checkpoint = self.release.advance(call.name, result.status)
-                    result.metadata["release_state"] = checkpoint
-                    if checkpoint["new_reports"]:
-                        self._event(
-                            "release.report",
-                            {
-                                "tickets": checkpoint["new_reports"],
-                                "logical_time": checkpoint["logical_time"],
-                            },
-                        )
-                tool_duration_ms = round((time.monotonic() - tool_started) * 1_000)
-                self.tool_durations_ms.append(tool_duration_ms)
-                self.tool_status_counts[result.status] += 1
-                self._event(
-                    "tool.result",
-                    {
-                        "name": result.name,
-                        "call_id": result.call_id,
-                        "status": result.status,
-                        "output": result.output,
-                        "exit_code": result.exit_code,
-                        "truncated": result.truncated,
-                        "duration_ms": tool_duration_ms,
-                        "output_size_bytes": len(result.output.encode()),
-                        "output_lines": result.output.count("\n")
-                        + bool(result.output),
-                        "turn": turn_number,
-                        "ordinal": self.tool_calls,
-                        "active_seconds": round(self._active_elapsed(), 3),
-                        **result.metadata,
-                    },
+                if call.name in PARALLEL_SAFE_TOOLS:
+                    pending.append((call, self.tool_calls))
+                    continue
+                result, started = run_one(call)
+                self._process_tool_result(
+                    call,
+                    result,
+                    turn_number,
+                    ordinal=self.tool_calls,
+                    started=started,
+                    messages=messages,
+                    native=native,
                 )
-                if (
-                    self.tool_calls % 10 == 0
-                    or result.status not in {"ok", "success"}
-                    or tool_duration_ms >= 30_000
-                ):
-                    self._emit_telemetry_snapshot(
-                        trigger="tool_checkpoint",
-                        turn=turn_number,
-                    )
-                messages.append(tool_message(call, result.model_dump_json(), native))
+            flush_parallel(turn_number)
             if stop_requested:
                 break
         else:
@@ -481,6 +488,67 @@ class AgentEngine:
                 "release_audit": self.release.audit() if self.release else {},
             },
         )
+
+    def _process_tool_result(
+        self,
+        call: ToolCall,
+        result: ToolResult,
+        turn_number: int,
+        *,
+        ordinal: int,
+        started: float,
+        messages: list[dict[str, Any]],
+        native: bool,
+    ) -> None:
+        if self.incident:
+            checkpoint = self.incident.advance(call.name, result.status)
+            result.metadata["incident_state"] = checkpoint
+            if checkpoint["new_alerts"]:
+                self._event(
+                    "incident.alert",
+                    {
+                        "tickets": checkpoint["new_alerts"],
+                        "logical_time": checkpoint["logical_time"],
+                    },
+                )
+        if self.release:
+            checkpoint = self.release.advance(call.name, result.status)
+            result.metadata["release_state"] = checkpoint
+            if checkpoint["new_reports"]:
+                self._event(
+                    "release.report",
+                    {
+                        "tickets": checkpoint["new_reports"],
+                        "logical_time": checkpoint["logical_time"],
+                    },
+                )
+        tool_duration_ms = round((time.monotonic() - started) * 1_000)
+        self.tool_durations_ms.append(tool_duration_ms)
+        self.tool_status_counts[result.status] += 1
+        self._event(
+            "tool.result",
+            {
+                "name": result.name,
+                "call_id": result.call_id,
+                "status": result.status,
+                "output": result.output,
+                "exit_code": result.exit_code,
+                "truncated": result.truncated,
+                "duration_ms": tool_duration_ms,
+                "output_size_bytes": len(result.output.encode()),
+                "output_lines": result.output.count("\n") + bool(result.output),
+                "turn": turn_number,
+                "ordinal": ordinal,
+                "active_seconds": round(self._active_elapsed(), 3),
+                **result.metadata,
+            },
+        )
+        if ordinal % 10 == 0 or result.status not in {"ok", "success"} or tool_duration_ms >= 30_000:
+            self._emit_telemetry_snapshot(
+                trigger="tool_checkpoint",
+                turn=turn_number,
+            )
+        messages.append(tool_message(call, result.model_dump_json(), native))
 
     def checkpoint_result(self, error: Exception) -> ScenarioRunResult:
         """Capture the bounded in-memory ledger after an unexpected interruption."""
@@ -1177,11 +1245,13 @@ class AgentEngine:
                 else:
                     result = self.sandbox.execute(call)
                     if call.name == "read_file":
-                        self.read_counts[path] += 1
+                        with self._ledger_lock:
+                            self.read_counts[path] += 1
                     elif call.name == "write_file":
-                        result.metadata["blind_write"] = not self._path_was_observed(path)
-                        self.write_counts[path] += 1
-                        result.metadata["write_ordinal"] = self.write_counts[path]
+                        with self._ledger_lock:
+                            result.metadata["blind_write"] = not self._path_was_observed(path)
+                            self.write_counts[path] += 1
+                            result.metadata["write_ordinal"] = self.write_counts[path]
             elif call.name.startswith("browser_"):
                 result = self._browser(call)
             elif call.name == "record_hypothesis":
